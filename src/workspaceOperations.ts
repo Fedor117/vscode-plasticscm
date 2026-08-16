@@ -1,8 +1,9 @@
-import { ProgressLocation, window } from "vscode";
+import { Progress, ProgressLocation, window } from "vscode";
 
 export const enum WorkspaceOperation {
   Status = "Status",
   Checkin = "Checkin",
+  UndoCheckout = "UndoCheckout",
 }
 
 export interface IWorkspaceOperations {
@@ -38,7 +39,7 @@ export class WorkspaceOperations implements IWorkspaceOperations {
     this.start(operation);
     await window.withProgress({
       location: ProgressLocation.SourceControl,
-    }, async progress => {
+    }, async (progress: Progress<{ message?: string; increment?: number }>) => {
       progress.report({});
       await action();
     });

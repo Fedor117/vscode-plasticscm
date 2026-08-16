@@ -1,4 +1,5 @@
-import { commands, Disposable, SourceControlResourceGroup, window } from "vscode";
+import { commands, Disposable, SourceControlResourceGroup, SourceControlResourceState, window } from "vscode";
+import { findWorkspaceForResource, getSelectedResources } from "./scmUtils";
 import { Checkin as CmCheckinCommand } from "../cm/commands";
 import { PlasticScm } from "../plasticScm";
 import { PlasticScmResource } from "../plasticScmResource";
@@ -12,8 +13,7 @@ export class CheckinCommand implements Disposable {
   public constructor(plasticScm: PlasticScm) {
     this.mPlasticScm = plasticScm;
     this.mDisposable = commands.registerCommand(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      "plastic-scm.checkin", args => this.execute(args));
+      "plastic-scm.checkin", (...args: unknown[]) => this.execute(args));
   }
 
   public dispose(): void {
@@ -22,12 +22,27 @@ export class CheckinCommand implements Disposable {
     }
   }
 
-  private async execute(args: any[]): Promise<void> {
-    const workspace: Workspace | undefined = args instanceof Workspace ?
-      args as Workspace :
-      await this.mPlasticScm.promptUserToPickWorkspace();
+  private async execute(args: unknown[]): Promise<void> {
+    const selectedResources = getSelectedResources(args);
+    let workspace: Workspace | undefined;
+    let checkinPaths: string[];
 
-    if (!workspace) {
+    if (selectedResources && selectedResources.length > 0) {
+      workspace = findWorkspaceForResource(this.mPlasticScm, selectedResources[0]);
+      checkinPaths = selectedResources
+        .filter(r => !r.isPrivate)
+        .map(r => r.resourceUri.fsPath);
+    } else {
+      const firstArg = args && args.length > 0 ? args[0] : undefined;
+      workspace = firstArg instanceof Workspace ?
+        firstArg :
+        await this.mPlasticScm.promptUserToPickWorkspace();
+      checkinPaths = workspace
+        ? this.getCheckinPaths(workspace.statusResourceGroup)
+        : [];
+    }
+
+    if (!workspace || checkinPaths.length === 0) {
       return;
     }
 
@@ -46,16 +61,17 @@ export class CheckinCommand implements Disposable {
           workspace.shell,
           this.mPlasticScm.channel,
           comment,
-          ...this.getCheckinPaths(workspace.statusResourceGroup));
+          ...checkinPaths);
 
         await Promise.all(ciResult.map(cset => window.showInformationMessage(
           `Created changeset cs:${cset.changesetInfo.changesetId}`)));
 
         workspace.sourceControl.inputBox.value = "";
+        await workspace.updateWorkspaceStatus();
       } catch (e) {
         const error = e as Error;
-        const token = "Error: ";
-        const message = error.message.substring(error.message.lastIndexOf(token) + token.length);
+        const errorPrefix = "Error: ";
+        const message = error.message.substring(error.message.lastIndexOf(errorPrefix) + errorPrefix.length);
         this.mPlasticScm.channel.appendLine(`ERROR: ${message}`);
         await window.showErrorMessage(`Plastic SCM Checkin failed: ${message}`);
       }
@@ -82,10 +98,10 @@ export class CheckinCommand implements Disposable {
   }
 
   private getCheckinPaths(group: SourceControlResourceGroup): string[] {
-    const results = group.resourceStates.map(entry => {
+    const results = group.resourceStates.map((entry: SourceControlResourceState) => {
       const change = entry as PlasticScmResource;
       return change.isPrivate ? null : change.resourceUri.fsPath;
     });
-    return results.filter(path => path !== null);
+    return results.filter((p: string | null): p is string => p !== null);
   }
 }

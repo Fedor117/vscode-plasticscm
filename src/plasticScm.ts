@@ -1,5 +1,6 @@
 
 import * as os from "os";
+import { CheckinCommand, UndoCheckoutAllCommand, UndoCheckoutCommand } from "./commands";
 import { CmShell, ICmShell } from "./cm/shell";
 import {
   Disposable,
@@ -7,7 +8,6 @@ import {
   window as VsCodeWindow,
   workspace as VsCodeWorkspace,
 } from "vscode";
-import { CheckinCommand } from "./commands";
 import { GetWorkspaceFromPath } from "./cm/commands";
 import { IConfig } from "./config";
 import { IWorkspaceInfo } from "./models";
@@ -89,6 +89,8 @@ export class PlasticScm implements Disposable {
       this.mDisposables.push(new CheckinCommand(this));
       this.mDisposables.push(new RefreshCommand(this));
       this.mDisposables.push(new OpenFileCommand(this));
+      this.mDisposables.push(new UndoCheckoutCommand(this));
+      this.mDisposables.push(new UndoCheckoutAllCommand(this));
       this.mDisposables.push(new PlasticScmDecorations(this));
     }
   }

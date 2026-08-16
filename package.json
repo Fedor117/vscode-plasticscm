@@ -94,6 +94,18 @@
         "category": "Plastic SCM",
         "title": "Open File",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "plastic-scm.undoCheckout",
+        "category": "Plastic SCM",
+        "title": "Undo Checkout",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "plastic-scm.undoCheckoutAll",
+        "category": "Plastic SCM",
+        "title": "Undo All Checkouts",
+        "icon": "$(discard)"
       }
     ],
     "menus": {
@@ -107,6 +119,11 @@
           "command": "plastic-scm.refresh",
           "group": "navigation",
           "when": "scmProvider == plastic-scm"
+        },
+        {
+          "command": "plastic-scm.undoCheckoutAll",
+          "group": "navigation",
+          "when": "scmProvider == plastic-scm"
         }
       ],
       "scm/resourceState/context": [
@@ -114,6 +131,21 @@
           "command": "plastic-scm.openFile",
           "when": "scmProvider == plastic-scm && scmResourceGroup == status",
           "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.undoCheckout",
+          "when": "scmProvider == plastic-scm && scmResourceGroup == status",
+          "group": "inline@2"
+        },
+        {
+          "command": "plastic-scm.undoCheckout",
+          "when": "scmProvider == plastic-scm && scmResourceGroup == status",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "plastic-scm.checkin",
+          "when": "scmProvider == plastic-scm && scmResourceGroup == status",
+          "group": "1_modification@1"
         }
       ]
     }
