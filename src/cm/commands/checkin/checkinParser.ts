@@ -1,9 +1,8 @@
 import * as checkinChangeset from "./checkinChangeset";
-import * as os from "os";
+import { BaseCmParser } from "../baseCmParser";
 import { ICheckinChangeset } from "../../../models";
-import { ICmParser } from "../../shell";
 
-export class CheckinParser implements ICmParser<ICheckinChangeset[]> {
+export class CheckinParser extends BaseCmParser<ICheckinChangeset[]> {
   public static readonly SEPARATOR: string = "@#@";
   private static readonly CHANGESET_LINE_START: string = "CHANGESET";
   private static readonly CHANGESET_SEPARATOR: string = ",";
@@ -17,18 +16,6 @@ export class CheckinParser implements ICmParser<ICheckinChangeset[]> {
     mountPath: "invalid",
   };
 
-  private readonly mOutputBuffer: string[] = [];
-  private readonly mErrorBuffer: string[] = [];
-  private mParseError?: Error;
-
-  public readLineOut(line: string): void {
-    this.mOutputBuffer.push(line);
-  }
-
-  public readLineErr(line: string): void {
-    this.mErrorBuffer.push(line);
-  }
-
   public parse(): Promise<ICheckinChangeset[]> {
     const result = this.mOutputBuffer.reduce<ICheckinChangeset[]>(
       (previous: ICheckinChangeset[], line: string) => {
@@ -40,20 +27,6 @@ export class CheckinParser implements ICmParser<ICheckinChangeset[]> {
       }, []);
 
     return Promise.resolve(result);
-  }
-
-  public getError(): Error | undefined {
-    if (this.mParseError) {
-      return this.mParseError;
-    }
-
-    return this.mErrorBuffer.length !== 0
-      ? new Error(this.mErrorBuffer.join(os.EOL))
-      : undefined;
-  }
-
-  public getOutputLines(): string[] {
-    return this.mOutputBuffer.concat(this.mErrorBuffer);
   }
 
   private parseLine(line: string): ICheckinChangeset[] {

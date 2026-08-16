@@ -1,4 +1,4 @@
-import { ChangeType, IChangeInfo, IPendingChanges, WkConfigType } from "../../../../../models";
+import { ChangeType, IChangeInfo, IPendingChanges, RevisionType, WkConfigType } from "../../../../../models";
 import { ICmParser, ICmShell } from "../../../../../cm/shell";
 import { IMock, It, Mock, MockBehavior, Times } from "typemoq";
 import { expect } from "chai";
@@ -14,6 +14,7 @@ describe("Status command", () => {
           [
             "/foo.c", {
               path: Uri.file("/foo.c"),
+              revisionType: RevisionType.TextFile,
               type: ChangeType.Changed,
             },
           ],
@@ -116,9 +117,9 @@ describe("Status command", () => {
       }
     });
 
-    it("produces the expected error", () => {
+    it("surfaces the underlying error rather than a generic one", () => {
       expect(error).to.be.not.undefined;
-      expect(error!.message).to.equal("Command execution failed.");
+      expect(error!.message).to.equal("Sample error");
     });
 
     it("calls the expected shell methods", () => {
@@ -126,6 +127,33 @@ describe("Status command", () => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         mock => mock.exec(It.isAny(), It.isAny(), It.isAny()),
         Times.once());
+    });
+  });
+
+  context("When the command fails without saying why", () => {
+    const cmShellMock = Mock.ofType<ICmShell>(undefined, MockBehavior.Strict);
+    let error: Error | undefined;
+
+    cmShellMock
+      .setup(mock => mock.exec(
+        It.isAnyString(),
+        It.is(() => true),
+        It.is<ICmParser<IPendingChanges>>(() => true)))
+      .returns(() => Promise.resolve({
+        success: false,
+      }));
+
+    before(async () => {
+      try {
+        await Status.run("/path/to/wk", cmShellMock.object);
+      } catch (e) {
+        error = e as Error;
+      }
+    });
+
+    it("falls back to a generic error", () => {
+      expect(error).to.be.not.undefined;
+      expect(error!.message).to.equal("cm status failed.");
     });
   });
 });

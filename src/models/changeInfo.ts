@@ -30,8 +30,20 @@ export interface IWorkspaceConfig {
   readonly location: string;
 }
 
+/**
+ * Mirrors cm's `<RevisionType>` values. Reported by `cm status`, so the extension
+ * never has to read a file off disk to find out whether it is diffable.
+ */
+export enum RevisionType {
+  Unknown = "Unknown",
+  TextFile = "TextFile",
+  BinaryFile = "BinaryFile",
+  Directory = "Directory",
+}
+
 export interface IChangeInfo {
   readonly path: Uri;
   readonly oldPath?: Uri;
   readonly type: ChangeType;
+  readonly revisionType: RevisionType;
 }

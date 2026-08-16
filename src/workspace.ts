@@ -1,14 +1,6 @@
 import * as constants from "./constants";
 import * as events from "./events";
 import * as path from "path";
-import {
-  ChangeType,
-  IChangeInfo,
-  IPendingChanges,
-  IWorkspaceConfig,
-  IWorkspaceInfo,
-  WkConfigType,
-} from "./models";
 import { GetFile as CmGetFileCommand, Status as CmStatusCommand } from "./cm/commands";
 import {
   Disposable,
@@ -24,12 +16,19 @@ import {
   Uri,
   workspace as VsCodeWorkspace,
 } from "vscode";
+import {
+  IChangeInfo,
+  IPendingChanges,
+  IWorkspaceConfig,
+  IWorkspaceInfo,
+  WkConfigType,
+} from "./models";
 import { IWorkspaceOperations, WorkspaceOperation } from "./workspaceOperations";
+import { debounce } from "./decorators";
 import { ICmShell } from "./cm/shell";
 import { IConfig } from "./config";
-import { isBinaryFile } from "isbinaryfile";
 import { PlasticScmResource } from "./plasticScmResource";
-import { throttle } from "./decorators";
+import { toRevisionUri } from "./revisionContentProvider";
 
 export class Workspace implements Disposable, QuickDiffProvider {
 
@@ -81,8 +80,6 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
   private onDidChangeStatus: EventEmitter<void>;
 
-  private mFileIsBinary: Map<string, boolean>;
-
   public static async build(
       workspaceInfo: IWorkspaceInfo,
       shell: ICmShell,
@@ -106,13 +103,14 @@ export class Workspace implements Disposable, QuickDiffProvider {
     this.onDidChangeStatus = new EventEmitter<void>();
     this.onDidRunStatus = this.onDidChangeStatus.event;
 
-    this.mFileIsBinary = new Map<string, boolean>();
-
     this.mWkInfo = workspaceInfo;
     this.mShell = shell;
     this.mChannel = channel;
+    // Namespaced per workspace: a constant id makes every Plastic workspace in the
+    // window answer to the same `scmProvider` key, so menus and commands can't tell
+    // them apart. Menu `when` clauses match the prefix with `=~ /^plastic-scm/`.
     this.mSourceControl = scm.createSourceControl(
-      constants.extensionId,
+      `${constants.extensionId}:${workspaceInfo.id}`,
       constants.extensionDisplayName,
       Uri.file(workspaceInfo.path));
     this.mUnrealLevelsResourceGroup = this.mSourceControl.createResourceGroup(
@@ -126,11 +124,13 @@ export class Workspace implements Disposable, QuickDiffProvider {
     this.mConfig = config;
 
     const fsWatcher = VsCodeWorkspace.createFileSystemWatcher(new RelativePattern(workspaceInfo.path, "**"));
-    const onAnyFsOperationEvent: Event<Uri> = events.anyEvent(
-      fsWatcher.onDidChange,
-      fsWatcher.onDidCreate,
-      fsWatcher.onDidDelete,
-    );
+    const onAnyFsOperationEvent: Event<Uri> = events.filterEvent(
+      events.anyEvent(
+        fsWatcher.onDidChange,
+        fsWatcher.onDidCreate,
+        fsWatcher.onDidDelete,
+      ),
+      uri => this.isWatched(uri));
 
     this.mDisposables = Disposable.from(
       this.mSourceControl,
@@ -158,25 +158,21 @@ export class Workspace implements Disposable, QuickDiffProvider {
   }
 
   public async provideOriginalResource(uri: Uri): Promise<Uri | undefined> {
-    if (uri.scheme === "file") {
-      if (typeof this.mCurrentChangeset === "undefined") {
-        await this.mOperations.run(WorkspaceOperation.Status, async () => {
-          while (this.mShell.isBusy) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-          await this.updateWorkspaceStatus();
-        });
-      }
-
-      if (!this.mCurrentChangeset) {
-        return undefined;
-      }
-
-      return await CmGetFileCommand.run(this.mWkInfo.path, uri, this.mCurrentChangeset, this.mShell);
-
-    } else {
+    if (uri.scheme !== "file") {
       return undefined;
     }
+
+    if (typeof this.mCurrentChangeset === "undefined") {
+      await this.mOperations.run(WorkspaceOperation.Status, () => this.updateWorkspaceStatus());
+    }
+
+    if (!this.mCurrentChangeset) {
+      return undefined;
+    }
+
+    // Hand back a URI, not content: the content provider fetches it only if VS
+    // Code actually needs to render this gutter.
+    return toRevisionUri(this.mWkInfo.id, uri, this.mCurrentChangeset);
   }
 
   public async updateWorkspaceStatus(): Promise<void> {
@@ -187,6 +183,9 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
     this.mWorkspaceConfig = pendingChanges.workspaceConfig;
     this.mCurrentChangeset = pendingChanges.changeset;
+
+    void CmGetFileCommand.pruneCache(this.mWkInfo.path, pendingChanges.changeset).catch(
+      e => this.mChannel.appendLine(`Unable to prune the revision cache: ${(e as Error).message}`));
 
     const changeInfos: IChangeInfo[] = Array.from(pendingChanges.changes.values());
 
@@ -204,26 +203,6 @@ export class Workspace implements Disposable, QuickDiffProvider {
         continue;
       }
 
-      // prefetch original files for showing diff
-      const unallowedFlag = ChangeType.Added | ChangeType.Private | ChangeType.Deleted | ChangeType.Moved;
-      if (
-        (changeInfo.type & unallowedFlag) === 0
-      ) {
-        let cachedFileType = this.mFileIsBinary.get(changeInfo.path.toString());
-        if (typeof cachedFileType === "undefined") {
-          // get the file type
-          cachedFileType = await isBinaryFile(changeInfo.path.fsPath);
-          this.mFileIsBinary.set(changeInfo.path.toString(), cachedFileType);
-        }
-
-        if (cachedFileType === false) {
-          try {
-            await CmGetFileCommand.run(this.mWkInfo.path, changeInfo.path, pendingChanges.changeset, this.mShell);
-          } catch (e: any) {
-            this.mChannel.appendLine(`Error trying to get file ${changeInfo.path.toString()}: ${(e as Error).message}`);
-          }
-        }
-      }
       sourceControlResources.push(new PlasticScmResource(changeInfo, this));
     }
 
@@ -295,7 +274,11 @@ export class Workspace implements Disposable, QuickDiffProvider {
     this.onDidChangeStatus.fire();
   }
 
-  @throttle(1000)
+  /**
+   * Debounced rather than throttled: an editor save or a Unity import arrives as a
+   * burst of events, and only the state after the burst is worth a status call.
+   */
+  @debounce(1500)
   private async onFileChanged(): Promise<void> {
     if (!this.mConfig.autorefresh) {
       return;
@@ -309,12 +292,24 @@ export class Workspace implements Disposable, QuickDiffProvider {
       return;
     }
 
-    await this.mOperations.run(WorkspaceOperation.Status, async () => {
-      while (this.mShell.isBusy) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      await this.updateWorkspaceStatus();
-    });
+    // The shell queues commands, so there is nothing to wait for here.
+    await this.mOperations.run(WorkspaceOperation.Status, () => this.updateWorkspaceStatus());
+  }
+
+  /**
+   * Unity and Unreal rewrite their intermediate directories constantly. Watching
+   * them means a refresh that can never keep up — and the revision cache lives
+   * under .plastic, so an unfiltered watcher retriggers itself forever.
+   */
+  private isWatched(uri: Uri): boolean {
+    const relativePath = path.relative(this.mWkInfo.path, uri.fsPath).replace(/\\/g, "/");
+
+    if (relativePath.startsWith("..")) {
+      return false;
+    }
+
+    const [topLevel] = relativePath.split("/");
+    return !this.mConfig.ignoredDirectories.includes(topLevel);
   }
 
   private getCheckinPlaceholder(wkConfig: IWorkspaceConfig) {

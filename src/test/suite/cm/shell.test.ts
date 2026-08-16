@@ -24,6 +24,7 @@ describe("CmShell", () => {
         channel.object,
         {
           cmPath: "cm",
+          millisCommandTimeout: 120000,
           millisToStop: 5000,
           millisToWaitUntilUp: 5000,
         });
@@ -56,7 +57,8 @@ describe("CmShell", () => {
         fail("Invalid response");
       }
       expect(response.error).to.be.not.undefined;
-      expect(response.error.message).to.equal("Shell wasn't running");
+      expect(response.error.message).to.equal(
+        "Unable to run command 'location' because the shell isn't running");
     });
 
     it("didn't produce a result", () => {

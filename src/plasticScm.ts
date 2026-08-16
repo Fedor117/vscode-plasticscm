@@ -1,6 +1,6 @@
 
 import * as os from "os";
-import { CheckinCommand, UndoCheckoutAllCommand, UndoCheckoutCommand } from "./commands";
+import { AddCommand, CheckinCommand, UndoCheckoutAllCommand, UndoCheckoutCommand } from "./commands";
 import { CmShell, ICmShell } from "./cm/shell";
 import {
   Disposable,
@@ -14,6 +14,8 @@ import { IWorkspaceInfo } from "./models";
 import { OpenFileCommand } from "./commands/openFile";
 import { PlasticScmDecorations } from "./decorations";
 import { RefreshCommand } from "./commands/refresh";
+import { RevisionContentProvider } from "./revisionContentProvider";
+import { ShowOutputCommand } from "./commands/showOutput";
 import { Workspace } from "./workspace";
 import { WorkspaceOperations } from "./workspaceOperations";
 
@@ -89,9 +91,12 @@ export class PlasticScm implements Disposable {
       this.mDisposables.push(new CheckinCommand(this));
       this.mDisposables.push(new RefreshCommand(this));
       this.mDisposables.push(new OpenFileCommand(this));
+      this.mDisposables.push(new AddCommand(this));
       this.mDisposables.push(new UndoCheckoutCommand(this));
       this.mDisposables.push(new UndoCheckoutAllCommand(this));
+      this.mDisposables.push(new ShowOutputCommand(this));
       this.mDisposables.push(new PlasticScmDecorations(this));
+      this.mDisposables.push(new RevisionContentProvider(this));
     }
   }
 

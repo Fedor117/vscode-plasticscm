@@ -1,27 +1,14 @@
-import * as os from "os";
 import * as xml2js from "xml2js";
-import { ChangeType, IChangeInfo, IPendingChanges, WkConfigType } from "../../../models";
+import { ChangeType, IChangeInfo, IPendingChanges, RevisionType, WkConfigType } from "../../../models";
 import { firstCharLowerCase, parseBooleans, parseNumbers } from "xml2js/lib/processors";
-import { ICmParser } from "../../shell";
+import { BaseCmParser } from "../baseCmParser";
 import { Uri } from "vscode";
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-export class StatusParser implements ICmParser<IPendingChanges> {
-  private readonly mOutputBuffer: string[] = [];
-  private readonly mErrorBuffer: string[] = [];
-  private mParseError?: Error;
-
-  public readLineOut(line: string): void {
-    this.mOutputBuffer.push(line);
-  }
-
-  public readLineErr(line: string): void {
-    this.mErrorBuffer.push(line);
-  }
-
+export class StatusParser extends BaseCmParser<IPendingChanges> {
   public async parse(): Promise<IPendingChanges | undefined> {
     const options: xml2js.OptionsV2 = {
       explicitArray: false,
@@ -41,20 +28,6 @@ export class StatusParser implements ICmParser<IPendingChanges> {
     }
   }
 
-  public getError(): Error | undefined {
-    if (this.mParseError) {
-      return this.mParseError;
-    }
-
-    return this.mErrorBuffer.length !== 0
-      ? new Error(this.mErrorBuffer.join(os.EOL))
-      : undefined;
-  }
-
-  public getOutputLines(): string[] {
-    return this.mOutputBuffer.concat(this.mErrorBuffer);
-  }
-
   private parseXml(statusOutput: IStatusOutput): IPendingChanges {
     const repSpec: string = [
       statusOutput.workspaceStatus.status.repSpec.name,
@@ -72,10 +45,11 @@ export class StatusParser implements ICmParser<IPendingChanges> {
       const newChange: IChangeInfo = {
         oldPath: change.oldPath ? Uri.file(normalizePath(change.oldPath)) : undefined,
         path: uri,
+        revisionType: REVISION_TYPES[change.revisionType] ?? RevisionType.Unknown,
         type: CHANGE_TYPES[change.type] ?? ChangeType.Controlled,
       };
 
-      changes.set(uri.path, this.mergeChanges(changes.get(uri.fsPath), newChange));
+      changes.set(uri.path, this.mergeChanges(changes.get(uri.path), newChange));
     });
 
     return {
@@ -98,6 +72,9 @@ export class StatusParser implements ICmParser<IPendingChanges> {
     return {
       oldPath: destination.oldPath ?? source.oldPath,
       path: destination.path,
+      revisionType: destination.revisionType !== RevisionType.Unknown
+        ? destination.revisionType
+        : source.revisionType,
       type: destination.type | source.type,
     };
   }
@@ -120,6 +97,18 @@ interface IStatusOutput {
   };
 }
 
+const REVISION_TYPES: { [key: string]: RevisionType } = {
+  enBinaryFile: RevisionType.BinaryFile,
+  enDirectory: RevisionType.Directory,
+  enTextFile: RevisionType.TextFile,
+};
+
+/**
+ * `IG` collapses into Private, which is safe only because status is run without
+ * `--ignored` and so never reports an ignored item. Adding that flag would make
+ * ignored files indistinguishable from private ones, and Discard Changes deletes
+ * private items from disk — split the two before ever passing it.
+ */
 const CHANGE_TYPES: { [key: string]: ChangeType } = {
   AD: ChangeType.Added,
   CH: ChangeType.Changed,

@@ -8,3 +8,12 @@ vsc-extension-quickstart.md
 **/tslint.json
 **/*.map
 **/*.ts
+
+# Agent and tooling state. vsce prunes node_modules only at the root, so a
+# worktree checked out under .claude drags its whole dependency tree into the
+# package: 8,653 files and 106 MB instead of 248 files and 1.1 MB.
+.claude/**
+.pi/**
+.pi-lens/**
+thoughts/**
+**/*.vsix

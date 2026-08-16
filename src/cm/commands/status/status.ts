@@ -22,7 +22,7 @@ export class Status {
       parser);
 
     if (!result.success) {
-      throw new Error("Command execution failed.");
+      throw result.error ?? new Error("cm status failed.");
     }
 
     if (result.error) {

@@ -3,6 +3,7 @@ import { Progress, ProgressLocation, window } from "vscode";
 export const enum WorkspaceOperation {
   Status = "Status",
   Checkin = "Checkin",
+  Add = "Add",
   UndoCheckout = "UndoCheckout",
 }
 
@@ -35,15 +36,26 @@ export class WorkspaceOperations implements IWorkspaceOperations {
     return true;
   }
 
-  public async run(operation: WorkspaceOperation, action: () => Promise<any>): Promise<any> {
+  public async run<T>(
+      operation: WorkspaceOperation,
+      action: () => Promise<T>): Promise<T> {
+
     this.start(operation);
-    await window.withProgress({
-      location: ProgressLocation.SourceControl,
-    }, async (progress: Progress<{ message?: string; increment?: number }>) => {
-      progress.report({});
-      await action();
-    });
-    this.end(operation);
+    try {
+      return await window.withProgress(
+        {
+          location: ProgressLocation.SourceControl,
+        },
+        async (progress: Progress<{ message?: string; increment?: number }>) => {
+          progress.report({});
+          return await action();
+        },
+      );
+    } finally {
+      // Without this, a single rejected action latches the operation as
+      // running forever, which silently kills autorefresh for the session.
+      this.end(operation);
+    }
   }
 
   private start(operation: WorkspaceOperation): void {

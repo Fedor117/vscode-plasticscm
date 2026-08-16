@@ -1,5 +1,5 @@
 import { commands, Disposable, SourceControlResourceGroup, SourceControlResourceState, window } from "vscode";
-import { findWorkspaceForResource, getSelectedResources } from "./scmUtils";
+import { findWorkspaceForResource, getSelectedResources, showOperationError } from "./scmUtils";
 import { Checkin as CmCheckinCommand } from "../cm/commands";
 import { PlasticScm } from "../plasticScm";
 import { PlasticScmResource } from "../plasticScmResource";
@@ -27,7 +27,7 @@ export class CheckinCommand implements Disposable {
     let workspace: Workspace | undefined;
     let checkinPaths: string[];
 
-    if (selectedResources && selectedResources.length > 0) {
+    if (selectedResources.length > 0) {
       workspace = findWorkspaceForResource(this.mPlasticScm, selectedResources[0]);
       checkinPaths = selectedResources
         .filter(r => !r.isPrivate)
@@ -69,11 +69,7 @@ export class CheckinCommand implements Disposable {
         workspace.sourceControl.inputBox.value = "";
         await workspace.updateWorkspaceStatus();
       } catch (e) {
-        const error = e as Error;
-        const errorPrefix = "Error: ";
-        const message = error.message.substring(error.message.lastIndexOf(errorPrefix) + errorPrefix.length);
-        this.mPlasticScm.channel.appendLine(`ERROR: ${message}`);
-        await window.showErrorMessage(`Plastic SCM Checkin failed: ${message}`);
+        await showOperationError(this.mPlasticScm, "Checkin", e);
       }
     });
   }

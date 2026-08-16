@@ -17,11 +17,28 @@ const defaultConfig: IConfig = {
   autorefresh: true,
   cmConfiguration: {
     cmPath: "cm",
+    millisCommandTimeout: 120000,
     millisToStop: 5000,
     millisToWaitUntilUp: 5000,
   },
   consolidateUnrealOneFilePerActorChanges: true,
   enabled: true,
+  ignoredDirectories: [
+    ".plastic",
+    ".git",
+    ".vs",
+    "Library",
+    "Temp",
+    "Logs",
+    "obj",
+    "Build",
+    "Builds",
+    "Binaries",
+    "DerivedDataCache",
+    "Intermediate",
+    "Saved",
+    "node_modules",
+  ],
 };
 
 let extension: Extension;
@@ -121,6 +138,14 @@ class Extension implements Disposable {
 
     if (!config.cmConfiguration.cmPath) {
       config.cmConfiguration.cmPath = defaultConfig.cmConfiguration.cmPath;
+    }
+
+    if (!config.cmConfiguration.millisCommandTimeout) {
+      config.cmConfiguration.millisCommandTimeout = defaultConfig.cmConfiguration.millisCommandTimeout;
+    }
+
+    if (!config.ignoredDirectories) {
+      config.ignoredDirectories = defaultConfig.ignoredDirectories;
     }
     return config;
   }

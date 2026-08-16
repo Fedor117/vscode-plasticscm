@@ -1,30 +1,13 @@
 import * as os from "os";
+import { BaseCmParser } from "../baseCmParser";
 import { CommandInfo } from "./commandInfo";
-import { ICmParser } from "../../shell";
 import { IWorkspaceInfo } from "../../../models";
 
-export class GetWorkspaceFromPathParser implements ICmParser<IWorkspaceInfo> {
-  private mOutputBuffer: string[];
-  private mErrorBuffer: string[];
-  private mError: Error | undefined;
-
-  public constructor() {
-    this.mOutputBuffer = [];
-    this.mErrorBuffer = [];
-  }
-
-  public readLineOut(line: string): void {
-    this.mOutputBuffer.push(line);
-  }
-
-  public readLineErr(line: string): void {
-    this.mErrorBuffer.push(line);
-  }
-
+export class GetWorkspaceFromPathParser extends BaseCmParser<IWorkspaceInfo> {
   public parse(): Promise<IWorkspaceInfo | undefined> {
     const nonEmptyLines: string[] = this.mOutputBuffer.filter(line => line.trim());
     if (nonEmptyLines.length > 1) {
-      this.mError = new Error(this.mErrorBuffer.concat(
+      this.mParseError = new Error(this.mErrorBuffer.concat(
         "Unexpected output:", ...this.mOutputBuffer).join(os.EOL));
       return Promise.resolve(undefined);
     }
@@ -38,24 +21,8 @@ export class GetWorkspaceFromPathParser implements ICmParser<IWorkspaceInfo> {
       });
     }
 
-    this.mError = new Error(this.mErrorBuffer.concat(
+    this.mParseError = new Error(this.mErrorBuffer.concat(
       [ "Parsing failed:", ...this.mOutputBuffer ]).join(os.EOL));
     return Promise.resolve(undefined);
-  }
-
-  public getError(): Error | undefined {
-    if (this.mError) {
-      return this.mError;
-    }
-
-    if (this.mErrorBuffer.length === 0) {
-      return undefined;
-    }
-
-    return new Error(this.mErrorBuffer.join(os.EOL));
-  }
-
-  public getOutputLines(): string[] {
-    return this.mOutputBuffer.concat(this.mErrorBuffer);
   }
 }

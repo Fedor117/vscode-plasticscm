@@ -9,8 +9,7 @@ export class RefreshCommand implements Disposable {
   public constructor(plasticScm: PlasticScm) {
     this.mPlasticScm = plasticScm;
     this.mDisposable = commands.registerCommand(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      "plastic-scm.refresh", args => this.execute(args));
+      "plastic-scm.refresh", (...args: unknown[]) => this.execute(args));
   }
 
   public dispose(): void {
@@ -19,10 +18,11 @@ export class RefreshCommand implements Disposable {
     }
   }
 
-  private async execute(args: any[]): Promise<any> {
-    const workspace: Workspace | undefined = args instanceof Workspace ?
-      args as Workspace :
-      await this.mPlasticScm.promptUserToPickWorkspace();
+  private async execute(args: unknown[]): Promise<void> {
+    const firstArg = args.length > 0 ? args[0] : undefined;
+    const workspace: Workspace | undefined = firstArg instanceof Workspace
+      ? firstArg
+      : await this.mPlasticScm.promptUserToPickWorkspace();
 
     if (!workspace) {
       return;

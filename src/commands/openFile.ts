@@ -1,7 +1,6 @@
 import {
   commands,
   Disposable,
-  SourceControlResourceState,
   TextDocumentShowOptions,
   Uri,
   ViewColumn,
@@ -9,6 +8,7 @@ import {
 } from "vscode";
 import { ChangeType } from "../models";
 import { existsSync } from "fs";
+import { getSelectedResources } from "./scmUtils";
 import { PlasticScm } from "../plasticScm";
 import { PlasticScmResource } from "../plasticScmResource";
 
@@ -19,8 +19,7 @@ export class OpenFileCommand implements Disposable {
   public constructor(plasticScm: PlasticScm) {
     this.mPlasticScm = plasticScm;
     this.mDisposable = commands.registerCommand(
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-      "plastic-scm.openFile", args => this.execute(args));
+      "plastic-scm.openFile", (...args: unknown[]) => this.execute(args));
   }
 
   public dispose(): void {
@@ -29,29 +28,27 @@ export class OpenFileCommand implements Disposable {
     }
   }
 
-  public async execute(
-      arg?: PlasticScmResource | Uri,
-      ...resourceStates: SourceControlResourceState[]): Promise<void> {
-    const preserveFocus = arg instanceof PlasticScmResource;
+  public async execute(args: unknown[]): Promise<void> {
+    const first = args.length > 0 ? args[0] : undefined;
+    const preserveFocus = first instanceof PlasticScmResource;
 
     let uris: Uri[] | undefined;
 
-    if (arg instanceof Uri) {
-      if (arg.scheme === "file") {
-        uris = [arg];
+    if (first instanceof Uri) {
+      if (first.scheme === "file") {
+        uris = [first];
       }
     } else {
-      const resource = arg;
+      const resources = getSelectedResources(args);
 
-      // if (!(resource instanceof PlasticScmResource)) {
-      //   // can happen when called from a keybinding
-      //   resource = this.getSCMResource();
-      // }
-
-      if (resource) {
-        uris = ([ resource, ...resourceStates ] as PlasticScmResource[])
-          .filter(r => r.type !== ChangeType.Deleted)
-          .map(r => r.resourceUri);
+      if (resources.length > 0) {
+        // Directories are dropped as well as deletions: `vscode.open` on one just
+        // reports "the file is not displayed in the text editor because it is a
+        // directory". The menu already hides the entry, but a multi-selection can
+        // still drag a folder in alongside the file the user actually clicked.
+        uris = resources
+          .filter(resource => resource.type !== ChangeType.Deleted && !resource.isDirectory)
+          .map(resource => resource.resourceUri);
       } else if (window.activeTextEditor) {
         uris = [window.activeTextEditor.document.uri];
       }
