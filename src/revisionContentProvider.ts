@@ -11,18 +11,41 @@ import { PlasticScm } from "./plasticScm";
 
 export const revisionScheme = "plastic";
 
-interface IRevisionQuery {
+/** A file at a changeset, addressed by its workspace path (quick diff, SCM view). */
+interface IChangesetRevisionQuery {
   /** Workspace id, used to pick the shell that can serve this revision. */
   wkId: string;
   changeset: number;
 }
+
+/** A revision by id, addressed by its server path (history diffs). */
+interface IRevisionIdQuery {
+  wkId: string;
+  revid: number;
+  /** Repository spec; empty for the workspace's own repository. */
+  rep: string;
+}
+
+/** The empty side of a diff for an added or deleted item. */
+interface IEmptyRevisionQuery {
+  wkId: string;
+  empty: true;
+}
+
+/**
+ * Discriminated by which fields are present, because the JSON shape is the
+ * document identity: two `plastic:` URIs with the same path and different
+ * queries are distinct documents, which is what lets a diff show the same file
+ * under its old and new names.
+ */
+export type RevisionQuery = IChangesetRevisionQuery | IRevisionIdQuery | IEmptyRevisionQuery;
 
 /**
  * Builds the URI that identifies a file's content at a given changeset. The path
  * and extension are preserved so VS Code still picks the right language.
  */
 export function toRevisionUri(workspaceId: string, filePath: Uri, changeset: number): Uri {
-  const query: IRevisionQuery = {
+  const query: IChangesetRevisionQuery = {
     changeset,
     wkId: workspaceId,
   };
@@ -31,6 +54,86 @@ export function toRevisionUri(workspaceId: string, filePath: Uri, changeset: num
     query: JSON.stringify(query),
     scheme: revisionScheme,
   });
+}
+
+/**
+ * Identifies a file's content by revision id, for history diffs: the item may no
+ * longer exist at any workspace path. `serverPath` keeps the extension so VS
+ * Code still picks the right language.
+ */
+export function toRevisionIdUri(
+    workspaceId: string, serverPath: string, revisionId: number, repository: string): Uri {
+  const query: IRevisionIdQuery = {
+    rep: repository,
+    revid: revisionId,
+    wkId: workspaceId,
+  };
+
+  return Uri.from({
+    path: serverPath,
+    query: JSON.stringify(query),
+    scheme: revisionScheme,
+  });
+}
+
+/** The empty side of a diff for an added or deleted item. */
+export function toEmptyRevisionUri(workspaceId: string, serverPath: string): Uri {
+  const query: IEmptyRevisionQuery = {
+    empty: true,
+    wkId: workspaceId,
+  };
+
+  return Uri.from({
+    path: serverPath,
+    query: JSON.stringify(query),
+    scheme: revisionScheme,
+  });
+}
+
+/**
+ * Tolerant on purpose: a URI of this scheme that the extension did not build
+ * (or built in an older version) yields an empty document, not an exception.
+ */
+export function parseRevisionQuery(uri: Uri): RevisionQuery | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(uri.query);
+  } catch {
+    return undefined;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    return undefined;
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.wkId !== "string") {
+    return undefined;
+  }
+
+  if (candidate.empty === true) {
+    return { empty: true, wkId: candidate.wkId };
+  }
+
+  if (typeof candidate.revid === "number") {
+    return {
+      rep: typeof candidate.rep === "string" ? candidate.rep : "",
+      revid: candidate.revid,
+      wkId: candidate.wkId,
+    };
+  }
+
+  if (typeof candidate.changeset === "number") {
+    return { changeset: candidate.changeset, wkId: candidate.wkId };
+  }
+
+  return undefined;
+}
+
+function describeQuery(uri: Uri, query: IChangesetRevisionQuery | IRevisionIdQuery): string {
+  return "revid" in query
+    ? `${uri.path} at revid:${query.revid}`
+    : `${uri.fsPath} at cs:${query.changeset}`;
 }
 
 /**
@@ -53,8 +156,8 @@ export class RevisionContentProvider implements TextDocumentContentProvider, Dis
   }
 
   public async provideTextDocumentContent(uri: Uri, token: CancellationToken): Promise<string> {
-    const query = RevisionContentProvider.parseQuery(uri);
-    if (!query) {
+    const query = parseRevisionQuery(uri);
+    if (!query || "empty" in query) {
       return "";
     }
 
@@ -64,8 +167,10 @@ export class RevisionContentProvider implements TextDocumentContentProvider, Dis
     }
 
     try {
-      const cachedFile: Uri | undefined = await GetFile.run(
-        workspace.info.path, uri.with({ query: "", scheme: "file" }), query.changeset, workspace.shell);
+      const cachedFile: Uri | undefined = "revid" in query
+        ? await GetFile.runRevision(workspace.info.path, query.revid, query.rep, uri.path, workspace.shell)
+        : await GetFile.run(
+          workspace.info.path, uri.with({ query: "", scheme: "file" }), query.changeset, workspace.shell);
 
       if (!cachedFile || token.isCancellationRequested) {
         return "";
@@ -75,17 +180,8 @@ export class RevisionContentProvider implements TextDocumentContentProvider, Dis
     } catch (e) {
       // An empty left-hand side is a better diff than a failed editor. The real
       // reason goes to the output channel.
-      this.mPlasticScm.channel.appendLine(
-        `Unable to load ${uri.fsPath} at cs:${query.changeset}: ${(e as Error).message}`);
+      this.mPlasticScm.channel.appendLine(`Unable to load ${describeQuery(uri, query)}: ${(e as Error).message}`);
       return "";
-    }
-  }
-
-  private static parseQuery(uri: Uri): IRevisionQuery | undefined {
-    try {
-      return JSON.parse(uri.query) as IRevisionQuery;
-    } catch {
-      return undefined;
     }
   }
 }

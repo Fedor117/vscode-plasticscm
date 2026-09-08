@@ -30,6 +30,12 @@ import { IConfig } from "./config";
 import { PlasticScmResource } from "./plasticScmResource";
 import { toRevisionUri } from "./revisionContentProvider";
 
+/**
+ * History diffs are keyed by revision id, so unlike the per-changeset cache there
+ * is no "moved past it" signal; age is the only reasonable eviction rule.
+ */
+const REVISION_CACHE_MAX_AGE_MILLIS = 24 * 60 * 60 * 1000;
+
 export class Workspace implements Disposable, QuickDiffProvider {
 
   public get sourceControl(): SourceControl {
@@ -185,6 +191,8 @@ export class Workspace implements Disposable, QuickDiffProvider {
     this.mCurrentChangeset = pendingChanges.changeset;
 
     void CmGetFileCommand.pruneCache(this.mWkInfo.path, pendingChanges.changeset).catch(
+      e => this.mChannel.appendLine(`Unable to prune the changeset file cache: ${(e as Error).message}`));
+    void CmGetFileCommand.pruneRevisionCache(this.mWkInfo.path, REVISION_CACHE_MAX_AGE_MILLIS).catch(
       e => this.mChannel.appendLine(`Unable to prune the revision cache: ${(e as Error).message}`));
 
     const changeInfos: IChangeInfo[] = Array.from(pendingChanges.changes.values());
