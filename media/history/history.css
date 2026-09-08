@@ -1,0 +1,461 @@
+:root {
+  --history-row-height: 22px;
+  --history-lane-0: var(--vscode-scmGraph-historyItemRefColor,
+    var(--vscode-scmGraph-foreground1, var(--vscode-charts-blue)));
+  --history-lane-1: var(--vscode-scmGraph-historyItemBaseRefColor,
+    var(--vscode-scmGraph-foreground2, var(--vscode-charts-orange)));
+  --history-dim: var(--vscode-descriptionForeground);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: transparent;
+  overflow-x: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 18px;
+  padding: 2px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+button.secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+button.secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Inline actions inside rows: look like links, take no vertical space. */
+button.inline {
+  padding: 0 4px;
+  line-height: inherit;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+}
+
+button.inline:hover {
+  background: none;
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
+
+.workspace {
+  position: relative;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--history-row-height);
+  padding: 0 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.workspace-header .branch {
+  font-weight: normal;
+  text-transform: none;
+  color: var(--history-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Thin indeterminate bar for stale-while-revalidate reloads: the old rows stay put. */
+.progress {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 2px;
+  overflow: hidden;
+  background: transparent;
+}
+
+.progress-bar {
+  width: 25%;
+  height: 100%;
+  background: var(--vscode-progressBar-background, var(--vscode-textLink-foreground));
+  animation: history-progress 1.6s ease-in-out infinite;
+}
+
+@keyframes history-progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(500%); }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--history-dim);
+}
+
+.empty-state .message {
+  color: var(--vscode-foreground);
+  word-break: break-word;
+}
+
+.empty-state.error .message {
+  color: var(--vscode-errorForeground);
+}
+
+.empty-state .actions {
+  display: flex;
+  gap: 8px;
+}
+
+.empty-state .spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph {
+  position: relative;
+}
+
+svg.lanes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Above the rows so hover backgrounds never hide the lines. Nothing in this
+     layer may take the pointer: it covers the rows, and a shape that answers a
+     hit test swallows the click, the hover and the context menu of the row it
+     sits on. Anything a link has to say belongs in that row's tooltip. */
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+
+svg.lanes .link {
+  fill: none;
+  stroke-width: 2;
+}
+
+svg.lanes .link.dashed {
+  stroke-dasharray: 4 3;
+}
+
+svg.lanes .node {
+  stroke: none;
+}
+
+svg.lanes .node.current {
+  fill: none;
+  stroke-width: 2;
+}
+
+svg.lanes .lane-0 {
+  stroke: var(--history-lane-0);
+}
+
+svg.lanes .lane-1 {
+  stroke: var(--history-lane-1);
+}
+
+svg.lanes .node.lane-0 {
+  fill: var(--history-lane-0);
+}
+
+svg.lanes .node.lane-1 {
+  fill: var(--history-lane-1);
+}
+
+svg.lanes .node.current.lane-0,
+svg.lanes .node.current.lane-1 {
+  fill: none;
+}
+
+.rows {
+  position: relative;
+  outline: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--history-row-height);
+  line-height: var(--history-row-height);
+  padding-right: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.row:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.row.disabled,
+.row.loading,
+.row.error,
+.row.lane-loading,
+.row.lane-error,
+.row.lane-empty,
+.row.notice {
+  cursor: default;
+}
+
+.row.disabled {
+  color: var(--history-dim);
+}
+
+.row.disabled .status {
+  opacity: 0.6;
+}
+
+.row > * {
+  flex: 0 0 auto;
+}
+
+.graph-cell {
+  height: 100%;
+  flex: 0 0 auto;
+}
+
+.twistie {
+  width: 16px;
+  text-align: center;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+}
+
+.twistie.codicon {
+  font-size: 16px;
+  line-height: var(--history-row-height);
+}
+
+.subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 8px;
+}
+
+.subject.empty {
+  color: var(--history-dim);
+  font-style: italic;
+}
+
+/*
+ * The subject is the only elastic part of a row: a long comment must not
+ * squeeze the branch pills down to an ellipsis, which is what `flex-shrink: 1`
+ * on the labels did.
+ */
+.labels {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 40%;
+  min-width: 0;
+  margin-right: 8px;
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 10px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--vscode-scmGraph-historyItemHoverLabelForeground, var(--vscode-button-foreground));
+  overflow: hidden;
+}
+
+.label .label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label .codicon {
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.label.current {
+  background: var(--vscode-scmGraph-historyItemRefColor, var(--vscode-charts-blue));
+}
+
+.label.parent {
+  background: var(--vscode-scmGraph-historyItemBaseRefColor, var(--vscode-charts-orange));
+}
+
+.owner {
+  color: var(--history-dim);
+  flex: 0 0 auto;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: 8px;
+}
+
+.date {
+  color: var(--history-dim);
+  flex: 0 0 auto;
+  text-align: right;
+  min-width: 3ch;
+  white-space: nowrap;
+}
+
+.dim,
+.text.dim {
+  color: var(--history-dim);
+}
+
+.indent {
+  width: 16px;
+}
+
+.row.file .name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row.file .dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: 6px;
+  font-size: 0.9em;
+  color: var(--history-dim);
+}
+
+.status {
+  margin-left: 8px;
+  min-width: 2ch;
+  text-align: right;
+  font-weight: 600;
+}
+
+.status-A {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.status-C {
+  color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+.status-D {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.status-M {
+  color: var(--vscode-gitDecoration-renamedResourceForeground);
+}
+
+.row .text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row .spinner-icon {
+  margin-right: 6px;
+  color: var(--history-dim);
+}
+
+.row.more .text,
+.row.newer .text {
+  color: var(--vscode-textLink-foreground);
+}
+
+.row.more:hover .text,
+.row.newer:hover .text {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
+.row.loading .text,
+.row.lane-loading .text,
+.row.lane-empty .text,
+.row.notice .text {
+  color: var(--history-dim);
+}
+
+.row.error .text,
+.row.lane-error .text {
+  color: var(--vscode-errorForeground);
+}
+
+.row.lane-error .text {
+  flex: 0 1 auto;
+}
+
+/* A reload that failed while a graph is on screen: the rows stay, this explains. */
+.banner.error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  /* Sticky like the progress bar: in a long graph the reason the rows are stale
+     must not scroll away. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 12px;
+  /* Opaque: a sticky bar that lets rows show through it is unreadable. */
+  background: var(--vscode-inputValidation-errorBackground, var(--vscode-sideBar-background,
+    var(--vscode-editor-background)));
+  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+}
+
+.banner.error .message {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--vscode-errorForeground);
+  word-break: break-word;
+}
+
+.banner .actions {
+  display: flex;
+  gap: 8px;
+}

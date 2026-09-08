@@ -4,7 +4,7 @@
   "description": "Plastic SCM integration",
   "publisher": "plastic-scm",
   "license": "MIT",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icon": "images/logo.png",
   "homepage": "https://github.com/PlasticSCM/vscode-plasticscm/blob/master/README.md",
   "bugs": {
@@ -109,6 +109,14 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Controls whether discarding private (untracked) items moves them to the Recycle Bin (Windows) or Trash (macOS, Linux) instead of deleting them permanently. `cm` cannot undo a private item, so discarding one always means deleting it from disk."
+        },
+        "plastic-scm.history.pageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 500,
+          "markdownDescription": "Changesets fetched per branch on each page of the Plastic SCM Graph view. Each page is one `cm find` round trip to the server, and the view loads the current branch and its parent branch separately.",
+          "scope": "window"
         }
       }
     },
@@ -154,8 +162,48 @@
         "category": "Plastic SCM",
         "title": "Show Output",
         "icon": "$(output)"
+      },
+      {
+        "command": "plastic-scm.history.refresh",
+        "category": "Plastic SCM",
+        "title": "Refresh Graph",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.history.copyChangesetId",
+        "category": "Plastic SCM",
+        "title": "Copy Changeset Id"
+      },
+      {
+        "command": "plastic-scm.history.copyComment",
+        "category": "Plastic SCM",
+        "title": "Copy Comment"
+      },
+      {
+        "command": "plastic-scm.history.openFile",
+        "category": "Plastic SCM",
+        "title": "Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "plastic-scm.history.openChanges",
+        "category": "Plastic SCM",
+        "title": "Open Changes",
+        "icon": "$(diff)"
       }
     ],
+    "views": {
+      "scm": [
+        {
+          "type": "webview",
+          "id": "plastic-scm.history",
+          "name": "Plastic SCM Graph",
+          "contextualTitle": "Plastic SCM Graph",
+          "icon": "images/icons/iconsidebar.svg",
+          "when": "plastic-scm.active"
+        }
+      ]
+    },
     "menus": {
       "scm/title": [
         {
@@ -232,6 +280,53 @@
           "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status",
           "group": "1_modification@3"
         }
+      ],
+      "view/title": [
+        {
+          "command": "plastic-scm.history.refresh",
+          "group": "navigation",
+          "when": "view == plastic-scm.history"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "plastic-scm.history.copyChangesetId",
+          "group": "1_copy@1",
+          "when": "webviewId == plastic-scm.history && webviewSection == changeset"
+        },
+        {
+          "command": "plastic-scm.history.copyComment",
+          "group": "1_copy@2",
+          "when": "webviewId == plastic-scm.history && webviewSection == changeset"
+        },
+        {
+          "command": "plastic-scm.history.openChanges",
+          "group": "1_open@1",
+          "when": "webviewId == plastic-scm.history && webviewSection == file"
+        },
+        {
+          "command": "plastic-scm.history.openFile",
+          "group": "1_open@2",
+          "when": "webviewId == plastic-scm.history && webviewSection == file"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "plastic-scm.history.copyChangesetId",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.history.copyComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.history.openChanges",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.history.openFile",
+          "when": "false"
+        }
       ]
     }
   },
@@ -246,6 +341,7 @@
     "lint": "eslint src --fix"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.46-24",
     "byline": "^5.0.0",
     "uuid": "^11.1.0",
     "xml2js": "^0.6.2"

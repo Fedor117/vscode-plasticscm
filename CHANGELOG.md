@@ -4,6 +4,38 @@ All notable changes to the "plastic-scm" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.0] - 2026-09-07
+
+### Added
+
+- **Plastic SCM Graph** view in the Source Control pane, modelled on VS Code's
+  Git graph: the current branch and its parent branch as a lane graph with
+  branch labels, a marker on the loaded changeset, and merge / cherry-pick links
+  between the lanes. Click a changeset to expand the files it changed (`A`/`C`/
+  `M`/`D` badges); click a file to diff it against the parent changeset. Each
+  branch pages independently ("Load more"), the title bar has **Refresh Graph**,
+  and the context menu offers **Copy Changeset Id**, **Copy Comment**, **Open
+  Changes** and **Open File**.
+- `plastic-scm.history.pageSize` (number, default `50`, 10–500) — changesets
+  fetched per branch on each page of the graph.
+- Revision content by id (`plastic:` URIs carrying a `revid`), so history diffs
+  can show deleted and moved files that no longer exist at any workspace path.
+  Cached under `.plastic/fileCache/revisions`, pruned after 24 hours.
+
+### Changed
+
+- History queries run on a dedicated read-only `cm shell` per workspace, so they
+  never queue in front of a status refresh or a checkin.
+- Changeset 0 now counts as a valid loaded changeset instead of "unknown".
+
+### Fixed
+
+- A `cm shell` that timed out while starting left its process behind: disposing
+  the shell now kills it whether or not the start handshake completed.
+- A diff whose `cm getfile` was interrupted cached the half-written file and
+  served it as the revision from then on. Cached content is now published by
+  rename, so an entry either holds the whole revision or is absent.
+
 ## [0.2.0] - 2026-08-16
 
 First release of this fork, aimed at closing the gap with VS Code's built-in Git

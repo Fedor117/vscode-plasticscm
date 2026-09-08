@@ -59,7 +59,8 @@ export class Workspace implements Disposable, QuickDiffProvider {
   }
 
   public get currentChangeset(): number {
-    return this.mCurrentChangeset || -1;
+    // `??`, not `||`: changeset 0 is a real (if empty) place to be.
+    return this.mCurrentChangeset ?? -1;
   }
 
   public get operations(): IWorkspaceOperations {

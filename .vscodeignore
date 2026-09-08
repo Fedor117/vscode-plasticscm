@@ -17,3 +17,11 @@ vsc-extension-quickstart.md
 .pi-lens/**
 thoughts/**
 **/*.vsix
+
+# Codicons: the graph webview loads only the font and its stylesheet. The package
+# also ships 640+ SVG sources and its build tooling, which triple the .vsix.
+node_modules/@vscode/codicons/**
+!node_modules/@vscode/codicons/dist/codicon.css
+!node_modules/@vscode/codicons/dist/codicon.ttf
+!node_modules/@vscode/codicons/LICENSE
+!node_modules/@vscode/codicons/package.json

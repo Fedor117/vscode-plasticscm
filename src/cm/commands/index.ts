@@ -6,3 +6,7 @@ export { Status } from "./status/status";
 export { Checkin } from "./checkin/checkin";
 export { Undo } from "./undo/undo";
 export { UndoCheckout } from "./undoCheckout/undoCheckout";
+export { DiffChangeset } from "./diffChangeset/diffChangeset";
+export { FindBranch } from "./findBranch/findBranch";
+export { FindChangesets, IChangesetQuery } from "./findChangesets/findChangesets";
+export { FindMerges } from "./findMerges/findMerges";

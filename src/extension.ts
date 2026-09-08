@@ -5,6 +5,7 @@ import {
   Event,
   ExtensionContext,
   OutputChannel,
+  Uri,
   window,
   workspace,
 } from "vscode";
@@ -23,6 +24,9 @@ const defaultConfig: IConfig = {
   },
   consolidateUnrealOneFilePerActorChanges: true,
   enabled: true,
+  history: {
+    pageSize: 50,
+  },
   ignoredDirectories: [
     ".plastic",
     ".git",
@@ -44,7 +48,7 @@ const defaultConfig: IConfig = {
 let extension: Extension;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-  extension = new Extension();
+  extension = new Extension(context.extensionUri);
   context.subscriptions.push(extension);
   await extension.start();
 }
@@ -58,8 +62,10 @@ class Extension implements Disposable {
   private mPlasticScm?: PlasticScm;
   private mConfig: IConfig;
   private mDisposables: Disposable;
+  private readonly mExtensionUri: Uri;
 
-  public constructor() {
+  public constructor(extensionUri: Uri) {
+    this.mExtensionUri = extensionUri;
     this.mOutputChannel = window.createOutputChannel("Plastic SCM");
     this.mConfig = Extension.getConfiguration();
 
@@ -82,7 +88,7 @@ class Extension implements Disposable {
       return;
     }
 
-    this.mPlasticScm = new PlasticScm(this.mOutputChannel);
+    this.mPlasticScm = new PlasticScm(this.mOutputChannel, this.mExtensionUri);
     await this.mPlasticScm.initialize(this.mConfig);
   }
 
@@ -147,6 +153,16 @@ class Extension implements Disposable {
     if (!config.ignoredDirectories) {
       config.ignoredDirectories = defaultConfig.ignoredDirectories;
     }
+
+    // A page below 10 makes the graph useless; above 500 one `cm find` takes so
+    // long that the graph looks stuck, and every later page waits behind it on
+    // the history shell.
+    const pageSize = config.history?.pageSize;
+    config.history = {
+      pageSize: typeof pageSize === "number" && Number.isFinite(pageSize)
+        ? Math.min(500, Math.max(10, Math.floor(pageSize)))
+        : defaultConfig.history.pageSize,
+    };
     return config;
   }
 }

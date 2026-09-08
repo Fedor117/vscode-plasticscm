@@ -33,6 +33,9 @@ With this plugin, you can use Plastic SCM as your SCM tool.
 6. Group changes to assets from Unreal Engine 5 One File Per Actor (OFPA) in the
    "Dirty Unreal Levels" resource group, coalesced under the name(s) of the
    corresponding map(s)
+7. **Changeset graph** of the current branch and its parent branch, in the Source
+   Control pane like VS Code's Git graph — expand a changeset to see the files it
+   changed, click a file to diff it against the parent changeset
 
 ## Install
 
@@ -64,6 +67,7 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.millisToWaitUntilUp`    |`number` |`5000`   |Time to wait for the shell to start
 |`plastic-scm.cmConfiguration.millisToStop`           |`number` |`5000`   |Grace time to wait for a shell to close
 |`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted
+|`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 
 ## Commands
 
@@ -105,6 +109,29 @@ When editing a tracked text file, you'll see VS Code show inline gutter color
 indicators for lines added, changed, or removed, as with Git. Click any modified
 text file in the Source Control panel to open a full-file diff against the
 current changeset.
+
+### Graph
+
+The **Plastic SCM Graph** view sits below the workspace status in the Source
+Control pane and works like VS Code's Git graph. VS Code decides how much room a
+contributed section gets, so the first time you open Source Control the graph may
+be collapsed: click its header once and VS Code remembers it from then on.
+
+It shows the changesets of the current branch and of its parent branch as a lane
+graph: branch labels, a hollow ring on the changeset your workspace is loaded at,
+and the merge and cherry-pick links between the two branches.
+
+Click a changeset to list the files it changed, with the same `A`/`C`/`M`/`D`
+badges as the status view. Click a file to open a diff against the parent
+changeset — deleted and moved files included, because the content is fetched by
+revision id rather than by workspace path. Each branch pages independently with a
+**Load more** row; the title bar has a **Refresh Graph** button, and the context
+menu offers **Copy Changeset Id**, **Copy Comment**, **Open Changes** and
+**Open File**.
+
+History queries run on a separate `cm shell`, so they never delay a status
+refresh or a checkin. A branch that gained changesets since the view loaded shows
+a *New changesets* row instead of reloading under you.
 
 ### Show Output
 
