@@ -62,9 +62,10 @@ export class CmShell implements ICmShell {
 
   public dispose(): void {
     this.mDisposables.dispose();
-    if (this.mProcess && this.isRunning) {
-      this.mProcess.kill();
-    }
+    // `isRunning` only says the start handshake completed: a shell that timed out
+    // waiting for it still has a spawned cm process, and killing an already
+    // exited one is a no-op.
+    this.mProcess?.kill();
   }
 
   public async start(): Promise<boolean> {
@@ -315,8 +316,21 @@ export class CmShell implements ICmShell {
   }
 
   private write(commandLine: string) {
-    this.mChannel.appendLine(`${this.mStartDir}> ${commandLine}`);
-    this.mProcess?.stdin?.write(commandLine + os.EOL);
+    try {
+      this.mChannel.appendLine(`${this.mStartDir}> ${commandLine}`);
+      this.mProcess?.stdin?.write(commandLine + os.EOL);
+    } catch (e) {
+      // While the shell is up a caller is waiting on this command, and a write
+      // that never happened would leave it waiting for the command timeout.
+      if (this.mbIsRunning) {
+        throw e;
+      }
+
+      // `stop()` clears that flag before writing `exit`, and it runs at extension
+      // teardown where the output channel may already be gone: its `appendLine`
+      // then throws "Channel has been closed". There is nowhere left to report
+      // that to, and nothing left to tell the shell.
+    }
   }
 
   private async waitUntilFileDeleted(filePath: string, timeout: number): Promise<boolean> {
