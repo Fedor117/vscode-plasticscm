@@ -32,6 +32,12 @@ interface IDump {
   readonly emptyState?: string;
   readonly progress: boolean;
   readonly links: number;
+  /** Stubs standing in for merge sources that are not drawn; `offgraph` ones have no lane either. */
+  readonly stubs: number;
+  readonly offgraph: number;
+  readonly stubEnds: number;
+  /** Hooks pointing up: the other end of the link is newer than this row. */
+  readonly stubsUp: number;
 }
 
 /**
@@ -65,6 +71,10 @@ const PROBE = `
       bannerRole: banner ? banner.getAttribute("role") || undefined : undefined,
       emptyState: root.querySelector(".empty-state") ? textOf(root.querySelector(".empty-state .message")) : undefined,
       links: root.querySelectorAll("svg.lanes .link").length,
+      offgraph: root.querySelectorAll("svg.lanes .link.stub.offgraph").length,
+      stubEnds: root.querySelectorAll("svg.lanes .link.stub .stub-end").length,
+      stubs: root.querySelectorAll("svg.lanes .link.stub").length,
+      stubsUp: root.querySelectorAll("svg.lanes .link.stub.up").length,
       progress: !!root.querySelector(".progress"),
       rows,
     };
@@ -218,12 +228,51 @@ function model(): IGraphModel {
   return {
     currentLoaded: true,
     lanes: [
-      { branch: "/main/task", count: 2, hasMore: false, hasNewer: false, kind: "current", loading: false },
-      { branch: "/main", count: 1, hasMore: false, hasNewer: false, kind: "parent", loading: false },
+      { branch: "/main/task", count: 2, hasMore: false, hasNewer: false, hidden: 0, kind: "current", loading: false },
+      { branch: "/main", count: 1, hasMore: false, hasNewer: false, hidden: 0, kind: "parent", loading: false },
     ],
     links: [
-      { fromId: 20, kind: "parent", toId: 19 },
-      { fromId: 20, kind: "merge", mergeType: "cherrypick", toId: 10 },
+      {
+        fromBranch: "/main/task",
+        fromId: 20,
+        fromLoaded: true,
+        kind: "parent",
+        toBranch: "/main/task",
+        toId: 19,
+        toLoaded: true,
+      },
+      {
+        fromBranch: "/main/task",
+        fromId: 20,
+        fromLoaded: true,
+        kind: "merge",
+        mergeType: "cherrypick",
+        toBranch: "/main",
+        toId: 10,
+        toLoaded: true,
+      },
+      // A merge from a branch that is not a lane: the source is not loaded.
+      {
+        fromBranch: "/main/task",
+        fromId: 19,
+        fromLoaded: true,
+        kind: "merge",
+        mergeType: "merge",
+        toBranch: "/main/release",
+        toId: 5,
+        toLoaded: false,
+      },
+      // A merge of 19 into a branch that is not a lane: the destination is not loaded.
+      {
+        fromBranch: "/main/other",
+        fromId: 30,
+        fromLoaded: false,
+        kind: "merge",
+        mergeType: "merge",
+        toBranch: "/main/task",
+        toId: 19,
+        toLoaded: true,
+      },
     ],
     rows: [
       {
@@ -339,7 +388,7 @@ describe("Graph webview client", function() {
     expect(changesets.map(row => row.key)).to.eql([ `${WK_ID}:20`, `${WK_ID}:19`, `${WK_ID}:10` ]);
     expect(changesets[0].labels).to.eql(["/main/task"]);
     expect(changesets[2].labels).to.eql(["/main"]);
-    expect(dump.links).to.equal(2);
+    expect(dump.links, "two full links and a stub for each unloaded end").to.equal(4);
     expect(dump.banner).to.be.undefined;
     expect(dump.progress).to.be.false;
   });
@@ -389,11 +438,49 @@ describe("Graph webview client", function() {
     expect(lanes.values).to.eql(["none"]);
   });
 
-  it("puts what a cherry-pick link means into the tooltip of the row it lands on", async () => {
+  it("explains a link at both of its ends, naming the other branch and changeset", async () => {
     await harness.post({ type: "state", workspaces: [workspace()] });
 
     expect(await harness.probe<string>("rowTooltip", { key: `${WK_ID}:20` }))
-      .to.contain("Cherry-picked from cs:10");
+      .to.contain("Cherry-picked from /main cs:10");
+    // The end the line leaves from is a plain changeset; without this it reads
+    // as a merge marker on the wrong row.
+    expect(await harness.probe<string>("rowTooltip", { key: `${WK_ID}:10` }))
+      .to.contain("Cherry-picked into /main/task cs:20");
+  });
+
+  it("marks a merge from a branch the graph does not show with a stub, and names the source", async () => {
+    await harness.post({ type: "state", workspaces: [workspace()] });
+    const dump = await harness.dump();
+
+    expect(dump.offgraph, "no lane to bend toward, so the stubs are the neutral ones").to.equal(dump.stubs);
+    expect(dump.stubEnds, "every stub ends in a dot standing for the node that is not drawn").to.equal(dump.stubs);
+    expect(await harness.probe<string>("rowTooltip", { key: `${WK_ID}:19` }))
+      .to.contain("Merged from /main/release cs:5");
+  });
+
+  it("hooks upward for a merge into a changeset that is not loaded, and names the destination", async () => {
+    await harness.post({ type: "state", workspaces: [workspace()] });
+    const dump = await harness.dump();
+
+    expect(dump.stubs).to.equal(2);
+    expect(dump.stubsUp, "the destination is newer than the row, so its hook points up").to.equal(1);
+    expect(await harness.probe<string>("rowTooltip", { key: `${WK_ID}:19` }))
+      .to.contain("Merged into /main/other cs:30");
+  });
+
+  it("offers one Load more row, for the lane that bounds what can be shown", async () => {
+    const paged = model();
+    await harness.post({ type: "state", workspaces: [workspace({ model: {
+      ...paged,
+      lanes: [{ ...paged.lanes[0], hasMore: true }, paged.lanes[1] ],
+      loadMoreBranch: "/main/task",
+    }})] });
+    const dump = await harness.dump();
+
+    const more = dump.rows.filter(row => row.kind === "more");
+    expect(more).to.have.length(1);
+    expect(more[0].text).to.contain("Load more changesets");
   });
 
   it("tells the two rows of a delete and re-add pair apart by revision", async () => {

@@ -13,6 +13,11 @@
   const NODE_RADIUS = 4;
   const CURRENT_RADIUS = 5;
   const TAIL_HEIGHT = 11;
+  // A stub reaches a little further than a tail and ends in a dot: it stands in
+  // for a node, where a tail only says the line goes on.
+  const STUB_REACH = 10;
+  const STUB_HEIGHT = 12;
+  const STUB_END_RADIUS = 2;
   const SVG_NS = "http://www.w3.org/2000/svg";
   const NAVIGATION_KEYS = new Set(["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "]);
 
@@ -400,7 +405,8 @@
       div.setAttribute("aria-busy", "true");
       div.appendChild(spinner());
     }
-    div.appendChild(el("span", "text", `Load more changesets on ${lane.branch}…`));
+    div.title = `Loads the next page of ${lane.branch}`;
+    div.appendChild(el("span", "text", "Load more changesets…"));
     return div;
   }
 
@@ -545,16 +551,10 @@
     rows.setAttribute("role", "tree");
     rows.setAttribute("aria-label", ws.name);
 
-    const rowsByLane = model.lanes.map(() => []);
-    for (const row of model.rows) {
-      if (!rowsByLane[row.lane]) {
-        rowsByLane[row.lane] = [];
-      }
-      rowsByLane[row.lane].push(row);
-    }
-
+    // What each lane has to say about itself goes first; the changesets of all
+    // lanes then follow in one sequence, the way a Git graph lists them.
+    const parentHasRows = model.lanes.slice(1).some(lane => lane.count > 0);
     model.lanes.forEach((lane, index) => {
-      const laneRows = rowsByLane[index] || [];
       if (lane.hasNewer) {
         rows.appendChild(newerRow(ws, lane, cellWidth));
       }
@@ -564,23 +564,27 @@
       if (lane.error) {
         rows.appendChild(laneErrorRow(lane, cellWidth));
       }
-      const parentHasRows = rowsByLane.slice(1).some(list => list.length > 0);
-      if (index === 0 && !laneRows.length && parentHasRows && !lane.loading && !lane.error) {
+      if (index === 0 && lane.count === 0 && parentHasRows && !lane.loading && !lane.error) {
         rows.appendChild(laneEmptyRow(lane, cellWidth));
       }
-      for (const row of laneRows) {
-        rows.appendChild(changesetRow(ws, row, cellWidth));
-        if (isExpanded(ws.id, row.id)) {
-          rows.appendChild(filesGroup(ws, row, cellWidth));
-        }
-      }
-      if (index === 0 && !model.currentLoaded && ws.status === "ready") {
-        rows.appendChild(noticeRow(ws, cellWidth));
-      }
-      if (lane.hasMore) {
-        rows.appendChild(moreRow(ws, lane, cellWidth));
-      }
     });
+
+    for (const row of model.rows) {
+      rows.appendChild(changesetRow(ws, row, cellWidth));
+      if (isExpanded(ws.id, row.id)) {
+        rows.appendChild(filesGroup(ws, row, cellWidth));
+      }
+    }
+
+    if (!model.currentLoaded && ws.status === "ready") {
+      rows.appendChild(noticeRow(ws, cellWidth));
+    }
+    // One page at a time, for the lane that bounds what can be shown; loading it
+    // also releases the other lane's rows that were held back behind it.
+    const moreLane = model.lanes.find(lane => lane.branch === model.loadMoreBranch);
+    if (moreLane) {
+      rows.appendChild(moreRow(ws, moreLane, cellWidth));
+    }
 
     graph.appendChild(svg);
     graph.appendChild(rows);
@@ -590,21 +594,62 @@
 
   // ---------------------------------------------------------------- graph drawing
 
-  const MERGE_KIND_TEXT = {
+  const MERGE_IN_TEXT = {
     cherrypick: "Cherry-picked from",
     cherrypicksubtractive: "Subtractive cherry-pick from",
+    merge: "Merged from",
   };
 
-  /** Adds the link's meaning to the tooltip of the changeset it lands on. */
-  function describeLink(rowsEl, link) {
-    const rowEl = rowsEl.querySelector(`.row.changeset[data-id="${link.fromId}"]`);
-    if (!rowEl) {
-      return;
-    }
-    const text = `${MERGE_KIND_TEXT[link.mergeType] || link.mergeType} cs:${link.toId}`;
-    if (!rowEl.title.includes(text)) {
+  const MERGE_OUT_TEXT = {
+    cherrypick: "Cherry-picked into",
+    cherrypicksubtractive: "Subtractive cherry-pick into",
+    merge: "Merged into",
+  };
+
+  function appendTooltip(rowsEl, id, text) {
+    const rowEl = rowsEl.querySelector(`.row.changeset[data-id="${id}"]`);
+    if (rowEl && !rowEl.title.includes(text)) {
       rowEl.title = `${rowEl.title}\n\n${text}`;
     }
+  }
+
+  /**
+   * Puts the link's meaning into the tooltip of both changesets it touches. In the
+   * block layout its two ends can be hundreds of rows apart, and one of them may
+   * not be loaded at all, so each row has to explain its end of the line alone:
+   * a line arriving at a plain changeset otherwise reads as a merge marker on the
+   * wrong row, when it means that changeset was merged somewhere else.
+   */
+  function describeLink(rowsEl, link) {
+    const inText = MERGE_IN_TEXT[link.mergeType] || `${link.mergeType} from`;
+    const outText = MERGE_OUT_TEXT[link.mergeType] || `${link.mergeType} into`;
+    appendTooltip(rowsEl, link.fromId, `${inText} ${link.toBranch} cs:${link.toId}`);
+    appendTooltip(rowsEl, link.toId, `${outText} ${link.fromBranch} cs:${link.fromId}`);
+  }
+
+  /**
+   * A short hook with a dot at its tip, standing in for the other end of a merge
+   * link when that changeset is not loaded: a source on a branch with no lane,
+   * or a destination past the loaded pages. The hook points down when the other
+   * end is older and up when it is newer, bends toward the other end's lane when
+   * it has one, and is grey when it has not.
+   */
+  function mergeStub(position, otherLane, otherIsNewer) {
+    const known = otherLane >= 0 && otherLane !== position.lane;
+    const targetX = known ? laneX(otherLane) : position.x + STUB_REACH;
+    const sign = otherIsNewer ? -1 : 1;
+    const targetY = position.y + sign * STUB_HEIGHT;
+    const d = `M ${position.x} ${position.y}`
+      + ` C ${position.x} ${position.y + sign * 7}, ${targetX} ${position.y + sign * 4}, ${targetX} ${targetY}`;
+    const stub = svgEl("g");
+    stub.appendChild(svgEl("path", { d }));
+    // A line that just stops reads as a stray mark; a dot at its tip reads as a
+    // node that is off the graph, which is what it stands for.
+    const end = svgEl("circle", { cx: targetX, cy: targetY, r: STUB_END_RADIUS });
+    end.classList.add("node", "stub-end");
+    stub.appendChild(end);
+    stub.classList.add("link", "stub", otherIsNewer ? "up" : "down", known ? `lane-${otherLane}` : "offgraph");
+    return stub;
   }
 
   function drawGraph(section) {
@@ -640,32 +685,47 @@
     for (const link of model.links) {
       const from = positions.get(link.fromId);
       const to = positions.get(link.toId);
-      if (!from || !to) {
-        continue;
-      }
-      // Links are ordered by age, not by row: a merge into the parent lane has
-      // its newer endpoint drawn below its older one in the block layout.
-      const top = from.y <= to.y ? from : to;
-      const bottom = top === from ? to : from;
-      let shape;
-      if (top.lane === bottom.lane) {
-        shape = svgEl("line", { x1: top.x, x2: bottom.x, y1: top.y, y2: bottom.y });
-      } else {
-        const bend = top.y + ROW_HEIGHT / 2;
-        const d = `M ${top.x} ${top.y} C ${top.x} ${bend}, ${bottom.x} ${bend}, ${bottom.x} ${top.y + ROW_HEIGHT}`
-          + ` L ${bottom.x} ${bottom.y}`;
-        shape = svgEl("path", { d });
-      }
-      shape.classList.add("link", `lane-${bottom.lane}`);
-      if (link.kind === "merge" && link.mergeType && link.mergeType !== "merge") {
-        shape.classList.add("dashed");
+      const isMerge = link.kind === "merge";
+      if (isMerge) {
         // The link cannot carry the tooltip itself: the lane layer is painted over
         // the rows, and a shape that catches the pointer to show a title also
         // swallows the click and the context menu of the row beneath it.
         describeLink(rowsEl, link);
-        dashed.push(shape);
-      } else {
-        solid.push(shape);
+      }
+      const shapes = [];
+      if (from && to) {
+        // Rows are interleaved by id, so the older end is the lower one and a
+        // line between them reads the way time runs on the page.
+        let shape;
+        if (from.lane === to.lane) {
+          shape = svgEl("line", { x1: from.x, x2: to.x, y1: from.y, y2: to.y });
+        } else {
+          const bend = from.y + ROW_HEIGHT / 2;
+          const d = `M ${from.x} ${from.y} C ${from.x} ${bend}, ${to.x} ${bend}, ${to.x} ${from.y + ROW_HEIGHT}`
+            + ` L ${to.x} ${to.y}`;
+          shape = svgEl("path", { d });
+        }
+        shape.classList.add("link", `lane-${to.lane}`);
+        shapes.push(shape);
+      } else if (isMerge) {
+        // An end is not loaded: a source on a branch with no lane, or a
+        // destination past the loaded pages. The loaded end gets a hook pointing
+        // the way the other one lies in time.
+        const laneOf = branch => model.lanes.findIndex(lane => lane.branch === branch);
+        if (to) {
+          shapes.push(mergeStub(to, laneOf(link.fromBranch), true));
+        }
+        if (from) {
+          shapes.push(mergeStub(from, laneOf(link.toBranch), false));
+        }
+      }
+      for (const shape of shapes) {
+        if (isMerge && link.mergeType && link.mergeType !== "merge") {
+          shape.classList.add("dashed");
+          dashed.push(shape);
+        } else {
+          solid.push(shape);
+        }
       }
     }
     for (const shape of solid) {

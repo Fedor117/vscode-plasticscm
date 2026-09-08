@@ -360,7 +360,7 @@ export class WorkspaceHistory implements Disposable {
       this.notify();
 
       if (parentBranch) {
-        await this.loadParentLane(shell, generation, parentBranch, limitOf(parentBranch));
+        await this.loadParentLane(shell, generation, parentBranch, limitOf(parentBranch), position.changeset);
         if (!this.isCurrent(generation)) {
           return;
         }
@@ -443,9 +443,15 @@ export class WorkspaceHistory implements Disposable {
     return { changesets, hasMore };
   }
 
-  private async loadParentLane(shell: ICmShell, generation: number, branch: string, limit: number): Promise<void> {
+  /**
+   * The parent lane is paged past the workspace's changeset too: rows older than
+   * the parent's oldest loaded changeset are held back, so the current changeset
+   * only shows once the parent lane has been loaded that far.
+   */
+  private async loadParentLane(
+      shell: ICmShell, generation: number, branch: string, limit: number, ensureBelowId: number): Promise<void> {
     try {
-      const page = await this.fetchLane(shell, branch, limit);
+      const page = await this.fetchLane(shell, branch, limit, ensureBelowId);
       if (!this.isCurrent(generation)) {
         return;
       }
@@ -465,7 +471,9 @@ export class WorkspaceHistory implements Disposable {
    * previous links (still valid for the loaded ids) are kept.
    */
   private async refreshMerges(shell: ICmShell, generation: number): Promise<void> {
-    if (this.mLanes.length < 2 || !this.mCurrentBranch) {
+    // One lane is enough: a merge from a branch that has no lane is still drawn,
+    // as a stub on the changeset it produced.
+    if (this.mLanes.length === 0 || !this.mCurrentBranch) {
       return;
     }
 

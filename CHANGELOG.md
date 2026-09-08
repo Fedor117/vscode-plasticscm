@@ -4,6 +4,29 @@ All notable changes to the "plastic-scm" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.1] - 2026-09-08
+
+### Changed
+
+- **The graph lists both branches in one sequence, newest first, like VS Code's
+  Git graph**, instead of the current branch's changesets followed by the
+  parent's. Each branch keeps its own column, and a merge is a line from the
+  changeset it produced into the source's column. A single **Load more** row
+  pages the branch that bounds what can be shown; rows of the other branch from
+  below that point are held back until then, so a column never looks empty just
+  because its page has not loaded.
+
+### Fixed
+
+- **Merges from a branch that is not one of the two lanes were invisible.** They
+  are now drawn as a short grey hook ending in a dot on the changeset they
+  produced, and every changeset a link touches explains it in its tooltip
+  ("Merged from /main/release_2 cs:3591", "Merged into /main cs:3597").
+- The last loaded changeset of the current branch bent its line toward the parent
+  branch as if it were the fork, even when more pages were left to load.
+- Merge links are now loaded for a branch without a parent lane too, so merges
+  into `/main` show up on it.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added

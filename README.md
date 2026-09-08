@@ -117,17 +117,22 @@ Control pane and works like VS Code's Git graph. VS Code decides how much room a
 contributed section gets, so the first time you open Source Control the graph may
 be collapsed: click its header once and VS Code remembers it from then on.
 
-It shows the changesets of the current branch and of its parent branch as a lane
-graph: branch labels, a hollow ring on the changeset your workspace is loaded at,
-and the merge and cherry-pick links between the two branches.
+It shows the changesets of the current branch and of its parent branch in one
+list, newest first, each branch in its own column: branch labels, a hollow ring
+on the changeset your workspace is loaded at, and the merge and cherry-pick links
+between the two branches drawn as lines into the source's column. A merge whose
+other end is not loaded — from a branch that has no lane, say — is drawn as a
+short hook ending in a dot: pointing down when the other changeset is older, up
+when it is newer, grey when its branch is not shown. Hover a changeset to read
+where each of its lines comes from or goes to.
 
 Click a changeset to list the files it changed, with the same `A`/`C`/`M`/`D`
 badges as the status view. Click a file to open a diff against the parent
 changeset — deleted and moved files included, because the content is fetched by
-revision id rather than by workspace path. Each branch pages independently with a
-**Load more** row; the title bar has a **Refresh Graph** button, and the context
-menu offers **Copy Changeset Id**, **Copy Comment**, **Open Changes** and
-**Open File**.
+revision id rather than by workspace path. A single **Load more** row extends the
+graph a page at a time, keeping both branches loaded to the same point; the title
+bar has a **Refresh Graph** button, and the context menu offers **Copy Changeset
+Id**, **Copy Comment**, **Open Changes** and **Open File**.
 
 History queries run on a separate `cm shell`, so they never delay a status
 refresh or a checkin. A branch that gained changesets since the view loaded shows

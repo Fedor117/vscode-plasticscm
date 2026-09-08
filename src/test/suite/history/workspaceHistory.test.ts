@@ -382,8 +382,8 @@ describe("WorkspaceHistory", () => {
       expect(harness.history.model!.lanes.map(lane => lane.kind)).to.eql([ "current", "parent" ]);
     });
 
-    it("lists both lanes newest first without paging", () => {
-      expect(rowIds(harness)).to.eql([ 55, 45, 35, 25, 15, 50, 40, 30, 20, 10 ]);
+    it("lists both lanes in one sequence, newest first, without paging", () => {
+      expect(rowIds(harness)).to.eql([ 55, 50, 45, 40, 35, 30, 25, 20, 15, 10 ]);
       expect(harness.history.model!.lanes.map(lane => lane.hasMore)).to.eql([ false, false ]);
     });
 
@@ -622,7 +622,11 @@ describe("WorkspaceHistory", () => {
     it("appends the next page below the oldest loaded changeset", () => {
       const moreQuery = harness.repo.calls.filter(call => isLaneQuery(call, X))[1];
       expect(moreQuery.args[1]).to.equal(`where branch='${X}' and changesetid < 45 order by changesetid desc limit 2`);
-      expect(rowIds(harness)).to.eql([ 55, 45, 35, 25, 50, 40 ]);
+      // /main has pages left below 40, so X's 35 and 25 are held back until it
+      // is loaded that far; /main is now the lane to page.
+      expect(rowIds(harness)).to.eql([ 55, 50, 45, 40 ]);
+      expect(harness.history.model!.lanes[0]).to.include({ count: 4, hidden: 2 });
+      expect(harness.history.model!.loadMoreBranch).to.equal(MAIN);
       expect(harness.history.model!.lanes[0].hasMore).to.be.true;
       expect(harness.history.model!.lanes[0].loading).to.be.false;
       expect(harness.history.status).to.equal("ready");
@@ -636,7 +640,8 @@ describe("WorkspaceHistory", () => {
 
     it("clears hasMore on a short page and then ignores further requests", async () => {
       await harness.history.loadMore(X);
-      expect(rowIds(harness)).to.eql([ 55, 45, 35, 25, 15, 50, 40 ]);
+      expect(rowIds(harness)).to.eql([ 55, 50, 45, 40 ]);
+      expect(harness.history.model!.lanes[0]).to.include({ count: 5, hidden: 3 });
       expect(harness.history.model!.lanes[0].hasMore).to.be.false;
 
       const callCount = harness.repo.calls.length;
@@ -650,9 +655,10 @@ describe("WorkspaceHistory", () => {
       expect(harness.repo.calls).to.have.length(callCount);
     });
 
-    it("pages the parent lane independently", async () => {
+    it("releases the held-back rows as the parent lane catches up", async () => {
       await harness.history.loadMore(MAIN);
-      expect(rowIds(harness)).to.eql([ 55, 45, 35, 25, 15, 50, 40, 30, 20 ]);
+      expect(rowIds(harness)).to.eql([ 55, 50, 45, 40, 35, 30, 25, 20 ]);
+      expect(harness.history.model!.lanes[0]).to.include({ count: 5, hidden: 1 });
     });
 
     it("reports a failed page on the lane and keeps the rows", async () => {
@@ -771,13 +777,14 @@ describe("WorkspaceHistory", () => {
 
     it("keeps the previous model until the first lane arrives", () => {
       expect(statusWhileLoading).to.equal("loading");
-      expect(rowsWhileLoading).to.eql([ 55, 45, 35, 25, 50, 40 ]);
+      expect(rowsWhileLoading).to.eql([ 55, 50, 45, 40 ]);
     });
 
     it("reloads each lane as deep as it was", () => {
       const laneQueries = harness.repo.calls.filter(call => isLaneQuery(call, X)).map(call => call.args[1]);
       expect(laneQueries[laneQueries.length - 1]).to.equal(`where branch='${X}' order by changesetid desc limit 4`);
-      expect(rowIds(harness)).to.eql([ 55, 45, 35, 25, 50, 40 ]);
+      expect(harness.history.model!.lanes.map(lane => lane.count)).to.eql([ 4, 2 ]);
+      expect(rowIds(harness)).to.eql([ 55, 50, 45, 40 ]);
       expect(harness.history.status).to.equal("ready");
     });
 
@@ -832,7 +839,8 @@ describe("WorkspaceHistory", () => {
 
       release();
       await more;
-      expect(rowIds(harness)).to.eql([ 55, 45, 50, 40 ]);
+      // /main's 40 is held back behind X's oldest loaded 45 until X pages further.
+      expect(rowIds(harness)).to.eql([ 55, 50, 45 ]);
       expect(harness.history.model!.lanes[0].hasMore).to.be.true;
     });
 

@@ -171,6 +171,24 @@ svg.lanes .link.dashed {
   stroke-dasharray: 4 3;
 }
 
+/* A merge source the graph does not show: a third branch, or a page not loaded. */
+svg.lanes .link.offgraph {
+  stroke: var(--history-dim);
+}
+
+/* The dot at a stub's tip takes the colour of the line it ends. */
+svg.lanes .offgraph .stub-end {
+  fill: var(--history-dim);
+}
+
+svg.lanes .lane-0 .stub-end {
+  fill: var(--history-lane-0);
+}
+
+svg.lanes .lane-1 .stub-end {
+  fill: var(--history-lane-1);
+}
+
 svg.lanes .node {
   stroke: none;
 }

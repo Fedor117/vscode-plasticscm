@@ -27,7 +27,13 @@ export interface IGraphLane {
   readonly hasMore: boolean;
   readonly loading: boolean;
   readonly error?: string;
+  /** Loaded changesets, whether shown or held back. */
   readonly count: number;
+  /**
+   * Loaded changesets below the paging horizon, held back until the other lane
+   * has loaded that far; see `IGraphModel.loadMoreBranch`.
+   */
+  readonly hidden: number;
   readonly hasNewer: boolean;
 }
 
@@ -62,10 +68,7 @@ export interface IGraphRow {
 
 export type GraphLinkKind = "parent" | "merge";
 
-/**
- * Ordered by age, not by row: in the block layout a merge into the parent lane
- * has its newer endpoint rendered below its older one.
- */
+/** Ordered by age: `from` is the newer changeset, and so the one drawn higher. */
 export interface IGraphLink {
   /** The newer changeset (child, or merge destination). */
   readonly fromId: number;
@@ -73,14 +76,33 @@ export interface IGraphLink {
   readonly toId: number;
   readonly kind: GraphLinkKind;
   readonly mergeType?: string;
+  /** Branch of each end, so an end that is not loaded can still be named. */
+  readonly fromBranch: string;
+  readonly toBranch: string;
+  /**
+   * False when that changeset is not among the rows: a merge from a branch that
+   * has no lane, or from a page not loaded yet. The link then has one end only,
+   * and is drawn as a stub on the end it has.
+   */
+  readonly fromLoaded: boolean;
+  readonly toLoaded: boolean;
 }
 
 export interface IGraphModel {
   readonly lanes: IGraphLane[];
+  /** Interleaved by changeset id, newest first, across lanes. */
   readonly rows: IGraphRow[];
   readonly links: IGraphLink[];
-  /** False when the workspace's changeset is older than everything loaded. */
+  /** False when the workspace's changeset is older than everything shown. */
   readonly currentLoaded: boolean;
+  /**
+   * The lane whose next page would extend the graph: the one with more to load
+   * whose oldest loaded changeset is the newest among such lanes. Rows of other
+   * lanes older than that changeset are held back until it is loaded, so the
+   * graph never shows a stretch where a lane looks empty only because its page
+   * has not arrived. Undefined when no lane has more.
+   */
+  readonly loadMoreBranch?: string;
 }
 
 /** A changeset together with the lane it is drawn on, before the row is fleshed out. */
@@ -89,21 +111,35 @@ interface IRowSeed {
   readonly lane: number;
 }
 export function buildGraphModel(input: IGraphInput): IGraphModel {
-  const seeds = collectSeeds(input.lanes);
+  const loaded = collectSeeds(input.lanes);
+  const horizon = pagingHorizon(input.lanes);
+  const seeds = horizon === undefined ? loaded : loaded.filter(seed => seed.changeset.id >= horizon);
 
-  const laneById = new Map<number, number>();
   const counts: number[] = input.lanes.map(() => 0);
+  const hidden: number[] = input.lanes.map(() => 0);
   let oldestLane0Id: number | undefined;
-  for (const seed of seeds) {
-    laneById.set(seed.changeset.id, seed.lane);
+  for (const seed of loaded) {
     counts[seed.lane] += 1;
+    if (horizon !== undefined && seed.changeset.id < horizon) {
+      hidden[seed.lane] += 1;
+    }
+    // Over everything loaded, not just what is shown: the fork of the current
+    // branch is its oldest changeset, hidden or not.
     if (seed.lane === 0 && (oldestLane0Id === undefined || seed.changeset.id < oldestLane0Id)) {
       oldestLane0Id = seed.changeset.id;
     }
   }
 
+  const laneById = new Map<number, number>();
+  for (const seed of seeds) {
+    laneById.set(seed.changeset.id, seed.lane);
+  }
+
   const labelsById = collectLabels(input, seeds);
   const rows = seeds.map(seed => toRow(seed, input, laneById, oldestLane0Id, labelsById.get(seed.changeset.id) ?? []));
+  const bindingLane = horizon === undefined
+    ? undefined
+    : input.lanes.find(lane => lane.hasMore && oldestIdOf(lane) === horizon);
 
   return {
     currentLoaded: rows.some(row => row.isCurrent),
@@ -115,17 +151,21 @@ export function buildGraphModel(input: IGraphInput): IGraphModel {
       hasNewer: lane.headChangesetId !== undefined
         && lane.changesets.length > 0
         && lane.headChangesetId > lane.changesets[0].id,
+      hidden: hidden[index],
       kind: index === 0 ? "current" : "parent",
       loading: lane.loading,
     })),
     links: buildLinks(rows, input.merges, laneById),
+    ...bindingLane ? { loadMoreBranch: bindingLane.branch } : {},
     rows,
   };
 }
 
 /**
- * Block layout: lane 0's changesets, then lane 1's, each newest first. Interleaving
- * by date would zig-zag the lines the way `git log` does without `--topo-order`.
+ * Interleaved by changeset id, newest first, the way a Git graph lists the
+ * commits of every shown ref in one sequence. Ids grow monotonically within a
+ * repository, so this is the time order and a topological one at once: a parent
+ * always comes after its children, and each lane keeps its own column.
  */
 function collectSeeds(lanes: ILaneInput[]): IRowSeed[] {
   const laneByBranch = new Map<string, number>();
@@ -146,7 +186,28 @@ function collectSeeds(lanes: ILaneInput[]): IRowSeed[] {
       seeds.push({ changeset, lane: laneByBranch.get(changeset.branch) ?? fetchedLane });
     }
   });
-  return seeds;
+  return seeds.sort((left, right) => right.changeset.id - left.changeset.id);
+}
+
+/**
+ * The oldest changeset the graph may show. A lane with more pages says nothing
+ * about what lies below its oldest loaded changeset, so the other lane's rows
+ * from that stretch are held back until it catches up: shown early, they would
+ * run alongside a line that looks empty only because its page is not loaded.
+ */
+function pagingHorizon(lanes: ILaneInput[]): number | undefined {
+  let horizon: number | undefined;
+  for (const lane of lanes) {
+    const oldest = oldestIdOf(lane);
+    if (lane.hasMore && oldest !== undefined && (horizon === undefined || oldest > horizon)) {
+      horizon = oldest;
+    }
+  }
+  return horizon;
+}
+
+function oldestIdOf(lane: ILaneInput): number | undefined {
+  return lane.changesets[lane.changesets.length - 1]?.id;
 }
 
 function collectLabels(input: IGraphInput, seeds: IRowSeed[]): Map<number, IGraphLabel[]> {
@@ -193,7 +254,7 @@ function toRow(
     owner: changeset.owner,
     ownerShort: shortOwner(changeset.owner),
     parentId: changeset.parentId,
-    parentLane: parentLaneOf(seed, laneById, oldestLane0Id, input.lanes.length),
+    parentLane: parentLaneOf(seed, laneById, oldestLane0Id, input.lanes),
     parentLoaded: laneById.has(changeset.parentId),
     subject: subjectOf(changeset.comment),
   };
@@ -203,7 +264,7 @@ function parentLaneOf(
     seed: IRowSeed,
     laneById: Map<number, number>,
     oldestLane0Id: number | undefined,
-    laneCount: number): number {
+    lanes: ILaneInput[]): number {
   const { id, parentId } = seed.changeset;
   if (parentId < 0) {
     return -1;
@@ -212,9 +273,11 @@ function parentLaneOf(
   if (loadedLane !== undefined) {
     return loadedLane;
   }
-  // The oldest loaded changeset of the current branch is where it forked off the
-  // parent branch, so its unloaded parent lives on the parent lane, not its own.
-  if (seed.lane === 0 && id === oldestLane0Id && laneCount > 1) {
+  // Once the current branch is loaded to its end, its oldest changeset is where
+  // it forked off the parent branch, so the unloaded parent lives on the parent
+  // lane. While there are more pages the parent is just the next page: a tail
+  // bent toward the parent lane there would claim a fork that is not one.
+  if (seed.lane === 0 && id === oldestLane0Id && lanes.length > 1 && !lanes[0].hasMore) {
     return 1;
   }
   return seed.lane;
@@ -224,21 +287,34 @@ function buildLinks(rows: IGraphRow[], merges: IMergeLink[], laneById: Map<numbe
   const links: IGraphLink[] = [];
   const seen = new Set<string>();
   const keyOf = (fromId: number, toId: number): string => `${fromId}>${toId}`;
+  const branchById = new Map(rows.map(row => [ row.id, row.branch ]));
 
   for (const row of rows) {
     if (!row.parentLoaded) {
       continue;
     }
     seen.add(keyOf(row.id, row.parentId));
-    links.push({ fromId: row.id, kind: "parent", toId: row.parentId });
+    links.push({
+      fromBranch: row.branch,
+      fromId: row.id,
+      fromLoaded: true,
+      kind: "parent",
+      toBranch: branchById.get(row.parentId) ?? row.branch,
+      toId: row.parentId,
+      toLoaded: true,
+    });
   }
 
   for (const merge of merges) {
     const fromLane = laneById.get(merge.destinationChangesetId);
     const toLane = laneById.get(merge.sourceChangesetId);
+    // With neither end loaded there is no row to hang the link on.
+    if (fromLane === undefined && toLane === undefined) {
+      continue;
+    }
     // A same-lane link (a subtractive cherry pick inside one branch) is not ancestry
     // and would be drawn straight over the trunk line.
-    if (fromLane === undefined || toLane === undefined || fromLane === toLane) {
+    if (fromLane !== undefined && fromLane === toLane) {
       continue;
     }
     const key = keyOf(merge.destinationChangesetId, merge.sourceChangesetId);
@@ -247,10 +323,14 @@ function buildLinks(rows: IGraphRow[], merges: IMergeLink[], laneById: Map<numbe
     }
     seen.add(key);
     links.push({
+      fromBranch: merge.destinationBranch,
       fromId: merge.destinationChangesetId,
+      fromLoaded: fromLane !== undefined,
       kind: "merge",
       mergeType: merge.type,
+      toBranch: merge.sourceBranch,
       toId: merge.sourceChangesetId,
+      toLoaded: toLane !== undefined,
     });
   }
   return links;

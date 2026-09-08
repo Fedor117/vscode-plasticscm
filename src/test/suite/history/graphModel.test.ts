@@ -1,4 +1,11 @@
-import { buildGraphModel, IGraphInput, IGraphModel, IGraphRow, ILaneInput } from "../../../history/graphModel";
+import {
+  buildGraphModel,
+  IGraphInput,
+  IGraphLink,
+  IGraphModel,
+  IGraphRow,
+  ILaneInput,
+} from "../../../history/graphModel";
 import { IHistoryChangeset, IMergeLink } from "../../../models";
 import { expect } from "chai";
 
@@ -32,6 +39,19 @@ function mergeLink(
     destinationBranch: string,
     destinationChangesetId: number): IMergeLink {
   return { destinationBranch, destinationChangesetId, sourceBranch, sourceChangesetId, type };
+}
+
+/** The link the model emits for a loaded row whose parent is loaded too. */
+function parentLinkOf(fromId: number, fromBranch: string, toId: number, toBranch: string): IGraphLink {
+  return { fromBranch, fromId, fromLoaded: true, kind: "parent", toBranch, toId, toLoaded: true };
+}
+
+/** The link the model emits for a merge; both ends loaded unless `extra` says otherwise. */
+function mergeLinkOf(
+    fromId: number, fromBranch: string, toId: number, toBranch: string, extra: Partial<IGraphLink> = {}): IGraphLink {
+  return {
+    fromBranch, fromId, fromLoaded: true, kind: "merge", mergeType: "merge", toBranch, toId, toLoaded: true, ...extra,
+  };
 }
 
 function graphInput(lanes: ILaneInput[], overrides: Partial<IGraphInput> = {}): IGraphInput {
@@ -82,8 +102,15 @@ describe("Graph model", () => {
       model = build(twoLanes());
     });
 
-    it("lists lane 0's changesets then lane 1's, newest first, without interleaving", () => {
+    it("lists every changeset newest first", () => {
       expect(model.rows.map(row => row.id)).to.eql([ 2085, 2084, 2083, 2082, 2081, 2080 ]);
+    });
+
+    it("interleaves the lanes by changeset id, like a Git graph, instead of one block per lane", () => {
+      const lanes = twoLanes();
+      lanes[1].changesets.unshift(changeset(2203, main, 2082, "Newer main tip"));
+
+      expect(build(lanes).rows.map(row => row.id)).to.eql([ 2203, 2085, 2084, 2083, 2082, 2081, 2080 ]);
     });
 
     it("assigns each row to the lane of its branch", () => {
@@ -107,11 +134,11 @@ describe("Graph model", () => {
 
     it("emits one parent link per row with a loaded parent, in row order", () => {
       expect(model.links).to.eql([
-        { fromId: 2085, kind: "parent", toId: 2084 },
-        { fromId: 2084, kind: "parent", toId: 2083 },
-        { fromId: 2083, kind: "parent", toId: 2080 },
-        { fromId: 2082, kind: "parent", toId: 2081 },
-        { fromId: 2081, kind: "parent", toId: 2080 },
+        parentLinkOf(2085, task, 2084, task),
+        parentLinkOf(2084, task, 2083, task),
+        parentLinkOf(2083, task, 2080, main),
+        parentLinkOf(2082, main, 2081, main),
+        parentLinkOf(2081, main, 2080, main),
       ]);
     });
 
@@ -149,27 +176,31 @@ describe("Graph model", () => {
       const model = build(twoLanes(), { merges: [mergeLink("merge", main, 2081, task, 2084)] });
 
       expect(model.links).to.have.length(6);
-      expect(model.links[5]).to.eql({ fromId: 2084, kind: "merge", mergeType: "merge", toId: 2081 });
+      expect(model.links[5]).to.eql(mergeLinkOf(2084, task, 2081, main));
     });
 
-    it("links a merge into the parent lane with the newer endpoint rendered below the older one", () => {
-      const model = build(twoLanes(), { merges: [mergeLink("merge", task, 2083, main, 2082)] });
+    it("links a merge into the parent lane with its newer endpoint rendered above the older one", () => {
+      const lanes = twoLanes();
+      lanes[1].changesets.unshift(changeset(2203, main, 2082, "Merge of task"));
+      const model = build(lanes, { merges: [mergeLink("merge", task, 2084, main, 2203)] });
 
-      expect(model.links[5]).to.eql({ fromId: 2082, kind: "merge", mergeType: "merge", toId: 2083 });
-      expect(rowIndex(model, 2082)).to.be.greaterThan(rowIndex(model, 2083));
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([mergeLinkOf(2203, main, 2084, task)]);
+      expect(rowIndex(model, 2203)).to.be.lessThan(rowIndex(model, 2084));
     });
 
     it("keeps merges in both directions in input order after the parent links", () => {
-      const model = build(twoLanes(), {
+      const lanes = twoLanes();
+      lanes[1].changesets.unshift(changeset(2203, main, 2082, "Merge of task"));
+      const model = build(lanes, {
         merges: [
-          mergeLink("merge", task, 2083, main, 2082),
+          mergeLink("merge", task, 2084, main, 2203),
           mergeLink("merge", main, 2081, task, 2084),
         ],
       });
 
-      expect(model.links.slice(5)).to.eql([
-        { fromId: 2082, kind: "merge", mergeType: "merge", toId: 2083 },
-        { fromId: 2084, kind: "merge", mergeType: "merge", toId: 2081 },
+      expect(model.links.slice(6)).to.eql([
+        mergeLinkOf(2203, main, 2084, task),
+        mergeLinkOf(2084, task, 2081, main),
       ]);
     });
 
@@ -185,14 +216,40 @@ describe("Graph model", () => {
       expect(model.links.filter(link => link.kind === "merge")).to.eql([]);
     });
 
-    it("skips a merge whose source is not loaded", () => {
+    it("keeps a merge whose source is not loaded, so the row it produced still reads as a merge", () => {
       const model = build(twoLanes(), { merges: [mergeLink("merge", main, 50, task, 2085)] });
 
-      expect(model.links.filter(link => link.kind === "merge")).to.eql([]);
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([
+        mergeLinkOf(2085, task, 50, main, { toLoaded: false }),
+      ]);
     });
 
-    it("skips a merge whose destination is not loaded", () => {
+    it("keeps a merge from a branch that has no lane at all", () => {
+      const model = build(twoLanes(), { merges: [mergeLink("merge", "/main/release", 50, task, 2085)] });
+
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([
+        mergeLinkOf(2085, task, 50, "/main/release", { toLoaded: false }),
+      ]);
+    });
+
+    it("keeps a merge whose destination is not loaded, so the source row can say where it went", () => {
       const model = build(twoLanes(), { merges: [mergeLink("merge", task, 2085, main, 2241)] });
+
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([
+        mergeLinkOf(2241, main, 2085, task, { fromLoaded: false }),
+      ]);
+    });
+
+    it("keeps a cherry-pick from an unloaded changeset of the same branch, which is not a same-lane line", () => {
+      const model = build(twoLanes(), { merges: [mergeLink("cherrypick", task, 90, task, 2085)] });
+
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([
+        mergeLinkOf(2085, task, 90, task, { mergeType: "cherrypick", toLoaded: false }),
+      ]);
+    });
+
+    it("drops a merge with neither end loaded", () => {
+      const model = build(twoLanes(), { merges: [mergeLink("merge", main, 50, task, 60)] });
 
       expect(model.links.filter(link => link.kind === "merge")).to.eql([]);
     });
@@ -213,14 +270,70 @@ describe("Graph model", () => {
       });
 
       expect(model.links.filter(link => link.kind === "merge")).to.eql([
-        { fromId: 2084, kind: "merge", mergeType: "merge", toId: 2081 },
+        mergeLinkOf(2084, task, 2081, main),
       ]);
     });
 
-    it("ignores merges entirely when only one lane is loaded", () => {
+    it("skips a same-lane merge when only one lane is loaded", () => {
       const model = build([twoLanes()[1]], { merges: [mergeLink("merge", main, 2080, main, 2082)] });
 
       expect(model.links.filter(link => link.kind === "merge")).to.eql([]);
+    });
+
+    it("marks a merge into the only loaded lane from a branch it does not show", () => {
+      const model = build([twoLanes()[1]], { merges: [mergeLink("merge", "/main/release", 90, main, 2082)] });
+
+      expect(model.links.filter(link => link.kind === "merge")).to.eql([
+        mergeLinkOf(2082, main, 90, "/main/release", { toLoaded: false }),
+      ]);
+    });
+  });
+
+  context("paging horizon", () => {
+    it("shows everything and offers no page when no lane has more", () => {
+      const model = build(twoLanes());
+
+      expect(model.rows).to.have.length(6);
+      expect(model.lanes.map(entry => entry.hidden)).to.eql([ 0, 0 ]);
+      expect(model.loadMoreBranch).to.be.undefined;
+    });
+
+    it("holds back the other lane's rows older than the oldest loaded changeset of a lane with more", () => {
+      const lanes = twoLanes();
+      lanes[0] = { ...lanes[0], hasMore: true };
+      const model = build(lanes);
+
+      // /main's 2082..2080 are older than task's oldest loaded 2083, and task has
+      // pages left that may fall in between: shown now, /main would run along
+      // a task line that only looks empty.
+      expect(model.rows.map(row => row.id)).to.eql([ 2085, 2084, 2083 ]);
+      expect(model.lanes[1]).to.include({ count: 3, hidden: 3 });
+      expect(model.loadMoreBranch).to.equal(task);
+    });
+
+    it("names the lane that bounds the horizon as the one to load next", () => {
+      const lanes = twoLanes();
+      lanes[0] = { ...lanes[0], hasMore: true };
+      lanes[1] = { ...lanes[1], hasMore: true };
+
+      expect(build(lanes).loadMoreBranch).to.equal(task);
+      lanes[0] = { ...lanes[0], hasMore: false };
+      expect(build(lanes).loadMoreBranch).to.equal(main);
+      expect(build(lanes).rows).to.have.length(6);
+    });
+
+    it("does not bend a held-back branch's last shown row toward the parent lane", () => {
+      const model = build([
+        lane(task, [ changeset(2087, task, 2085), changeset(2085, task, 2083), changeset(2083, task, 2080) ]),
+        lane(main, [ changeset(2203, main, 2086), changeset(2086, main, 2084) ], { hasMore: true }),
+      ]);
+
+      // 2087 is the last task row shown, but not the fork: 2085 and 2083 are only
+      // held back until /main is loaded that far.
+      expect(model.rows.map(row => row.id)).to.eql([ 2203, 2087, 2086 ]);
+      const last = rowOf(model, 2087);
+      expect(last.parentLoaded).to.be.false;
+      expect(last.parentLane).to.equal(0);
     });
   });
 
@@ -332,8 +445,8 @@ describe("Graph model", () => {
 
     it("links the remaining rows to their parents", () => {
       expect(model.links).to.eql([
-        { fromId: 2082, kind: "parent", toId: 2081 },
-        { fromId: 2081, kind: "parent", toId: 2080 },
+        parentLinkOf(2082, main, 2081, main),
+        parentLinkOf(2081, main, 2080, main),
       ]);
     });
   });
@@ -355,6 +468,19 @@ describe("Graph model", () => {
       const fork = rowOf(model, 2083);
       expect(fork.parentLoaded).to.be.false;
       expect(fork.parentLane).to.equal(1);
+    });
+
+    it("stays on lane 0 for the oldest row while the branch has more pages to load", () => {
+      const lanes = twoLanes();
+      lanes[1].changesets.pop();
+      lanes[0] = { ...lanes[0], hasMore: true };
+      const model = build(lanes);
+
+      // Not a fork point yet: the parent is on the next page of the same branch,
+      // and a tail bent toward the parent lane would draw a fork that is not one.
+      const oldest = rowOf(model, 2083);
+      expect(oldest.parentLoaded).to.be.false;
+      expect(oldest.parentLane).to.equal(0);
     });
 
     it("is -1 for the repository root", () => {
