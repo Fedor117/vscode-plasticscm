@@ -4,13 +4,10 @@ All notable changes to the "plastic-scm" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [0.4.1] - 2026-09-23
+## [Unreleased]
 
 ### Changed
 
-- The Open Review by ID… example and the README's examples use a made-up review
-  number instead of a real one.
-- Tests, fixtures and code comments use made-up ids only.
 - The end-to-end review tests run on every test run, against a synthetic Plastic
   server.
 
