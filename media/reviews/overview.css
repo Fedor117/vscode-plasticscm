@@ -1,0 +1,650 @@
+/*
+ * The Plastic Reviews Overview (src/reviews/reviewOverview.ts), shown in the
+ * built-in Markdown preview. VS Code loads this sheet into every Markdown
+ * preview (markdown.previewStyles), so every rule is scoped under
+ * .plastic-review. Colours come from the theme; the one fixed colour is the
+ * white of the avatar initials, whose backgrounds the renderer picks dark
+ * enough for it. Sizes are in em, so the page follows the preview's font size.
+ */
+
+.plastic-review {
+  --pr-border: var(--vscode-contrastBorder, var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 20%, transparent)));
+  --pr-card: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+  --pr-track: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+  /* The grey pills' track and text: descriptionForeground reads at 4.5:1 on this lighter track in dark themes. */
+  --pr-soft: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  --pr-grey-text: var(--vscode-descriptionForeground);
+  --pr-emphasis: var(--vscode-editor-foreground, var(--vscode-foreground));
+  /*
+   * Chart colours as text, mixed a little toward the editor's text colour: on dark themes the chart colours are
+   * legible as they are (4.6:1 or better on a 14% pill tint once mixed), and light themes mix further below.
+   */
+  --pr-blue: color-mix(in srgb, var(--vscode-charts-blue) 85%, var(--pr-emphasis));
+  --pr-orange: color-mix(in srgb, var(--vscode-charts-orange) 85%, var(--pr-emphasis));
+  --pr-green: color-mix(in srgb, var(--vscode-charts-green) 85%, var(--pr-emphasis));
+  --pr-purple: color-mix(in srgb, var(--vscode-charts-purple) 85%, var(--pr-emphasis));
+  max-width: 68em;
+  padding: 0.6em 0 2.4em;
+  color: var(--vscode-foreground);
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+/*
+ * Light themes: the chart colours are too pale for 12px text, so they go halfway to the editor's text colour, which
+ * is black in Light+ (its foreground is a light grey). Grey pills use the foreground: descriptionForeground falls
+ * short of 4.5:1 on a track in Light+.
+ */
+.vscode-light .plastic-review,
+.vscode-high-contrast-light .plastic-review {
+  --pr-grey-text: var(--vscode-foreground);
+  --pr-blue: color-mix(in srgb, var(--vscode-charts-blue) 50%, var(--pr-emphasis));
+  --pr-orange: color-mix(in srgb, var(--vscode-charts-orange) 50%, var(--pr-emphasis));
+  --pr-green: color-mix(in srgb, var(--vscode-charts-green) 50%, var(--pr-emphasis));
+  --pr-purple: color-mix(in srgb, var(--vscode-charts-purple) 50%, var(--pr-emphasis));
+}
+
+/* The preview's own Markdown styles, undone inside the page. */
+.plastic-review h1,
+.plastic-review h2,
+.plastic-review p,
+.plastic-review ul,
+.plastic-review li,
+.plastic-review blockquote {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.plastic-review ul {
+  list-style: none;
+}
+
+.plastic-review a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+
+.plastic-review a:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
+
+.plastic-review a:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.plastic-review code,
+.plastic-review .mono,
+.plastic-review .st {
+  font-family: var(--vscode-editor-font-family, Menlo, Consolas, monospace);
+  font-size: 0.86em;
+}
+
+.plastic-review code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--vscode-textPreformat-foreground);
+  background: var(--vscode-textCodeBlock-background);
+}
+
+.plastic-review .dim,
+.plastic-review .grey {
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .blue {
+  color: var(--pr-blue);
+}
+
+.plastic-review .orange {
+  color: var(--pr-orange);
+}
+
+.plastic-review .green {
+  color: var(--pr-green);
+}
+
+.plastic-review .purple {
+  color: var(--pr-purple);
+}
+
+/* Separators that keep the tiles readable without this sheet. */
+.plastic-review .sep {
+  display: none;
+}
+
+/* Header */
+
+.plastic-review .eyebrow {
+  font-size: 0.86em;
+  letter-spacing: 0.02em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .title {
+  margin: 4px 0 10px;
+  font-size: 2em;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--pr-emphasis);
+}
+
+.plastic-review .meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.93em;
+}
+
+.plastic-review .chips {
+  margin-top: 10px;
+}
+
+.plastic-review .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--pr-border);
+  border-radius: 4px;
+  font-size: 0.86em;
+}
+
+.plastic-review .icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.plastic-review .marker {
+  font-style: italic;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  font-size: 0.86em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.plastic-review .pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.plastic-review .pill.blue {
+  background: color-mix(in srgb, var(--vscode-charts-blue) 14%, transparent);
+}
+
+.plastic-review .pill.orange {
+  background: color-mix(in srgb, var(--vscode-charts-orange) 14%, transparent);
+}
+
+.plastic-review .pill.green {
+  background: color-mix(in srgb, var(--vscode-charts-green) 14%, transparent);
+}
+
+.plastic-review .pill.purple {
+  background: color-mix(in srgb, var(--vscode-charts-purple) 14%, transparent);
+}
+
+.plastic-review .pill.grey {
+  color: var(--pr-grey-text);
+  background: var(--pr-soft);
+}
+
+.vscode-high-contrast .plastic-review .pill,
+.vscode-high-contrast .plastic-review .count {
+  border: 1px solid currentColor;
+}
+
+.plastic-review .notice {
+  margin-top: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--pr-border);
+  border-left: 3px solid var(--vscode-charts-blue);
+  border-radius: 6px;
+  background: var(--pr-card);
+  font-size: 0.93em;
+}
+
+/* A stage that failed: the error colour, not the blue of the notices that only inform. */
+.plastic-review .notice.error {
+  border-left-color: var(--vscode-editorError-foreground, var(--vscode-errorForeground));
+}
+
+/* A stage still loading, or a note about one, set apart from the card above it. */
+.plastic-review .stage {
+  margin-top: 14px;
+}
+
+.plastic-review h2 + .stage,
+.plastic-review h2 + .notice {
+  margin-top: 0;
+}
+
+.plastic-review .lead {
+  margin-top: 16px;
+}
+
+.plastic-review .lead p + p,
+.plastic-review .text p + p,
+.plastic-review .quote p + p,
+.plastic-review .msg p + p {
+  margin-top: 8px;
+}
+
+/* Where it stands */
+
+.plastic-review .stand {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 22px;
+  padding: 16px 18px;
+  border: 1px solid var(--pr-border);
+  border-radius: 8px;
+  background: var(--pr-card);
+}
+
+.plastic-review .stand-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.plastic-review .stand-head strong {
+  font-size: 1.07em;
+  font-weight: 600;
+  color: var(--pr-emphasis);
+}
+
+/* Four tiles in a row, or two by two: never three with the fourth alone below. */
+.plastic-review .tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.plastic-review .tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--pr-border);
+  border-radius: 6px;
+  background: var(--vscode-editor-background);
+}
+
+.plastic-review .tile .k {
+  font-size: 0.79em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .tile .v {
+  font-size: 1.43em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.plastic-review .tile .v.dim {
+  font-size: 1em;
+  font-weight: 400;
+}
+
+.plastic-review .tile .of {
+  font-size: 0.7em;
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .tile .s {
+  font-size: 0.86em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .bar {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--pr-track);
+}
+
+.plastic-review .bar span {
+  display: block;
+  height: 100%;
+  background: var(--pr-blue);
+}
+
+.vscode-high-contrast .plastic-review .bar {
+  outline: 1px solid var(--pr-border);
+}
+
+/* Sections */
+
+.plastic-review h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 30px 0 10px;
+  font-size: 0.93em;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .count {
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 18px;
+  letter-spacing: 0;
+  text-align: center;
+  color: var(--vscode-foreground);
+  background: var(--pr-track);
+}
+
+.plastic-review .empty,
+.plastic-review .hint {
+  font-size: 0.93em;
+}
+
+.plastic-review .hint {
+  margin-top: 8px;
+  font-size: 0.86em;
+}
+
+/* Reviewers, open items and comments */
+
+/* auto-fit: one or two reviewers share the row instead of leaving empty columns beside them. */
+.plastic-review .people {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18em, 1fr));
+  gap: 10px;
+}
+
+.plastic-review .items,
+.plastic-review .comments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plastic-review .person,
+.plastic-review .item,
+.plastic-review .comment {
+  padding: 12px 14px;
+  border: 1px solid var(--pr-border);
+  border-radius: 8px;
+}
+
+.plastic-review .person,
+.plastic-review .comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.plastic-review .av {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.plastic-review .body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plastic-review .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.plastic-review .name {
+  font-weight: 600;
+  color: var(--pr-emphasis);
+}
+
+.plastic-review .tag {
+  padding: 0 6px;
+  border: 1px solid var(--pr-border);
+  border-radius: 4px;
+  font-size: 0.79em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .when {
+  font-size: 0.86em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .quote {
+  padding-left: 10px;
+  border-left: 2px solid var(--pr-border);
+  border-radius: 0;
+  background: none;
+  font-size: 0.93em;
+}
+
+.plastic-review .replies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--pr-track);
+}
+
+.plastic-review .reply {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plastic-review .head {
+  font-size: 0.93em;
+}
+
+.plastic-review .kind {
+  font-size: 0.93em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plastic-review .item .row {
+  font-size: 0.93em;
+}
+
+.plastic-review .item .text {
+  color: var(--pr-emphasis);
+}
+
+.plastic-review .item .when {
+  margin-left: auto;
+}
+
+/* Lists: files and changesets */
+
+.plastic-review .list {
+  overflow: hidden;
+  border: 1px solid var(--pr-border);
+  border-radius: 8px;
+}
+
+.plastic-review .list > li {
+  padding: 8px 14px;
+  border-top: 1px solid var(--pr-border);
+  font-size: 0.93em;
+}
+
+.plastic-review .list > li:first-child {
+  border-top: 0;
+}
+
+.plastic-review .list .li {
+  display: grid;
+  grid-template-columns: 7em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.plastic-review .files .li {
+  grid-template-columns: 2em minmax(0, 1fr) minmax(0, 1.2fr);
+}
+
+.plastic-review .list .more {
+  font-size: 0.86em;
+}
+
+.plastic-review .what {
+  min-width: 0;
+}
+
+.plastic-review .st {
+  font-weight: 700;
+}
+
+/* The Review view's decoration colours, which the Git extension contributes; the page's own tones without it. */
+.plastic-review .st.added {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--pr-green));
+}
+
+.plastic-review .st.changed {
+  color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--pr-orange));
+}
+
+.plastic-review .st.deleted {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
+}
+
+.plastic-review .st.moved {
+  color: var(--vscode-gitDecoration-renamedResourceForeground, var(--pr-blue));
+}
+
+.plastic-review .msg {
+  padding: 12px 16px;
+  border: 1px solid var(--pr-border);
+  border-radius: 8px;
+  background: var(--pr-card);
+  line-height: 1.55;
+}
+
+.plastic-review .msg .first {
+  font-weight: 600;
+  color: var(--pr-emphasis);
+}
+
+/* History */
+
+.plastic-review .tl {
+  display: flex;
+  flex-direction: column;
+  padding-left: 4px;
+}
+
+.plastic-review .tl li {
+  display: grid;
+  grid-template-columns: 16px 7.5em minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.93em;
+}
+
+.plastic-review .tl .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(1px);
+}
+
+.plastic-review .tl .date {
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+
+.plastic-review .earlier {
+  margin-top: 4px;
+}
+
+.plastic-review .earlier summary {
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 0.86em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Split editors: the tiles two by two. */
+@media (max-width: 640px) {
+  .plastic-review .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Narrow editors: one column. */
+@media (max-width: 560px) {
+  .plastic-review .list .li,
+  .plastic-review .files .li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .plastic-review .tl li {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .plastic-review .tl .date,
+  .plastic-review .tl .what {
+    grid-column: 2;
+  }
+
+  .plastic-review .item .when {
+    margin-left: 0;
+  }
+}

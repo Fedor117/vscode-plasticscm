@@ -12,7 +12,7 @@ import { IMergeLink } from "../../../models";
  * and `br:%2Fmain` matches nothing. `where branch=` and `where name=` are
  * plain-name fields, which take the raw text instead.
  */
-function encodeBranchSpec(branchName: string): string {
+export function encodeBranchSpec(branchName: string): string {
   return branchName.split(" ").join("%20");
 }
 

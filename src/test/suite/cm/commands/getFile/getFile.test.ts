@@ -1,6 +1,6 @@
 import * as os from "os";
 import * as path from "path";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { ICmParser, ICmShell } from "../../../../../cm/shell";
 import { IMock, It, Mock, MockBehavior, Times } from "typemoq";
 import { expect } from "chai";
@@ -193,10 +193,13 @@ describe("GetFile command", () => {
 
       expect(directoryExistedAtExec).to.be.true;
       // cm writes to a sibling; the entry only takes its real name once the
-      // command has come back clean.
-      expect(receivedArgs).to.eql([ `revid:12347@rep:${REPOSITORY}`, `--file=${expectedOutput}.partial` ]);
+      // command has come back clean. The sibling's name is unique per fetch, so
+      // hosts sharing a cache root never write into one file.
+      expect(receivedArgs[0]).to.equal(`revid:12347@rep:${REPOSITORY}`);
+      expect(receivedArgs[1]).to.match(
+        new RegExp(`^--file=${escapeRegExp(expectedOutput)}\\.${process.pid}\\.[0-9a-f]{8}\\.partial$`));
       expect(result.fsPath).to.equal(expectedOutput);
-      expect(existsSync(`${expectedOutput}.partial`)).to.be.false;
+      expect(readdirSync(targetDir)).to.eql([path.basename(expectedOutput)]);
     });
 
     it("uses the bare revid spec when no repository is given", async () => {
@@ -336,7 +339,22 @@ describe("GetFile command", () => {
       }
 
       expect(existsSync(expectedOutput), "a truncated revision must not become a cache entry").to.be.false;
-      expect(existsSync(`${expectedOutput}.partial`)).to.be.false;
+      expect(readdirSync(path.dirname(expectedOutput)), "the partial file must go too").to.eql([]);
+    });
+
+    it("uses the entry another host put in place when its own rename fails", async () => {
+      const expectedOutput =
+        GetFile.revisionCacheLocation(rootDir, 12348, REPOSITORY, "/Assets/Code/Foo.cs").fsPath;
+      // Another window finished the same revision first, and this rename fails.
+      const shell = mockShell(() => {
+        mkdirSync(path.dirname(expectedOutput), { recursive: true });
+        writeFileSync(expectedOutput, "using System;");
+      });
+
+      const result = await GetFile.runRevision(rootDir, 12348, REPOSITORY, "/Assets/Code/Foo.cs", shell.object);
+
+      expect(result.fsPath).to.equal(expectedOutput);
+      expect(readdirSync(path.dirname(expectedOutput))).to.eql([path.basename(expectedOutput)]);
     });
 
     it("reports a command that claims success but writes nothing", async () => {

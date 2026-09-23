@@ -4,6 +4,52 @@ All notable changes to the "plastic-scm" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.4.0] - 2026-09-23
+
+### Added
+
+- **Plastic Reviews**, a new container in the Activity Bar for browsing Plastic
+  code reviews with the installed `cm` client and its existing login. Nothing
+  else to install or sign in to. It has three views:
+  - **Reviews**: Needs My Review (assigned to you, or you are a requested
+    reviewer), Rework Requested and Waiting for Reviewers (your own), All Open,
+    and All Reviews (everyone's, in any status). The last two page 50 at a time.
+    **Find Review…** searches the newest 2,000 reviews in the repository by
+    title, number, author, assignee, status or branch.
+  - **Review**: the selected review's Overview, Changes, Merged from other
+    branches and Changesets. A branch review compares the branch base (the
+    parent of its first changeset) with its head, as `cm diff br:` does, and
+    both sides are named in every diff title. Files that changed only through
+    merges are listed apart. Each file has a viewed checkbox, kept per file
+    revision.
+  - **Discussions**: every thread, grouped by file, then General.
+- **Review comments in diffs**: questions, change requests (with applied or
+  discarded state) and comments appear as threads on their lines. A thread on an
+  older revision moves to the matching line, and one whose line is gone opens in
+  an `outdated` diff, or in its original changeset.
+- **Overview page**: clicking a review opens a themed page in VS Code's Markdown
+  preview editor. It shows where the review stands, a card per reviewer with
+  their verdict, the open change requests and questions, the conversation, the
+  changesets and the history. File names and `File.cs:18` references on it open
+  the diff or the discussion.
+- **Set Review Status…** (Under review, Rework required, Reviewed) through
+  `cm codereview`. It asks before marking a review Reviewed with pending change
+  requests or unviewed files.
+- The open review is checked for updates every minute while it is on screen.
+  A **Review updated** row says what changed, and **Load Updates** applies it.
+- Experimental comment posting to Unity Version Control cloud repositories,
+  off by default (`plastic-scm.reviews.experimentalPosting`). See the README
+  before relying on it.
+
+### Fixed
+
+- Two VS Code windows fetching the same revision could truncate each other's
+  cached copy. Each fetch now writes to its own temporary file before the rename.
+
+### Changed
+
+- Test fixtures and examples use made-up data only.
+
 ## [0.3.1] - 2026-09-08
 
 ### Changed

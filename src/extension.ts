@@ -9,9 +9,9 @@ import {
   window,
   workspace,
 } from "vscode";
+import { IExtensionStorage, PlasticScm } from "./plasticScm";
 import { extensionId } from "./constants";
 import { IConfig } from "./config";
-import { PlasticScm } from "./plasticScm";
 import { throttle } from "./decorators";
 
 const defaultConfig: IConfig = {
@@ -48,7 +48,12 @@ const defaultConfig: IConfig = {
 let extension: Extension;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-  extension = new Extension(context.extensionUri);
+  extension = new Extension(context.extensionUri, {
+    extensionId: context.extension.id,
+    globalState: context.globalState,
+    secrets: context.secrets,
+    workspaceState: context.workspaceState,
+  });
   context.subscriptions.push(extension);
   await extension.start();
 }
@@ -64,7 +69,7 @@ class Extension implements Disposable {
   private mDisposables: Disposable;
   private readonly mExtensionUri: Uri;
 
-  public constructor(extensionUri: Uri) {
+  public constructor(extensionUri: Uri, private readonly storage: IExtensionStorage) {
     this.mExtensionUri = extensionUri;
     this.mOutputChannel = window.createOutputChannel("Plastic SCM");
     this.mConfig = Extension.getConfiguration();
@@ -88,7 +93,7 @@ class Extension implements Disposable {
       return;
     }
 
-    this.mPlasticScm = new PlasticScm(this.mOutputChannel, this.mExtensionUri);
+    this.mPlasticScm = new PlasticScm(this.mOutputChannel, this.mExtensionUri, this.storage);
     await this.mPlasticScm.initialize(this.mConfig);
   }
 

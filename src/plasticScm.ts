@@ -7,7 +7,9 @@ import { CmShell, ICmShell } from "./cm/shell";
 import {
   commands,
   Disposable,
+  Memento,
   OutputChannel,
+  SecretStorage,
   Uri,
   window as VsCodeWindow,
   workspace as VsCodeWorkspace,
@@ -19,12 +21,24 @@ import { HistoryCommands } from "./commands/history";
 import { IConfig } from "./config";
 import { IWorkspaceInfo } from "./models";
 import { OpenFileCommand } from "./commands/openFile";
+import { PlasticReviews } from "./reviews/plasticReviews";
 import { PlasticScmDecorations } from "./decorations";
 import { RefreshCommand } from "./commands/refresh";
 import { RevisionContentProvider } from "./revisionContentProvider";
 import { ShowOutputCommand } from "./commands/showOutput";
 import { Workspace } from "./workspace";
 import { WorkspaceOperations } from "./workspaceOperations";
+
+/** What the extension context lends Plastic SCM: the posting credentials, the two mementos and the extension's id. */
+export interface IExtensionStorage {
+  readonly secrets: SecretStorage;
+  /** Viewed review files, shared by every window. */
+  readonly globalState: Memento;
+  /** The selected review workspace and the last open review, per window folder set. */
+  readonly workspaceState: Memento;
+  /** Links from the review Overview address the extension's URI handler by it. */
+  readonly extensionId: string;
+}
 
 export class PlasticScm implements Disposable {
   public get workspaces(): Map<string, Workspace> {
@@ -41,7 +55,7 @@ export class PlasticScm implements Disposable {
   private readonly mExtensionUri: Uri;
   private mConfig?: IConfig;
 
-  public constructor(channel: OutputChannel, extensionUri: Uri) {
+  public constructor(channel: OutputChannel, extensionUri: Uri, private readonly storage: IExtensionStorage) {
     this.mChannel = channel;
     this.mExtensionUri = extensionUri;
   }
@@ -177,6 +191,23 @@ export class PlasticScm implements Disposable {
         historyViewId, historyProvider, { webviewOptions: { retainContextWhenHidden: true }}));
       this.mDisposables.push(historyProvider);
       this.mDisposables.push(new HistoryCommands(this, historyProvider));
+
+      // Every review workspace gets its own cm shell on first use, so review queries never
+      // queue behind a status refresh.
+      this.mDisposables.push(new PlasticReviews({
+        channel: this.mChannel,
+        extensionId: this.storage.extensionId,
+        globalState: this.storage.globalState,
+        secrets: this.storage.secrets,
+        shellConfig: () => (this.mConfig ?? configuration).cmConfiguration,
+        workspaceState: this.storage.workspaceState,
+        workspaces: () => Array.from(this.mWorkspaces.values()).map(wk => ({
+          id: wk.info.id,
+          name: wk.info.name,
+          path: wk.info.path,
+          repository: wk.workspaceConfig?.repSpec,
+        })),
+      }));
     }
   }
 }

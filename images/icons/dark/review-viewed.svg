@@ -1,0 +1,1 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><mask id="check"><rect width="16" height="16" fill="#fff"/><path d="M5.3 8.2l1.8 1.8 3.6-3.9" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></mask><circle cx="8" cy="8" r="6.2" fill="#3794ff" mask="url(#check)"/></svg>

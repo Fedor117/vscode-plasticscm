@@ -346,7 +346,8 @@ function subjectOf(comment: string): string {
   return "";
 }
 
-function shortOwner(owner: string): string {
+/** Owner up to the first `@`: the part of an email-style cm user a row has room for. */
+export function shortOwner(owner: string): string {
   const at = owner.indexOf("@");
   return at < 0 ? owner : owner.substring(0, at);
 }

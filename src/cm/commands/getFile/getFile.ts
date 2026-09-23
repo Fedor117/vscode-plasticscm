@@ -1,7 +1,7 @@
+import { createHash, randomBytes } from "crypto";
 import { dirname, extname, join, relative } from "path";
 import { existsSync, promises } from "fs";
 import { ICmParser, ICmResult, ICmShell } from "../../shell";
-import { createHash } from "crypto";
 import { GetFileParser } from "./getFileParser";
 import { Uri } from "vscode";
 
@@ -217,7 +217,12 @@ export class GetFile {
     // served from the cache as the revision's content for a day. Writing to a
     // sibling and renaming on success makes the cache entry all-or-nothing, and
     // any leftover is ignored (the name never matches) until the prune.
-    const partialFile = `${outputFile}.partial`;
+    // The sibling's name is unique per fetch: the cache root can be shared by
+    // several extension hosts, `mPendingRevisions` only deduplicates within one,
+    // and cm rewrites an existing `--file=` target in place, so two hosts
+    // fetching one revision into one shared name could truncate each other's
+    // content between the write and the rename.
+    const partialFile = `${outputFile}.${process.pid}.${randomBytes(4).toString("hex")}.partial`;
     const result: ICmResult<void> = await shell.exec(
       "getfile",
       [ revisionSpec, `--file=${partialFile}` ],
@@ -232,6 +237,13 @@ export class GetFile {
     try {
       await promises.rename(partialFile, outputFile);
     } catch (e) {
+      await promises.rm(partialFile, { force: true });
+      // Another host can put its copy in place first (Windows refuses to replace
+      // a file someone has open). A revision is immutable, so that copy is the
+      // same content and the entry is good.
+      if (existsSync(outputFile)) {
+        return Uri.file(outputFile);
+      }
       throw new Error(
         `cm reported no error but wrote no content for ${revisionSpec}: ${(e as Error).message}`);
     }

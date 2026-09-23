@@ -118,6 +118,23 @@ describe("FindChangesets command", () => {
     });
   });
 
+  context("When changesets of hidden branches are asked for", () => {
+    const shell: IShellMock = mockShell({ result: [changeset], success: true });
+
+    before(async () => {
+      await FindChangesets.run(
+        shell.mock.object, { beforeChangesetId: 2080, branch: "/main/X", ignoreHidden: true, limit: 50 });
+      await FindChangesets.runById(shell.mock.object, 3622, { ignoreHidden: true });
+    });
+
+    it("puts ignorehidden in the where-clause, where cm accepts it", () => {
+      expect(shell.calls.map(call => call.args[1])).to.eql([
+        "where branch='/main/X' and changesetid < 2080 and ignorehidden = 'true' order by changesetid desc limit 50",
+        "where changesetid=3622 and ignorehidden = 'true'",
+      ]);
+    });
+  });
+
   context("When the command fails", () => {
     const shell: IShellMock = mockShell({ error: new Error("Sample error"), success: false });
     let error: Error | undefined;

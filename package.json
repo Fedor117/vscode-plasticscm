@@ -4,7 +4,7 @@
   "description": "Plastic SCM integration",
   "publisher": "plastic-scm",
   "license": "MIT",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "icon": "images/logo.png",
   "homepage": "https://github.com/PlasticSCM/vscode-plasticscm/blob/master/README.md",
   "bugs": {
@@ -28,10 +28,14 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onFileSystem:plastic-review",
     "workspaceContains:**/.plastic/plastic.workspace"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "markdown.previewStyles": [
+      "./media/reviews/overview.css"
+    ],
     "configuration": {
       "type": "object",
       "title": "Plastic SCM",
@@ -117,6 +121,26 @@
           "maximum": 500,
           "markdownDescription": "Changesets fetched per branch on each page of the Plastic SCM Graph view. Each page is one `cm find` round trip to the server, and the view loads the current branch and its parent branch separately.",
           "scope": "window"
+        },
+        "plastic-scm.reviews.fileLayout": {
+          "type": "string",
+          "enum": [
+            "tree",
+            "list"
+          ],
+          "enumDescriptions": [
+            "Folders, like the Explorer.",
+            "One list of files sorted by path."
+          ],
+          "default": "tree",
+          "markdownDescription": "How Plastic Reviews lists changed files.",
+          "scope": "window"
+        },
+        "plastic-scm.reviews.experimentalPosting": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Allows posting review comments and replies through Unity's hosted API with a token you enter. Authentication, line encoding and the reply format are unverified. Only Unity Version Control cloud repositories are supported.",
+          "scope": "application"
         }
       }
     },
@@ -190,6 +214,233 @@
         "category": "Plastic SCM",
         "title": "Open Changes",
         "icon": "$(diff)"
+      },
+      {
+        "command": "plastic-scm.reviews.refresh",
+        "category": "Plastic Reviews",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.reviews.find",
+        "category": "Plastic Reviews",
+        "title": "Find Review…",
+        "icon": "$(search)"
+      },
+      {
+        "command": "plastic-scm.reviews.openById",
+        "category": "Plastic Reviews",
+        "title": "Open Review by ID…",
+        "icon": "$(search)"
+      },
+      {
+        "command": "plastic-scm.reviews.switchWorkspace",
+        "category": "Plastic Reviews",
+        "title": "Switch Workspace…",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "plastic-scm.reviews.show",
+        "category": "Plastic Reviews",
+        "title": "Show Plastic Reviews"
+      },
+      {
+        "command": "plastic-scm.reviews.open",
+        "category": "Plastic Reviews",
+        "title": "Open Review"
+      },
+      {
+        "command": "plastic-scm.reviews.loadMore",
+        "category": "Plastic Reviews",
+        "title": "Load More"
+      },
+      {
+        "command": "plastic-scm.reviews.retry",
+        "category": "Plastic Reviews",
+        "title": "Retry",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.reviews.loadMoreChangesets",
+        "category": "Plastic Reviews",
+        "title": "Load More Changesets"
+      },
+      {
+        "command": "plastic-scm.reviews.setStatus",
+        "category": "Plastic Reviews",
+        "title": "Set Review Status…",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "plastic-scm.reviews.openNextUnviewed",
+        "category": "Plastic Reviews",
+        "title": "Open Next Unviewed File",
+        "icon": "$(arrow-circle-right)"
+      },
+      {
+        "command": "plastic-scm.reviews.refreshReview",
+        "category": "Plastic Reviews",
+        "title": "Refresh Review",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.reviews.loadUpdates",
+        "category": "Plastic Reviews",
+        "title": "Load Updates",
+        "icon": "$(arrow-circle-down)"
+      },
+      {
+        "command": "plastic-scm.reviews.openOverview",
+        "category": "Plastic Reviews",
+        "title": "Open Overview",
+        "icon": "$(book)"
+      },
+      {
+        "command": "plastic-scm.reviews.close",
+        "category": "Plastic Reviews",
+        "title": "Close Review",
+        "icon": "$(close)"
+      },
+      {
+        "command": "plastic-scm.reviews.copyReviewId",
+        "category": "Plastic Reviews",
+        "title": "Copy Review ID"
+      },
+      {
+        "command": "plastic-scm.reviews.copyTitle",
+        "category": "Plastic Reviews",
+        "title": "Copy Title"
+      },
+      {
+        "command": "plastic-scm.reviews.viewAsTree",
+        "category": "Plastic Reviews",
+        "title": "View as Tree",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "plastic-scm.reviews.viewAsList",
+        "category": "Plastic Reviews",
+        "title": "View as List",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "plastic-scm.reviews.markAllViewed",
+        "category": "Plastic Reviews",
+        "title": "Mark All as Viewed",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "plastic-scm.reviews.openChanges",
+        "category": "Plastic Reviews",
+        "title": "Open Changes",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "plastic-scm.reviews.openWorkspaceFile",
+        "category": "Plastic Reviews",
+        "title": "Open Workspace File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "plastic-scm.reviews.copyPath",
+        "category": "Plastic Reviews",
+        "title": "Copy Path"
+      },
+      {
+        "command": "plastic-scm.reviews.copyChangesetId",
+        "category": "Plastic Reviews",
+        "title": "Copy Changeset ID"
+      },
+      {
+        "command": "plastic-scm.reviews.copyChangesetComment",
+        "category": "Plastic Reviews",
+        "title": "Copy Changeset Comment"
+      },
+      {
+        "command": "plastic-scm.reviews.previousFile",
+        "category": "Plastic Reviews",
+        "title": "Open Previous File",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "plastic-scm.reviews.nextFile",
+        "category": "Plastic Reviews",
+        "title": "Open Next File",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "plastic-scm.reviews.markViewedAndNext",
+        "category": "Plastic Reviews",
+        "title": "Mark as Viewed and Open Next File",
+        "icon": "$(check)"
+      },
+      {
+        "command": "plastic-scm.reviews.markViewed",
+        "category": "Plastic Reviews",
+        "title": "Mark as Viewed",
+        "icon": "$(check)"
+      },
+      {
+        "command": "plastic-scm.reviews.markUnviewed",
+        "category": "Plastic Reviews",
+        "title": "Mark as Not Viewed",
+        "icon": {
+          "light": "images/icons/light/review-viewed.svg",
+          "dark": "images/icons/dark/review-viewed.svg"
+        }
+      },
+      {
+        "command": "plastic-scm.reviews.openDiscussion",
+        "category": "Plastic Reviews",
+        "title": "Open Discussion"
+      },
+      {
+        "command": "plastic-scm.reviews.copyDiscussionText",
+        "category": "Plastic Reviews",
+        "title": "Copy Discussion Text"
+      },
+      {
+        "command": "plastic-scm.reviews.configurePosting",
+        "category": "Plastic Reviews",
+        "title": "Configure Experimental Posting…",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "plastic-scm.reviews.forgetPosting",
+        "category": "Plastic Reviews",
+        "title": "Forget Experimental Posting Token"
+      },
+      {
+        "command": "plastic-scm.reviews.postComment",
+        "category": "Plastic Reviews",
+        "title": "Post Comment (Experimental)"
+      },
+      {
+        "command": "plastic-scm.reviews.postReply",
+        "category": "Plastic Reviews",
+        "title": "Post Reply (Experimental)"
+      },
+      {
+        "command": "plastic-scm.reviews.cancelComment",
+        "category": "Plastic Reviews",
+        "title": "Cancel"
+      },
+      {
+        "command": "plastic-scm.reviews.sendAgain",
+        "category": "Plastic Reviews",
+        "title": "Send Again (Experimental)",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "plastic-scm.reviews.discardLocal",
+        "category": "Plastic Reviews",
+        "title": "Discard",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "plastic-scm.reviews.allowRetry",
+        "category": "Plastic Reviews",
+        "title": "Allow Another Attempt"
       }
     ],
     "views": {
@@ -202,8 +453,37 @@
           "icon": "images/icons/iconsidebar.svg",
           "when": "plastic-scm.active"
         }
+      ],
+      "plastic-scm-reviews": [
+        {
+          "id": "plastic-scm.reviews.list",
+          "name": "Reviews",
+          "when": "plastic-scm.active"
+        },
+        {
+          "id": "plastic-scm.reviews.active",
+          "name": "Review",
+          "when": "plastic-scm.active"
+        },
+        {
+          "id": "plastic-scm.reviews.discussions",
+          "name": "Discussions",
+          "when": "plastic-scm.active"
+        }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "plastic-scm.reviews.active",
+        "contents": "Select a review in Reviews to browse its changes, changesets and discussions.\n[Find Review…](command:plastic-scm.reviews.find)",
+        "when": "!plastic-scm.reviews.hasActiveReview"
+      },
+      {
+        "view": "plastic-scm.reviews.discussions",
+        "contents": "Discussions of the selected review appear here.",
+        "when": "!plastic-scm.reviews.hasActiveReview"
+      }
+    ],
     "menus": {
       "scm/title": [
         {
@@ -224,6 +504,11 @@
         {
           "command": "plastic-scm.showOutput",
           "group": "3_footer@1",
+          "when": "scmProvider =~ /^plastic-scm/"
+        },
+        {
+          "command": "plastic-scm.reviews.show",
+          "group": "3_footer@2",
           "when": "scmProvider =~ /^plastic-scm/"
         }
       ],
@@ -286,6 +571,205 @@
           "command": "plastic-scm.history.refresh",
           "group": "navigation",
           "when": "view == plastic-scm.history"
+        },
+        {
+          "command": "plastic-scm.reviews.find",
+          "when": "view == plastic-scm.reviews.list",
+          "group": "navigation@1"
+        },
+        {
+          "command": "plastic-scm.reviews.refresh",
+          "when": "view == plastic-scm.reviews.list",
+          "group": "navigation@2"
+        },
+        {
+          "command": "plastic-scm.reviews.switchWorkspace",
+          "when": "view == plastic-scm.reviews.list && plastic-scm.reviews.multipleWorkspaces",
+          "group": "1_workspace@1"
+        },
+        {
+          "command": "plastic-scm.reviews.configurePosting",
+          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting",
+          "group": "8_experimental@1"
+        },
+        {
+          "command": "plastic-scm.reviews.forgetPosting",
+          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.postingConfigured",
+          "group": "8_experimental@2"
+        },
+        {
+          "command": "plastic-scm.showOutput",
+          "when": "view == plastic-scm.reviews.list",
+          "group": "9_output@1"
+        },
+        {
+          "command": "plastic-scm.reviews.openNextUnviewed",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "navigation@1"
+        },
+        {
+          "command": "plastic-scm.reviews.setStatus",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "navigation@2"
+        },
+        {
+          "command": "plastic-scm.reviews.viewAsList",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && !plastic-scm.reviews.hasUpdates && config.plastic-scm.reviews.fileLayout == tree",
+          "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.reviews.viewAsTree",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && !plastic-scm.reviews.hasUpdates && config.plastic-scm.reviews.fileLayout == list",
+          "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.reviews.loadUpdates",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasUpdates",
+          "group": "navigation@4"
+        },
+        {
+          "command": "plastic-scm.reviews.refreshReview",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && !plastic-scm.reviews.hasUpdates",
+          "group": "navigation@4"
+        },
+        {
+          "command": "plastic-scm.reviews.openOverview",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "1_review@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyReviewId",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "1_review@2"
+        },
+        {
+          "command": "plastic-scm.reviews.close",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "1_review@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "plastic-scm.reviews.open",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.reviews.setStatus",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "2_status@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyReviewId",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyTitle",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "3_copy@2"
+        },
+        {
+          "command": "plastic-scm.reviews.retry",
+          "when": "view =~ /^plastic-scm\\.reviews\\./ && viewItem == error",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.showOutput",
+          "when": "view =~ /^plastic-scm\\.reviews\\./ && viewItem == error",
+          "group": "9_output@1"
+        },
+        {
+          "command": "plastic-scm.reviews.markAllViewed",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^(changes|changeset)(;|$)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.openChanges",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^file;text;/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.reviews.openWorkspaceFile",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^file;/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "plastic-scm.reviews.markViewed",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^(file|folder);(.*;)?unviewed$/",
+          "group": "2_viewed@1"
+        },
+        {
+          "command": "plastic-scm.reviews.markUnviewed",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^(file|folder);(.*;)?viewed$/",
+          "group": "2_viewed@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyPath",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^(file|folder);/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyChangesetId",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^changeset(;|$)/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyChangesetComment",
+          "when": "view == plastic-scm.reviews.active && viewItem =~ /^changeset(;|$)/",
+          "group": "3_copy@2"
+        },
+        {
+          "command": "plastic-scm.reviews.openDiscussion",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.reviews.copyDiscussionText",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;/",
+          "group": "3_copy@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "plastic-scm.reviews.previousFile",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsReviewFile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "plastic-scm.reviews.nextFile",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsReviewFile",
+          "group": "navigation@2"
+        },
+        {
+          "command": "plastic-scm.reviews.markViewedAndNext",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsReviewFile && !plastic-scm.reviews.activeFileViewed",
+          "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.reviews.markUnviewed",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsReviewFile && plastic-scm.reviews.activeFileViewed",
+          "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.reviews.openNextUnviewed",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsOverview",
+          "group": "navigation@1"
+        },
+        {
+          "command": "plastic-scm.reviews.setStatus",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsOverview",
+          "group": "navigation@2"
+        },
+        {
+          "command": "plastic-scm.reviews.loadUpdates",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsOverview && plastic-scm.reviews.hasUpdates",
+          "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.reviews.refreshReview",
+          "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsOverview && !plastic-scm.reviews.hasUpdates",
+          "group": "navigation@3"
         }
       ],
       "webview/context": [
@@ -326,6 +810,209 @@
         {
           "command": "plastic-scm.history.openFile",
           "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.refresh",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.reviews.find",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.reviews.openById",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.reviews.show",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.reviews.switchWorkspace",
+          "when": "plastic-scm.reviews.multipleWorkspaces"
+        },
+        {
+          "command": "plastic-scm.reviews.setStatus",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.openNextUnviewed",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.refreshReview",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.openOverview",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.close",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.copyReviewId",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.loadUpdates",
+          "when": "plastic-scm.reviews.hasUpdates"
+        },
+        {
+          "command": "plastic-scm.reviews.previousFile",
+          "when": "plastic-scm.reviews.activeEditorIsReviewFile"
+        },
+        {
+          "command": "plastic-scm.reviews.nextFile",
+          "when": "plastic-scm.reviews.activeEditorIsReviewFile"
+        },
+        {
+          "command": "plastic-scm.reviews.markViewedAndNext",
+          "when": "plastic-scm.reviews.activeEditorIsReviewFile"
+        },
+        {
+          "command": "plastic-scm.reviews.markViewed",
+          "when": "plastic-scm.reviews.activeEditorIsReviewFile"
+        },
+        {
+          "command": "plastic-scm.reviews.markUnviewed",
+          "when": "plastic-scm.reviews.activeEditorIsReviewFile"
+        },
+        {
+          "command": "plastic-scm.reviews.configurePosting",
+          "when": "config.plastic-scm.reviews.experimentalPosting"
+        },
+        {
+          "command": "plastic-scm.reviews.forgetPosting",
+          "when": "config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.postingConfigured"
+        },
+        {
+          "command": "plastic-scm.reviews.open",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.retry",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.loadMoreChangesets",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.copyTitle",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.viewAsTree",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.viewAsList",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.markAllViewed",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.openChanges",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.openWorkspaceFile",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.copyChangesetId",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.copyChangesetComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.openDiscussion",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.copyDiscussionText",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.postComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.postReply",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.cancelComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.sendAgain",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.discardLocal",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.allowRetry",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "plastic-scm.reviews.postComment",
+          "when": "commentController == plastic-scm.reviews && commentThreadIsEmpty && plastic-scm.reviews.postingEnabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.postReply",
+          "when": "commentController == plastic-scm.reviews && !commentThreadIsEmpty && plastic-scm.reviews.postingEnabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.cancelComment",
+          "when": "commentController == plastic-scm.reviews && commentThreadIsEmpty",
+          "group": "inline@2"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "plastic-scm.reviews.sendAgain",
+          "when": "commentController == plastic-scm.reviews && comment == reviewLocal-failed",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.allowRetry",
+          "when": "commentController == plastic-scm.reviews && comment == reviewLocal-uncertain",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.discardLocal",
+          "when": "commentController == plastic-scm.reviews && comment =~ /^reviewLocal-(failed|uncertain)$/",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "plastic-scm-reviews",
+          "title": "Plastic Reviews",
+          "icon": "images/icons/reviews.svg"
         }
       ]
     }

@@ -8,7 +8,21 @@ export interface IChangesetQuery {
   /** Only changesets strictly older than this id, for paging. */
   beforeChangesetId?: number;
   limit: number;
+  /** Also return changesets of hidden branches (see {@link IChangesetLookupOptions}). */
+  ignoreHidden?: boolean;
 }
+
+export interface IChangesetLookupOptions {
+  /**
+   * cm leaves changesets of hidden branches out of `find changeset` unless the
+   * where-clause says `ignorehidden = 'true'` (a CLI flag is rejected). Teams hide
+   * branches once they are merged, so reviews need them; the History view keeps
+   * cm's default and never sets this.
+   */
+  ignoreHidden?: boolean;
+}
+
+const IGNORE_HIDDEN = " and ignorehidden = 'true'";
 
 /** Arguments every `cm find` in this module passes after the query. */
 export const FIND_XML_ARGS: readonly string[] = [ "--xml", "--nototal", "--encoding=utf-8" ];
@@ -43,15 +57,21 @@ export class FindChangesets {
       assertInteger(query.beforeChangesetId, "beforeChangesetId");
       where += ` and changesetid < ${query.beforeChangesetId}`;
     }
+    if (query.ignoreHidden) {
+      where += IGNORE_HIDDEN;
+    }
     where += ` order by changesetid desc limit ${query.limit}`;
 
     return FindChangesets.find(shell, where);
   }
 
-  public static async runById(shell: ICmShell, changesetId: number): Promise<IHistoryChangeset | undefined> {
+  public static async runById(
+      shell: ICmShell,
+      changesetId: number,
+      options: IChangesetLookupOptions = {}): Promise<IHistoryChangeset | undefined> {
     assertInteger(changesetId, "changesetId");
-
-    const changesets = await FindChangesets.find(shell, `where changesetid=${changesetId}`);
+    const where = `where changesetid=${changesetId}${options.ignoreHidden ? IGNORE_HIDDEN : ""}`;
+    const changesets = await FindChangesets.find(shell, where);
     return changesets[0];
   }
 
