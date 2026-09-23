@@ -191,9 +191,16 @@ export function expectHandlerLinksOpen(html: string, active: IActiveReview, pref
 
 /** Discussions opens the Overview for every General thread, so each is on the page in full. */
 export function expectEveryGeneralThread(html: string, discussions: IReviewDiscussions): void {
+  expectThreadsOnPage(html, discussions.threads.filter(isGeneralThread));
+}
+
+/** Every paragraph of every comment of the threads is on the page, as its visible text. */
+export function expectThreadsOnPage(
+    html: string,
+    threads: ReadonlyArray<{ id: number; comments: ReadonlyArray<{ id: number; text: string }> }>): void {
   const flat = (text: string) => text.replace(/`/g, "").replace(/\s+/g, " ").trim();
   const page = flat(visible(html));
-  for (const thread of discussions.threads.filter(isGeneralThread)) {
+  for (const thread of threads) {
     for (const comment of thread.comments) {
       for (const paragraph of comment.text.split(/\n[ \t]*\n/).map(flat).filter(Boolean)) {
         expect(page, `thread ${thread.id}, comment ${comment.id}`).to.contain(paragraph);

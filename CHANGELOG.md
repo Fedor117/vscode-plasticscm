@@ -4,6 +4,12 @@ All notable changes to the "plastic-scm" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [Unreleased]
+
+### Changed
+
+- The end-to-end review tests run on every test run, against a synthetic Plastic server.
+
 ## [0.4.0] - 2026-09-23
 
 ### Added
