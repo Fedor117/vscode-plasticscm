@@ -18,12 +18,17 @@ function buildResource(fsPath: string, type: ChangeType = ChangeType.Changed): P
   return new PlasticScmResource(changeInfo, workspaceMock.object);
 }
 
+/** A path as `Uri.fsPath` gives it on this platform: backslashes on Windows. */
+function platformPath(posixPath: string): string {
+  return Uri.file(posixPath).fsPath;
+}
+
 describe("getSelectedResources", () => {
   it("takes every resource, because the SCM view spreads them as separate arguments", () => {
     const args = [ buildResource("/wk/a.cs"), buildResource("/wk/b.cs"), buildResource("/wk/c.cs") ];
 
     expect(getSelectedResources(args).map(r => r.resourceUri.fsPath))
-      .to.deep.equal([ "/wk/a.cs", "/wk/b.cs", "/wk/c.cs" ]);
+      .to.deep.equal([ "/wk/a.cs", "/wk/b.cs", "/wk/c.cs" ].map(platformPath));
   });
 
   it("drops arguments that are not ours, such as the Unreal levels rows", () => {
@@ -33,7 +38,7 @@ describe("getSelectedResources", () => {
       Uri.file("/wk/b.cs"),
     ];
 
-    expect(getSelectedResources(args).map(r => r.resourceUri.fsPath)).to.deep.equal(["/wk/a.cs"]);
+    expect(getSelectedResources(args).map(r => r.resourceUri.fsPath)).to.deep.equal([platformPath("/wk/a.cs")]);
   });
 
   it("de-duplicates, since a hybrid folder row is collected alongside its own children", () => {
@@ -74,7 +79,7 @@ describe("pruneDescendants", () => {
     ];
 
     expect(pruneDescendants(uris).map(u => u.fsPath))
-      .to.deep.equal([ "/wk/dir", "/wk/other.cs" ]);
+      .to.deep.equal([ "/wk/dir", "/wk/other.cs" ].map(platformPath));
   });
 
   it("leaves unrelated siblings alone", () => {

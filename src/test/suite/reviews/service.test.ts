@@ -40,9 +40,9 @@ import {
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { fileKey, IReview, IReviewRevision } from "../../../reviews/models";
 import { isReviewLoadCancelled, ReviewService, targetNumber, toServerPath } from "../../../reviews/reviewService";
+import { Uri, window } from "vscode";
 import { expect } from "chai";
 import { FileChangeStatus } from "../../../models";
-import { window } from "vscode";
 
 const config = { cmPath: "cm", millisCommandTimeout: 1000, millisToStop: 1000, millisToWaitUntilUp: 1000 };
 
@@ -529,7 +529,8 @@ describe("Review service", () => {
       const getfile = shell.calls.filter(call => call.command === "getfile");
       expect(getfile).to.have.length(1);
       expect(getfile[0].args[0]).to.equal(`revid:12804@rep:${REPOSITORY}`);
-      const cacheDir = path.join(root, ".plastic", "fileCache", "revisions");
+      // As the service builds it: `Uri.fsPath` lowercases a Windows drive letter.
+      const cacheDir = Uri.file(path.join(root, ".plastic", "fileCache", "revisions")).fsPath;
       expect(getfile[0].args[1].startsWith(`--file=${cacheDir}${path.sep}`)).to.equal(true);
       expect(existsSync(cacheDir)).to.equal(true);
       expect(readdirSync(cacheDir)).to.have.length(1);
