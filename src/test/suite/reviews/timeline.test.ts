@@ -9,6 +9,7 @@ import {
   removedReviewers,
   reviewerBlock,
   reviewerStates,
+  reviewerStatus,
   reviewHistory,
   ReviewHistoryEntry,
 } from "../../../reviews/timeline";
@@ -137,6 +138,18 @@ describe("Review timeline", () => {
       // A verdict nobody asked for leaves the user free to be added.
       expect(block([row("[status-reviewed]LGTM", { owner: ME })])).to.equal(undefined);
       expect(block([row("[requested-review-from]dana.kim@example.com")])).to.equal(undefined);
+    });
+
+    it("reads the user's own status from their card: their verdict while it stands, Under review otherwise", () => {
+      const other = { assignee: "", owner: "sam.rivera@example.com" };
+      const status = (rows: IReviewComment[]) => reviewerStatus(parseTimeline(rows), other, ME);
+      expect(status([])).to.equal("Under review");
+      expect(status([row(`[requested-review-from]${ME}`)])).to.equal("Under review");
+      expect(status([row("[status-reviewed]LGTM", { owner: ME.toUpperCase() })])).to.equal("Reviewed");
+      expect(status([ row("[status-reviewed]", { owner: ME }), row("[status-rework-required]", { owner: ME }) ]))
+        .to.equal("Rework required");
+      // Someone else's verdict is not the user's.
+      expect(status([row("[status-reviewed]", { owner: "dana.kim@example.com" })])).to.equal("Under review");
     });
   });
 

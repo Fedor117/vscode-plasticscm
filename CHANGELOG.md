@@ -9,19 +9,44 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Added
 
 - **Add Me as Reviewer** (experimental, behind `plastic-scm.reviews.experimentalPosting`, cloud
-  repositories only) adds the `cm whoami` user to a review's reviewers through Unity's hosted API,
-  with a bearer token saved by **Configure Experimental Posting…**. It is in the Review view's
-  title bar, a review's context menu, the Command Palette and the Overview. The title bar and the
-  Overview offer it only when you are not the review's author, its assignee or already requested;
-  the context menu and the Command Palette say why when you can't be added. Not yet verified
-  against the live service: Unity does not document how a user gets a token for this API.
-- With the setting on, **Set Review Status…** adds you as a reviewer first when you could be
-  added, or asks when no token is saved. With it off, nothing changes.
+  repositories only) adds the `cm whoami` user to a review's reviewers through the Unity Version
+  Control Server REST API. It is in the Review view's title bar, a review's context menu, the
+  Command Palette and the Overview. The title bar and the Overview offer it only when you are not
+  the review's author, its assignee or already requested; the context menu and the Command Palette
+  say why when you can't be added. When `cm` refuses to create a token, it says what an organization
+  admin can do and offers **Open in Unity Version Control**, from the first attempt on.
+- With the setting on, **Set Review Status…** sets your own status as a reviewer through the REST
+  API, adding you as a reviewer first when you could be added. The review's author and assignee,
+  anyone who chooses **Set Status Without Adding**, and anyone without token access still set the
+  review's status with `cm codereview`. A missing token never blocks that: when `cm` refuses to
+  create one during the action, the dialog offers the `cm` route. With the setting off, nothing
+  changes.
+- Experimental review writes use a personal access token that the extension creates with
+  `cm accesstoken create` after asking once per server and user, keeps in VS Code's secret storage,
+  and reveals again with `cm accesstoken reveal` when it expires. An organization admin has to allow
+  tokens first (`cm accesstoken admin allowlist add`). **Revoke Review Access Token** revokes it
+  with `cm accesstoken revoke`. Not yet verified against the live service: that the REST API
+  accepts a revealed token as a bearer token, the organization name it expects for Unity
+  organizations, how a repository name with `/` is encoded, and the line encoding of inline
+  comments.
+- **Open in Unity Version Control** opens a review in the desktop app through a `plastic://`
+  code-review link. It is on a review's context menu and the Review view's `…` menu, and does not
+  need the experimental setting.
 
 ### Changed
 
+- Experimental comment and reply posting goes to the Unity Version Control Server REST API on the
+  organization's regional server, with the same personal access token. The confirmation names
+  `<server> through the Unity Version Control REST API` as the destination.
 - The end-to-end review tests run on every test run, against a synthetic Plastic
   server.
+
+### Removed
+
+- **Configure Experimental Posting…**, and the organization name, repository name and token it
+  asked for. **Forget Experimental Posting Token** is replaced by **Revoke Review Access Token**.
+  The bearer token that 0.4.0 saved for a workspace and repository is deleted from VS Code's secret
+  storage the next time Plastic Reviews shows that workspace, whatever the setting.
 
 ## [0.4.0] - 2026-09-23
 

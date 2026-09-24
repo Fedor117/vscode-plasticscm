@@ -301,6 +301,19 @@ export function reviewerBlock(
 }
 
 /**
+ * The status `user` gave the review, as their reviewer card shows it: their
+ * latest verdict while it stands, Under review otherwise, including for
+ * someone who is not a reviewer.
+ */
+export function reviewerStatus(
+    timeline: readonly IReviewTimelineEvent[],
+    review: Pick<IReview, "owner" | "assignee">,
+    user: string): ReviewStatus {
+  const state = reviewerStates(timeline, review).find(reviewer => sameUser(reviewer.user, user))?.state;
+  return state === "reviewed" ? "Reviewed" : state === "reworkRequired" ? "Rework required" : "Under review";
+}
+
+/**
  * Review ids where `user` is currently a requested reviewer, from timeline rows
  * of any number of reviews (the queue's `comment like` query).
  */

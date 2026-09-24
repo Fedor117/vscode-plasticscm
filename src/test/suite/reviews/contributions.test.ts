@@ -36,7 +36,9 @@ import {
   window,
   workspace,
 } from "vscode";
+import { CONSENT_MESSAGE, ITokenCm, tokenKey } from "../../../reviews/reviewTokens";
 import { CONTEXT_KEYS, PlasticReviews } from "../../../reviews/plasticReviews";
+import { FakeTokenCm, syntheticJwt, tokenId } from "./tokenFixtures";
 import {
   isOverviewTab,
   MARKDOWN_PREVIEW_EDITOR,
@@ -49,6 +51,7 @@ import { memorySecrets, numberedText, until } from "./editorFixtures";
 import { ReviewTreeNode, ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
 import { DiscussionsProvider } from "../../../reviews/discussionsProvider";
 import { expect } from "chai";
+import { FakeRest } from "./restFixtures";
 import { fileKey } from "../../../reviews/models";
 import { IReviewPickItem } from "../../../reviews/reviewPresentation";
 import { IReviewPostingOptions } from "../../../reviews/reviewPosting";
@@ -270,6 +273,45 @@ describe("Plastic Reviews contributions", () => {
       expect(entries("editor/title")).to.deep.equal([]);
     });
 
+  it("offers Open in Unity Version Control whatever the setting, and Revoke Review Access Token only with it", () => {
+    const command = (name: string) =>
+      contributes.commands.find(entry => entry.command === REVIEW_COMMAND_PREFIX + name);
+    expect(command("openInDesktop")).to.deep.equal({
+      category: "Plastic Reviews",
+      command: "plastic-scm.reviews.openInDesktop",
+      icon: "$(link-external)",
+      title: "Open in Unity Version Control",
+    });
+    expect(command("revokeAccessToken")).to.deep.equal({
+      category: "Plastic Reviews",
+      command: "plastic-scm.reviews.revokeAccessToken",
+      title: "Revoke Review Access Token",
+    });
+    expect([ command("configurePosting"), command("forgetPosting") ]).to.deep.equal([ undefined, undefined ]);
+    const entries = (menu: string, name: string) => contributes.menus[menu]
+      .filter(entry => entry.command === REVIEW_COMMAND_PREFIX + name)
+      .map(entry => ({ group: entry.group, when: entry.when }));
+    expect(entries("view/item/context", "openInDesktop"))
+      .to.deep.equal([{ group: "1_open@2", when: "view == plastic-scm.reviews.list && viewItem =~ /^review;/" }]);
+    expect(entries("view/title", "openInDesktop")).to.deep.equal([{
+      group: "1_review@3", when: "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+    }]);
+    expect(entries("commandPalette", "openInDesktop"))
+      .to.deep.equal([{ group: undefined, when: "plastic-scm.reviews.hasActiveReview" }]);
+    const setting = "config.plastic-scm.reviews.experimentalPosting";
+    expect(entries("view/title", "revokeAccessToken")).to.deep.equal([{
+      group: "8_experimental@1",
+      when: `view == plastic-scm.reviews.list && ${setting} && ${CONTEXT_KEYS.hasAccessToken}`,
+    }]);
+    expect(entries("commandPalette", "revokeAccessToken"))
+      .to.deep.equal([{ group: undefined, when: `${setting} && ${CONTEXT_KEYS.hasAccessToken}` }]);
+    const posting = contributes.configuration.properties["plastic-scm.reviews.experimentalPosting"] as {
+      markdownDescription: string;
+    };
+    expect(posting.markdownDescription).to.contain("personal access token").and.contain("with cm")
+      .and.contain("Unity Version Control Server REST API").and.not.contain("hosted API");
+  });
+
   it("puts the review's actions on the Overview's tab, scoped to the active review's Overview", () => {
     const overview = contributes.menus["editor/title"]
       .filter(entry => entry.when?.includes(CONTEXT_KEYS.activeEditorIsOverview));
@@ -363,6 +405,8 @@ describe("Plastic Reviews contributions", () => {
     let reviews: PlasticReviews | undefined;
     let shell: ReviewShell;
     const lines: string[] = [];
+    /** The links Open in Unity Version Control handed on. */
+    const external: string[] = [];
     const channel = { appendLine: (line: string) => lines.push(line) } as unknown as OutputChannel;
 
     const WORKSPACE = { id: "wk", name: "Nimbus", path: WORKSPACE_ROOT, repository: REPOSITORY };
@@ -375,6 +419,7 @@ describe("Plastic Reviews contributions", () => {
           workspaceState?: Memento;
           posting?: IReviewPostingOptions;
           secrets?: ReturnType<typeof memorySecrets>;
+          tokenCm?: ITokenCm;
         } = {}) {
       const workspaces = options.workspaces ?? [WORKSPACE];
       return new PlasticReviews({
@@ -392,17 +437,23 @@ describe("Plastic Reviews contributions", () => {
           ui: {
             confirm: () => Promise.resolve(false),
             error: message => lines.push(`error: ${message}`),
+            openExternal: link => {
+              external.push(link);
+              return Promise.resolve(true);
+            },
             progress: (_viewId, task) => task(),
             status: () => undefined,
           },
         },
         shellConfig: () => SHELL_CONFIG,
+        tokenCm: options.tokenCm,
         workspaceState: options.workspaceState ?? memento(),
         workspaces: () => workspaces,
       });
     }
     beforeEach(() => {
       lines.length = 0;
+      external.length = 0;
       shell = new ReviewShell();
       shell.answer = scenarioAnswer;
       reviews = create();
@@ -1161,13 +1212,18 @@ describe("Plastic Reviews contributions", () => {
       }
     });
 
-    describe("Add Me as Reviewer", () => {
+    describe("Add Me as Reviewer, Open in Unity Version Control and the access token", () => {
       const SAM = "sam.rivera@example.com";
-      const SECRET = `plastic-reviews.experimental:${JSON.stringify([ "wk", REPOSITORY ])}`;
-      const CONNECTION = { organization: "acme-studio", repository: "Nimbus/Nimbus", token: "test-token" };
+      const SERVER = "acme-studio@unity";
+      const REVIEWERS = "/api/v1/organizations/acme-studio/repos/Nimbus%2FNimbus/codereview/12831/reviewers";
+      const LINK = "plastic://acme-studio@unity/repos/Nimbus/Nimbus/code-reviews/12831";
       /** The scenario's comment rows without those that request the cm user; their verdicts stay. */
       const UNREQUESTED = SCENARIO_COMMENTS.filter(row => !/^\[requested-review-from/.test(row.text));
-      const requests: Array<{ url: string; body: string }> = [];
+      /** The writes the fake REST API received. */
+      const requests: Array<{ path: string; body: unknown }> = [];
+      /** The cm that makes tokens, and the token saved for the server before the test. */
+      let cm: FakeTokenCm;
+      let saved: string;
       let comments = UNREQUESTED;
       let people = { assignee: SAM, owner: AUTHOR };
       let setting = true;
@@ -1187,20 +1243,35 @@ describe("Plastic Reviews contributions", () => {
         });
       }
 
-      /** A PlasticReviews with experimental posting on a fake writer; it adds the cm user as the service would. */
-      function withPosting(connected = true): PlasticReviews {
+      /** What cm was asked about tokens: the `accesstoken` subcommands. */
+      const tokenWork = () => cm.calls.filter(call => call[0] === "accesstoken").map(call => call[1]);
+
+      /**
+       * A PlasticReviews with experimental posting on a fake cm and a fake REST API, which adds the cm user as the
+       * service would; `connected`, a token for the server is saved already. `organization` is what
+       * `cm getconfig organization` prints, by default an organization on a documented region.
+       */
+      function withPosting(connected = true, organization?: string): PlasticReviews {
         reviews?.dispose();
-        const writer = new ReviewWriter(call => {
-          requests.push({ body: call.body, url: call.url.toString() });
+        cm = new FakeTokenCm();
+        cm.organization = organization ?? cm.organization;
+        const rest = new FakeRest();
+        rest.onWrite = () => {
           comments = comments.concat(marker(13001, "requested-review-from"));
-          return Promise.resolve({
-            body: JSON.stringify({ reviewers: [{ isGroup: false, name: ME, status: "under-review" }] }),
-            status: 201,
-          });
+        };
+        const writer = new ReviewWriter((call, cancel) => {
+          if (call.method !== "GET") {
+            requests.push({ body: JSON.parse(call.body ?? "null") as unknown, path: call.url.pathname });
+          }
+          return rest.transport(call, cancel);
         });
+        saved = syntheticJwt(Math.floor(Date.now() / 1000) + 60 * 60);
+        cm.tokens.set(tokenId(1), 0);
+        const secret = JSON.stringify({ expiresAt: Date.now() + 60 * 60 * 1000, id: tokenId(1), token: saved });
         reviews = create({
           posting: { setting: () => setting, trusted: () => true, writer },
-          secrets: memorySecrets(connected ? { [SECRET]: JSON.stringify(CONNECTION) } : {}),
+          secrets: memorySecrets(connected ? { [tokenKey(SERVER, ME)]: secret } : {}),
+          tokenCm: cm,
         });
         return reviews;
       }
@@ -1291,81 +1362,113 @@ describe("Plastic Reviews contributions", () => {
         expect(requests).to.deep.equal([]);
       });
 
-      it("adds the cm user to the active review once, then shows them and stops offering itself", async () => {
-        withPosting();
-        const keys = await opened();
-        await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true);
-        await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
-        expect(requests).to.have.length(1);
-        expect(new URL(requests[0].url).pathname).to.match(/\/code-reviews\/12831\/reviewers$/);
-        expect(JSON.parse(requests[0].body)).to.deep.equal({ reviewers: [ME] });
-        await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false);
-        const active = reviews!.session.active!;
-        expect(active.discussions.state === "ready" && active.discussions.value.reviewers).to.include(ME);
-        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
-        expect(lines.join("\n")).to.not.contain("test-token");
-      });
+      it("adds the cm user to the active review once with the saved token, then shows them and stops offering itself",
+        async () => {
+          withPosting();
+          const keys = await opened();
+          await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true);
+          await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
+          expect(requests).to.deep.equal([{ body: { reviewers: [ME] }, path: REVIEWERS }]);
+          await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false);
+          const active = reviews!.session.active!;
+          expect(active.discussions.state === "ready" && active.discussions.value.reviewers).to.include(ME);
+          expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+          expect(lines.join("\n")).to.not.contain(saved);
+          expect(tokenWork()).to.deep.equal([]);
+        });
 
       it("adds the cm user to a Reviews row's review, which need not be open", async () => {
         withPosting();
         await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer", await reviewRow(BRANCH_REVIEW_ID));
-        expect(requests.map(request => new URL(request.url).pathname.replace(/^.*\/code-reviews\//, "")))
+        expect(requests.map(request => request.path.replace(/^.*\/codereview\//, "")))
           .to.deep.equal(["12831/reviewers"]);
         expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
       });
 
-      it("offers the setting while it is off, Configure Experimental Posting… without a token, and sends nothing",
+      it("offers the setting while it is off, asks before creating a token, and sends nothing", async () => {
+        setting = false;
+        withPosting();
+        await opened();
+        const settingOff = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
+        expect(settingOff).to.deep.equal([
+          "Add Me as Reviewer is experimental. Turn on the plastic-scm.reviews.experimentalPosting setting to use it.",
+        ]);
+        setting = true;
+        withPosting(false);
+        await opened();
+        expect(await warned(undefined, () => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer")))
+          .to.deep.equal([CONSENT_MESSAGE]);
+        expect(requests).to.deep.equal([]);
+        expect(tokenWork()).to.deep.equal([]);
+        // Declining either offer stops there: nothing fails for want of a token.
+        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+      });
+
+      it("says why Add Me as Reviewer can't work where the region is not a documented server, and sends nothing",
         async () => {
-          setting = false;
-          withPosting();
+          withPosting(true, "acme-studio|unity|-1|plastic.example.test");
           await opened();
-          const settingOff = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
-          expect(settingOff).to.deep.equal([
-            "Add Me as Reviewer is experimental. Turn on the plastic-scm.reviews.experimentalPosting setting " +
-              "to use it.",
-          ]);
-          setting = true;
-          withPosting(false);
-          await opened();
-          expect(await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer")))
-            .to.deep.equal(["Adding yourself as a reviewer needs a Unity user token for this workspace."]);
+          const shown = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
+          expect(shown).to.deep.equal(["The Unity Version Control Server REST API documents no server for " +
+            "acme-studio@unity, whose region is \"plastic.example.test\"."]);
           expect(requests).to.deep.equal([]);
-          // Dismissing either offer stops there: nothing fails for want of a token.
+          expect(tokenWork()).to.deep.equal([]);
           expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
         });
 
-      it("adds once Configure Experimental Posting…, chosen from its offer, has saved a token", async () => {
+      it("creates a token with cm once the user agrees, adds, and offers Revoke Review Access Token", async () => {
         withPosting(false);
+        const keys = await opened();
+        expect(keys.get(CONTEXT_KEYS.hasAccessToken)).to.equal(false);
+        const shown = await warned("Create Token and Add",
+          () => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
+        expect(shown).to.deep.equal([CONSENT_MESSAGE]);
+        expect(tokenWork()).to.deep.equal([ "create", "reveal" ]);
+        expect(requests.map(request => request.path)).to.deep.equal([REVIEWERS]);
+        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === true);
+        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+      });
+
+      it("revokes the saved token with cm, and then stops offering Revoke Review Access Token", async () => {
+        withPosting();
+        const keys = await opened();
+        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === true);
+        const shown = await informed(() => commands.executeCommand("plastic-scm.reviews.revokeAccessToken"));
+        expect(shown).to.deep.equal(["Revoked the review access token for acme-studio@unity."]);
+        expect(cm.calls[cm.calls.length - 1]).to.deep.equal([ "accesstoken", "revoke", tokenId(1), SERVER ]);
+        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === false);
+        expect(requests).to.deep.equal([]);
+      });
+
+      it("opens a review in Unity Version Control from its row or the Review view, with the setting off", async () => {
+        setting = false;
+        withPosting();
         await opened();
-        const api = window as unknown as {
-          showInformationMessage: (message: string) => Thenable<string | undefined>;
-          showInputBox: () => Thenable<string | undefined>;
-        };
-        const { showInformationMessage, showInputBox } = api;
-        const offers: string[] = [];
-        let answers: string[] = [];
-        api.showInformationMessage = message => {
-          offers.push(message);
-          return Promise.resolve("Configure Experimental Posting…");
-        };
-        api.showInputBox = () => Promise.resolve(answers.shift());
-        try {
-          // Configuration cancelled at its first box: nothing is saved or sent.
-          await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
-          expect(requests).to.deep.equal([]);
-          answers = [ "acme-studio", "Nimbus/Nimbus", "test-token" ];
-          await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
-        } finally {
-          api.showInformationMessage = showInformationMessage;
-          api.showInputBox = showInputBox;
-        }
-        const offer = "Adding yourself as a reviewer needs a Unity user token for this workspace.";
-        expect(offers).to.deep.equal([ offer, offer ]);
-        expect(answers).to.deep.equal([]);
-        expect(requests.map(request => new URL(request.url).pathname)).to.deep.equal([
-          "/plastic/v1/organizations/acme-studio/repositories/Nimbus%2FNimbus/code-reviews/12831/reviewers",
+        await commands.executeCommand("plastic-scm.reviews.openInDesktop", await reviewRow(BRANCH_REVIEW_ID));
+        await commands.executeCommand("plastic-scm.reviews.openInDesktop");
+        expect(external).to.deep.equal([ LINK, LINK ]);
+        expect(requests).to.deep.equal([]);
+        expect(tokenWork()).to.deep.equal([]);
+      });
+
+      it("starts Set Review Status…'s picker from the user's own verdict, then adds them and sends it", async () => {
+        withPosting();
+        await opened();
+        let placeholder: string | undefined;
+        let labels: string[] = [];
+        await picking(() => commands.executeCommand("plastic-scm.reviews.setStatus"), fake => {
+          placeholder = fake.placeholder;
+          labels = fake.items.map(item => item.label);
+          fake.accept(fake.items[0]);
+          return Promise.resolve();
+        });
+        // The scenario's last verdict of the cm user is Rework required; the review itself is Under review.
+        expect(placeholder).to.equal("Set your status on review #12831 (currently Rework required)");
+        expect(labels).to.deep.equal([ "Under review", "Current", "Rework required", "Reviewed" ]);
+        expect(requests).to.deep.equal([
+          { body: { reviewers: [ME] }, path: REVIEWERS },
+          { body: { status: "Under review" }, path: `${REVIEWERS}/${encodeURIComponent(ME)}/status` },
         ]);
-        expect(JSON.parse(requests[0].body)).to.deep.equal({ reviewers: [ME] });
         expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
       });
 

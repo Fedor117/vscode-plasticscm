@@ -7,12 +7,13 @@ import {
   Disposable,
   Event,
   EventEmitter,
-  SecretStorage,
   Uri,
   window,
   workspace,
 } from "vscode";
-import { IReviewDraft, IReviewWriteConnection, ReviewWriteError, ReviewWriter } from "./reviewWriter";
+import { CONSENT_MESSAGE, consentDetail, IOrganization, ReviewTokens, TokenState } from "./reviewTokens";
+import { IReviewConnection, IReviewDraft, restOrigin, ReviewWriteError, ReviewWriter } from "./reviewWriter";
+import { repositoryName, repositoryServer, ReviewStatus } from "./models";
 import { randomBytes } from "crypto";
 
 /** The setting that turns experimental posting on, under `plastic-scm.reviews`. */
@@ -30,12 +31,22 @@ export interface IPostingEditors {
   setPostingEnabled(enabled: boolean): void;
 }
 
+/** What posting needs to know about a review workspace. */
+export interface IPostingWorkspaces {
+  /** The repository spec `cm status` reports; undefined until it is known. */
+  repository(workspaceId: string): string | undefined;
+  /** The cm user, as `cm whoami` prints it; rejects when cm cannot say. */
+  user(workspaceId: string): Promise<string>;
+}
+
 export interface IReviewPostingOptions {
   /** The experimental setting; read on every use. */
   setting?: () => boolean;
   trusted?: () => boolean;
   /** The modal shown before every send; resolves true to send. */
   confirm?: (message: string, detail: string) => Thenable<boolean>;
+  /** The modal shown before a post needs the first token for its server; resolves true to create one. */
+  consent?: (message: string, detail: string) => Thenable<boolean>;
   /** Where a refused action is explained. */
   notify?: (message: string) => void;
   writer?: ReviewWriter;
@@ -53,45 +64,66 @@ interface ILocalPost {
   started: boolean;
 }
 
-/** Unity Version Control cloud repositories, the only ones the hosted API serves. */
+/** A workspace whose writes are not blocked: its server and user, and where the REST API is for them. */
+interface IPostingTarget {
+  server: string;
+  user: string;
+  /** The repository's name, without its server. */
+  repository: string;
+  organization: IOrganization;
+  origin: string;
+}
+
+/** Unity Version Control cloud repositories, the only ones the REST API serves. */
 export function isCloudRepository(repository: string): boolean {
   return /@(?:cloud|unity)$/i.test(repository.trim());
 }
 
 /**
- * Whether Add Me as Reviewer can work in a workspace: `settingOff` (the
- * experimental setting is off), `blocked` (the workspace is untrusted or its
- * repository is not a cloud one; `reason` says which), `unconfigured` (no
- * saved connection) or `ready`.
+ * Whether review writes can work in a workspace, as far as can be told
+ * without creating or revealing a token or asking the REST API anything:
+ * `settingOff`; `blocked` (the workspace is untrusted or not a cloud one, cm
+ * is missing or too old, or the organization's region is not a documented
+ * REST server; `reason` says which); `needsConsent` (no token for `server`
+ * yet, and the user has not agreed to create one); `notAllowed` and
+ * `disabled` (cm lately refused to create one; `message` says what an admin
+ * can do, and `command` is the admin's command); or `ready`.
  */
-export type ReviewerAccess =
+export type ReviewAccess =
   | { state: "settingOff" }
   | { state: "blocked"; reason: string }
-  | { state: "unconfigured" }
+  | { state: "needsConsent"; server: string }
+  | { state: "notAllowed"; message: string; command: string }
+  | { state: "disabled"; message: string }
   | { state: "ready" };
 
 /**
- * Experimental posting through Unity's hosted API, from the native comment UI.
- * Every send is confirmed in a modal, and its result stays in the thread as a
- * local comment that keeps the text: posted, not sent (Send Again reuses the
- * draft key, so the writer refuses a duplicate of an accepted comment), or
- * unknown (a retry needs an explicit Allow Another Attempt, which takes a new
- * key). The same connection adds the cm user to a review's reviewers (Add Me
- * as Reviewer). Credentials live in SecretStorage only and never reach a
- * comment, the output channel or an error message.
+ * Experimental review writes through the Unity Version Control Server REST
+ * API: comments and replies from the native comment UI, and for the session
+ * Add Me as Reviewer and the cm user's own verdict. The credential is a
+ * personal access token that ReviewTokens creates with cm, once the user has
+ * agreed to it; it lives in SecretStorage only and never reaches a comment,
+ * the output channel or an error message. Every send is confirmed in a modal,
+ * and its result stays in the thread as a local comment that keeps the text:
+ * posted, not sent (Send Again reuses the draft key, so the writer refuses a
+ * duplicate of an accepted comment), or unknown (a retry needs an explicit
+ * Allow Another Attempt, which takes a new key).
  */
 export class ReviewPosting implements Disposable {
   public readonly onDidChange: Event<void>;
   private readonly changes = new EventEmitter<void>();
-  private readonly connections = new Map<string, IReviewWriteConnection>();
   private readonly posts = new WeakMap<Comment, ILocalPost>();
   private readonly disposables: Disposable[] = [];
   private readonly writer: ReviewWriter;
+  /** What `refresh` last learned of each workspace: its access, and whether a token is saved for it. */
+  private readonly known = new Map<string, { access: ReviewAccess; saved: boolean }>();
+  /** The workspaces and repositories whose 0.4.0 bearer token was deleted this session; see `forgetLegacy`. */
+  private readonly forgotten = new Set<string>();
   private activeWorkspace?: string;
 
   public constructor(
-    private readonly secrets: SecretStorage | undefined,
-    private readonly repository: (workspaceId: string) => string | undefined,
+    private readonly tokens: ReviewTokens | undefined,
+    private readonly workspaces: IPostingWorkspaces,
     private readonly editors: IPostingEditors,
     private readonly options: IReviewPostingOptions = {}
   ) {
@@ -104,21 +136,25 @@ export class ReviewPosting implements Disposable {
       this.changes.event(() => editors.setPostingEnabled(this.enabled)),
       workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration(POSTING_SETTING)) {
-          this.changes.fire();
+          void this.refresh();
         }
       }),
-      workspace.onDidGrantWorkspaceTrust(() => this.changes.fire())
+      workspace.onDidGrantWorkspaceTrust(() => void this.refresh())
     );
   }
 
-  /** Posting works in the active workspace: setting on, trusted, cloud repository and a saved connection. */
+  /**
+   * Posting works in the active workspace: the setting is on, the workspace
+   * trusted and a cloud one, and access is ready or only needs consent.
+   */
   public get enabled(): boolean {
-    return !!this.activeWorkspace && !this.unavailable(this.activeWorkspace);
+    const state = this.activeState();
+    return state === "ready" || state === "needsConsent";
   }
 
-  /** A connection is saved for the active workspace (Forget is offered). */
-  public get configured(): boolean {
-    return !!this.activeWorkspace && this.configuredFor(this.activeWorkspace);
+  /** A token is saved for the active workspace: Revoke Review Access Token is offered. */
+  public get hasToken(): boolean {
+    return this.activeState() !== undefined && !!this.known.get(this.activeWorkspace!)?.saved;
   }
 
   public dispose(): void {
@@ -126,22 +162,23 @@ export class ReviewPosting implements Disposable {
     this.disposables.length = 0;
   }
 
-  public configuredFor(workspaceId: string): boolean {
-    const key = this.key(workspaceId);
-    return key !== undefined && this.connections.has(key);
-  }
-
-  public destination(workspaceId: string): string | undefined {
-    const key = this.key(workspaceId);
-    const connection = key === undefined ? undefined : this.connections.get(key);
-    return connection && `${connection.organization} / ${connection.repository}`;
-  }
-
-  /** The workspace whose reviews are shown; loads its saved connection. */
+  /** The workspace whose reviews are shown; learns its access. */
   public async select(workspaceId: string | undefined): Promise<void> {
     this.activeWorkspace = workspaceId;
-    if (workspaceId) {
-      await this.load(workspaceId);
+    await this.refresh();
+  }
+
+  /** Learns a workspace's access again, the active one's by default, and says so. */
+  public async refresh(workspaceId = this.activeWorkspace): Promise<void> {
+    if (workspaceId !== undefined) {
+      const { access, target } = await this.resolve(workspaceId);
+      let saved = false;
+      try {
+        saved = !!target && !!await this.tokens?.saved(target.server, target.user);
+      } catch {
+        // Unreadable secrets: no token to revoke.
+      }
+      this.known.set(workspaceId, { access, saved });
     }
     this.changes.fire();
   }
@@ -151,23 +188,44 @@ export class ReviewPosting implements Disposable {
     return (this.options.setting ?? settingOn)();
   }
 
-  /** Whether Add Me as Reviewer can work in a workspace; reads its saved connection again. */
-  public async reviewerAccess(workspaceId: string): Promise<ReviewerAccess> {
-    if (!this.settingOn()) {
-      return { state: "settingOff" };
-    }
-    const blocked = this.gate(workspaceId);
-    if (blocked) {
-      return { reason: blocked, state: "blocked" };
-    }
-    return await this.load(workspaceId) ? { state: "ready" } : { state: "unconfigured" };
+  /**
+   * Whether review writes can work in a workspace. Asks cm who the user is
+   * and, once per server, about its organization; creates and reveals no
+   * token, and asks the REST API nothing.
+   */
+  public async access(workspaceId: string): Promise<ReviewAccess> {
+    return (await this.resolve(workspaceId)).access;
   }
 
-  /** Adds `user`, the cm user, to a review's reviewers; rejects with a message safe to show. */
-  public async addReviewer(workspaceId: string, reviewId: number, user: string, cancel?: CancellationToken):
-      Promise<void> {
+  /** Remembers that the user agreed to a token for the workspace's server and user. */
+  public async consent(workspaceId: string): Promise<void> {
+    const { target } = await this.resolve(workspaceId);
+    if (!target || !this.tokens) {
+      throw new Error("Review actions are not available in this workspace.");
+    }
+    await this.tokens.consent(target.server, target.user);
+    await this.refresh(workspaceId);
+  }
+
+  /** Adds the cm user to a review's reviewers; rejects with a message safe to show. */
+  public async addReviewer(workspaceId: string, reviewId: number, cancel?: CancellationToken): Promise<void> {
     const connection = await this.connection(workspaceId);
-    await this.writer.addReviewer(connection, reviewId, user, cancel);
+    try {
+      await this.writer.addReviewer(connection, reviewId, cancel);
+    } finally {
+      // Its token may be new, or cm may have refused to create one.
+      await this.refresh(workspaceId);
+    }
+  }
+
+  /** Sets the cm user's own verdict on a review; rejects with a message safe to show. */
+  public async setMyStatus(workspaceId: string, reviewId: number, status: ReviewStatus): Promise<void> {
+    const connection = await this.connection(workspaceId);
+    try {
+      await this.writer.setStatus(connection, reviewId, status);
+    } finally {
+      await this.refresh(workspaceId);
+    }
   }
 
   /** Post Comment: a new comment on the line of an empty thread started with the gutter "+". */
@@ -176,8 +234,8 @@ export class ReviewPosting implements Disposable {
       const { thread } = reply;
       const text = checkText(reply.text);
       const draft = await this.editors.draftAt(thread.uri, thread.range.start.line);
-      const connection = await this.connection(draft.workspaceId);
-      if (!await this.confirm(draft, connection)) {
+      const connection = await this.postingConnection(draft.workspaceId);
+      if (!connection || !await this.confirm(draft, connection)) {
         return;
       }
       this.editors.adopt(thread);
@@ -206,8 +264,8 @@ export class ReviewPosting implements Disposable {
       if (earlier.some(post => post.text === text && post.state !== "failed")) {
         throw new Error("This reply was already sent from here. Refresh the review to check it.");
       }
-      const connection = await this.connection(draft.workspaceId);
-      if (!await this.confirm(draft, connection)) {
+      const connection = await this.postingConnection(draft.workspaceId);
+      if (!connection || !await this.confirm(draft, connection)) {
         return;
       }
       await this.send(this.append(thread, { draft, started: false, state: "sending", text, thread }), connection);
@@ -231,8 +289,8 @@ export class ReviewPosting implements Disposable {
       return;
     }
     try {
-      const connection = await this.connection(post.draft.workspaceId);
-      if (await this.confirm(post.draft, connection)) {
+      const connection = await this.postingConnection(post.draft.workspaceId);
+      if (connection && await this.confirm(post.draft, connection)) {
         await this.send(comment, connection);
       }
     } catch (error) {
@@ -264,105 +322,122 @@ export class ReviewPosting implements Disposable {
     }
   }
 
-  /** Configure Experimental Posting…: resolves true once a connection is saved, false when cancelled. */
-  public async configure(): Promise<boolean> {
+  /**
+   * Revoke Review Access Token: revokes the active workspace's token with cm
+   * and forgets it and the consent. Resolves what happened, to show.
+   */
+  public async revoke(): Promise<string> {
     const workspaceId = this.activeWorkspace;
     if (!workspaceId) {
       throw new Error("Open a review workspace first.");
     }
     const blocked = this.gate(workspaceId);
-    if (blocked) {
-      throw new Error(blocked);
+    if (blocked || !this.tokens) {
+      throw new Error(blocked ?? "Review actions need VS Code's secret storage.");
     }
-    const key = this.key(workspaceId);
-    if (!this.secrets || key === undefined) {
-      throw new Error("Experimental posting requires VS Code secret storage.");
+    const { server, user } = await this.identity(workspaceId);
+    try {
+      return await this.tokens.revoke(server, user)
+        ? `Revoked the review access token for ${server}.`
+        : `No review access token is saved for ${server}.`;
+    } finally {
+      await this.refresh(workspaceId);
     }
-    const previous = this.connections.get(key);
-    const organization = await window.showInputBox({
-      ignoreFocusOut: true,
-      prompt: "Experimental posting: enter the hosted API organization name. This does not enable cm authentication.",
-      value: previous?.organization,
-    });
-    if (!organization?.trim()) {
-      return false;
-    }
-    const repository = await window.showInputBox({
-      ignoreFocusOut: true,
-      prompt: `Hosted repository name for ${this.repository(workspaceId) ?? "this workspace"} ` +
-        "(include any repository path prefix)",
-      value: previous?.repository,
-    });
-    if (!repository?.trim()) {
-      return false;
-    }
-    const token = await window.showInputBox({
-      ignoreFocusOut: true,
-      password: true,
-      prompt: "Review-service bearer token. Stored securely; automatic login and token exchange are not implemented.",
-      validateInput: value => !value.trim() || /\s/.test(value.trim())
-        ? "Enter a bearer token without its Bearer prefix."
-        : undefined,
-    });
-    if (!token?.trim()) {
-      return false;
-    }
-    const connection = { organization: organization.trim(), repository: repository.trim(), token: token.trim() };
-    await this.secrets.store(key, JSON.stringify(connection));
-    this.connections.set(key, connection);
-    this.changes.fire();
-    return true;
   }
 
-  public async forget(): Promise<void> {
-    const key = this.activeWorkspace ? this.key(this.activeWorkspace) : undefined;
-    if (key === undefined) {
+  /** The active workspace's last known access state; undefined when there is none or it is not allowed to post. */
+  private activeState(): ReviewAccess["state"] | undefined {
+    const workspaceId = this.activeWorkspace;
+    return workspaceId === undefined || this.gate(workspaceId) ? undefined : this.known.get(workspaceId)?.access.state;
+  }
+
+  /** A workspace's access, and for one that is not blocked, where and as whom it writes. */
+  private async resolve(workspaceId: string): Promise<{ access: ReviewAccess; target?: IPostingTarget }> {
+    await this.forgetLegacy(workspaceId);
+    if (!this.settingOn()) {
+      return { access: { state: "settingOff" }};
+    }
+    const blocked = (reason: string) => ({ access: { reason, state: "blocked" } as ReviewAccess });
+    const gate = this.gate(workspaceId);
+    if (gate || !this.tokens) {
+      return blocked(gate ?? "Review actions need VS Code's secret storage.");
+    }
+    let identity: { server: string; user: string; repository: string };
+    let organization: IOrganization;
+    try {
+      identity = await this.identity(workspaceId);
+      organization = await this.tokens.organization(identity.server);
+    } catch (error) {
+      return blocked(message(error));
+    }
+    const { server, user } = identity;
+    const origin = restOrigin(organization.region);
+    if (!origin) {
+      return blocked(`The Unity Version Control Server REST API documents no server for ${server}, whose region is ` +
+        `"${organization.region}".`);
+    }
+    const target = { ...identity, organization, origin };
+    let state: TokenState;
+    try {
+      state = await this.tokens.state(server, user);
+    } catch (error) {
+      return blocked(message(error));
+    }
+    switch (state.state) {
+    case "needsConsent":
+      return { access: { server, state: "needsConsent" }, target };
+    case "notAllowed":
+      return { access: { command: state.command, message: state.message, state: "notAllowed" }, target };
+    case "disabled":
+      return { access: { message: state.message, state: "disabled" }, target };
+    default:
+      return { access: { state: "ready" }, target };
+    }
+  }
+
+  /** The workspace's server spec, repository name and cm user; rejects with a message safe to show. */
+  private async identity(workspaceId: string): Promise<{ server: string; user: string; repository: string }> {
+    const spec = this.workspaces.repository(workspaceId) ?? "";
+    let user: string;
+    try {
+      user = (await this.workspaces.user(workspaceId)).trim();
+    } catch (error) {
+      throw new Error(`cm couldn't say who you are: ${message(error)}`);
+    }
+    if (!user) {
+      throw new Error("cm couldn't say who you are.");
+    }
+    return { repository: repositoryName(spec), server: repositoryServer(spec), user };
+  }
+
+  /**
+   * Deletes, once a session, the bearer token 0.4.0's Configure Experimental
+   * Posting… kept for the workspace and its repository, whatever the setting:
+   * nothing reads it any more, and no command is left to remove it.
+   */
+  private async forgetLegacy(workspaceId: string): Promise<void> {
+    const repository = this.workspaces.repository(workspaceId);
+    const key = JSON.stringify([ workspaceId, repository ]);
+    if (!repository || !this.tokens || this.forgotten.has(key)) {
       return;
     }
-    await this.secrets?.delete(key);
-    this.connections.delete(key);
-    this.changes.fire();
-  }
-
-  /** The secret's key: workspace and repository, so a switched repository never reuses a token. */
-  private key(workspaceId: string): string | undefined {
-    const repository = this.repository(workspaceId);
-    return repository ? `plastic-reviews.experimental:${JSON.stringify([ workspaceId, repository ])}` : undefined;
-  }
-
-  private async load(workspaceId: string): Promise<IReviewWriteConnection | undefined> {
-    const key = this.key(workspaceId);
-    if (key === undefined) {
-      return undefined;
-    }
-    const saved = await this.secrets?.get(key);
-    let connection: IReviewWriteConnection | undefined;
+    this.forgotten.add(key);
     try {
-      const value = saved ? JSON.parse(saved) as Partial<IReviewWriteConnection> : undefined;
-      if (value && typeof value.token === "string" && typeof value.organization === "string" &&
-        typeof value.repository === "string") {
-        connection = { organization: value.organization, repository: value.repository, token: value.token };
-      }
+      await this.tokens.forgetLegacyToken(workspaceId, repository);
     } catch {
-      // An unreadable stored connection counts as none.
+      // Unavailable secret storage: nothing more can be done about it.
     }
-    if (connection) {
-      this.connections.set(key, connection);
-    } else {
-      this.connections.delete(key);
-    }
-    return connection;
   }
 
-  /** Why posting is off for a workspace regardless of its connection; undefined when it may post. */
+  /** Why posting is off for a workspace whatever its token; undefined when it may post. */
   private gate(workspaceId: string): string | undefined {
-    if (!(this.options.setting ?? settingOn)()) {
+    if (!this.settingOn()) {
       return `Turn on the ${POSTING_SETTING} setting to post review comments.`;
     }
     if (!(this.options.trusted ?? (() => workspace.isTrusted))()) {
       return "Posting requires a trusted workspace.";
     }
-    const repository = this.repository(workspaceId);
+    const repository = this.workspaces.repository(workspaceId);
     if (!repository) {
       return "The review workspace is no longer available.";
     }
@@ -371,36 +446,52 @@ export class ReviewPosting implements Disposable {
       : "Experimental posting only works with Unity Version Control cloud repositories.";
   }
 
-  private unavailable(workspaceId: string): string | undefined {
-    return this.gate(workspaceId) ??
-      (this.configuredFor(workspaceId) ? undefined : "Configure experimental posting for this workspace first.");
+  /** The writer's connection for a workspace whose access is ready; rejects with why not otherwise. */
+  private async connection(workspaceId: string): Promise<IReviewConnection> {
+    const { access, target } = await this.resolve(workspaceId);
+    const tokens = this.tokens;
+    if (access.state !== "ready" || !target || !tokens) {
+      throw new Error(unavailable(access));
+    }
+    const { organization, origin, repository, server, user } = target;
+    return {
+      organizations: [ organization.name, organization.unityId ].filter(name => !!name && name !== "-1"),
+      origin,
+      repository,
+      server,
+      token: stale => tokens.token(server, user, stale),
+      user,
+    };
   }
 
-  private async connection(workspaceId: string): Promise<IReviewWriteConnection> {
-    const blocked = this.gate(workspaceId);
-    if (blocked) {
-      throw new Error(blocked);
+  /**
+   * The connection for a post: without a token for its server yet, it asks
+   * for consent first, and resolves undefined when the user declines. Rejects
+   * with why posting cannot work in the workspace.
+   */
+  private async postingConnection(workspaceId: string): Promise<IReviewConnection | undefined> {
+    const access = await this.access(workspaceId);
+    if (access.state === "needsConsent") {
+      if (!await (this.options.consent ?? consentModal)(CONSENT_MESSAGE, consentDetail(access.server))) {
+        return undefined;
+      }
+      await this.consent(workspaceId);
     }
-    const connection = await this.load(workspaceId);
-    if (!connection) {
-      throw new Error("Configure experimental posting for this workspace first.");
-    }
-    return connection;
+    return this.connection(workspaceId);
   }
 
-  private confirm(draft: IReviewDraft, connection: IReviewWriteConnection): Thenable<boolean> {
+  private confirm(draft: IReviewDraft, connection: IReviewConnection): Thenable<boolean> {
     const reply = draft.parentId !== undefined;
     const line = draft.location >= 0 ? `, line ${draft.location + 1}` : "";
     const detail = [
-      `Destination: ${connection.organization} / ${connection.repository}`,
+      `Destination: ${connection.server} through the Unity Version Control REST API`,
       reply
         ? `Reply in the discussion on ${draft.path}${line}`
         : `File: ${draft.path}${line}, revision ${draft.revisionId}`,
-      "Experimental: authentication and line encoding are unverified. " +
-        "Refresh the review afterwards to check the result.",
+      "Experimental: line encoding is unverified. Refresh the review afterwards to check the result.",
     ].join("\n");
-    const message = `Post this ${reply ? "reply" : "comment"} to review #${draft.reviewId}?`;
-    return (this.options.confirm ?? confirmModal)(message, detail);
+    const title = `Post this ${reply ? "reply" : "comment"} to review #${draft.reviewId}?`;
+    return (this.options.confirm ?? confirmModal)(title, detail);
   }
 
   private append(thread: CommentThread, post: ILocalPost): Comment {
@@ -417,7 +508,7 @@ export class ReviewPosting implements Disposable {
     return comment;
   }
 
-  private async send(comment: Comment, connection: IReviewWriteConnection): Promise<void> {
+  private async send(comment: Comment, connection: IReviewConnection): Promise<void> {
     const post = this.posts.get(comment);
     if (!post) {
       return;
@@ -432,6 +523,9 @@ export class ReviewPosting implements Disposable {
       } else {
         this.update(comment, "failed", error instanceof ReviewWriteError ? error.message : "posting failed");
       }
+    } finally {
+      // The first post of a server has created its token, or cm has refused to.
+      await this.refresh(post.draft.workspaceId);
     }
   }
 
@@ -455,8 +549,24 @@ export class ReviewPosting implements Disposable {
   }
 
   private notify(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    (this.options.notify ?? (text => void window.showErrorMessage(text)))(message);
+    (this.options.notify ?? (text => void window.showErrorMessage(text)))(message(error));
+  }
+}
+
+/** Why an access that is not `ready` cannot write. */
+function unavailable(access: ReviewAccess): string {
+  switch (access.state) {
+  case "settingOff":
+    return `Turn on the ${POSTING_SETTING} setting first.`;
+  case "blocked":
+    return access.reason;
+  case "needsConsent":
+    return `Create a personal access token for ${access.server} first.`;
+  case "notAllowed":
+  case "disabled":
+    return access.message;
+  default:
+    return "Review actions are not available in this workspace.";
   }
 }
 
@@ -487,12 +597,20 @@ function isPost(post: ILocalPost | undefined): post is ILocalPost {
   return post !== undefined;
 }
 
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function settingOn(): boolean {
   return workspace.getConfiguration().get<boolean>(POSTING_SETTING, false);
 }
 
-async function confirmModal(message: string, detail: string): Promise<boolean> {
-  return await window.showWarningMessage(message, { detail, modal: true }, "Post") === "Post";
+async function confirmModal(title: string, detail: string): Promise<boolean> {
+  return await window.showWarningMessage(title, { detail, modal: true }, "Post") === "Post";
+}
+
+async function consentModal(title: string, detail: string): Promise<boolean> {
+  return await window.showWarningMessage(title, { detail, modal: true }, "Create Token") === "Create Token";
 }
 
 function newKey(): string {

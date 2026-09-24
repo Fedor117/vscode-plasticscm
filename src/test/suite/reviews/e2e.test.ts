@@ -28,13 +28,16 @@ import {
 } from "./overviewFixtures";
 import { FileChangeStatus, RevisionType } from "../../../models";
 import { fileKey, IReviewChangesets, IReviewDiscussions, IReviewFiles, IReviewThread } from "../../../reviews/models";
-import { IOverviewTarget, INimbusScenario, ME, nimbusRepository } from "./syntheticNimbus";
+import { INimbusScenario, IOverviewTarget, ME, nimbusRepository } from "./syntheticNimbus";
 import { IReviewLink, parseReviewLink } from "../../../reviews/reviewLinks";
 import { ISyntheticComment, ISyntheticDiffRow, ISyntheticReview, SyntheticPlasticServer } from "./syntheticServer";
 import { label, NOW } from "./viewFixtures";
 import { memorySecrets, nativeThread, until } from "./editorFixtures";
 import { noDiffMessage, reviewPickItems } from "../../../reviews/reviewPresentation";
+import { CONSENT_MESSAGE } from "../../../reviews/reviewTokens";
 import { expect } from "chai";
+import { FakeRest } from "./restFixtures";
+import { FakeTokenCm } from "./tokenFixtures";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { renderOverview } from "../../../reviews/reviewOverview";
 import { reviewDiff } from "../../../reviews/reviewEditors";
@@ -1051,98 +1054,111 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
     expect(opened, "links dispatched through the handler").to.be.greaterThan(0);
   });
 
-  it("adds the cm user as a reviewer through a mocked review service, and the Overview shows them", async () => {
-    const REVIEW_ID = 312;
-    const REVIEWERS_PATH = `/code-reviews/${REVIEW_ID}/reviewers`;
-    const refused: string[] = [];
-    let added: number | undefined;
-    // The review service, mocked where the writer hands a request to HTTPS: it answers this one POST, once, and
-    // refuses anything else. As the service would, the add puts a request row in the review's timeline.
-    const writer = new ReviewWriter(call => {
-      if (call.method !== "POST" || call.url.hostname !== "services.api.unity.com" ||
-        !call.url.pathname.endsWith(REVIEWERS_PATH) || added !== undefined) {
-        refused.push(`${call.method} ${call.url.pathname}`);
-        return Promise.reject(new Error("the mocked review service refuses every other request"));
-      }
-      const [user] = (JSON.parse(call.body) as { reviewers: string[] }).reviewers;
-      added = server.addTimeline(REVIEW_ID, user, "2026-09-22T17:30:00+01:00", `[requested-review-from]${user}`);
-      return Promise.resolve({
-        body: JSON.stringify({ reviewers: [{ isGroup: false, name: user, status: "under-review" }] }),
-        status: 201,
-      });
-    });
-    const connection = { organization: "acme-studio", repository: "Nimbus", token: "synthetic-token" };
-    const secretKey = `plastic-reviews.experimental:${JSON.stringify([ WORKSPACE_ID, server.repository ])}`;
-    const statuses: string[] = [];
-    reviews.dispose();
-    reviews = new PlasticReviews({
-      ...host,
-      posting: { setting: () => true, trusted: () => true, writer },
-      secrets: memorySecrets({ [secretKey]: JSON.stringify(connection) }),
-      session: {
-        ...host.session,
-        ui: {
-          ...host.session?.ui,
-          cancellable: (_title, task) => task(new CancellationTokenSource().token),
-          status: message => {
-            statuses.push(message);
+  it("adds the cm user as a reviewer through a fake REST API, with a token from a fake cm, and the Overview shows them",
+    async () => {
+      const REVIEW_ID = 312;
+      const refused: string[] = [];
+      const asked: string[] = [];
+      let added: number | undefined;
+      // The Server REST API in memory: it knows review 312 of Nimbus and adds one reviewer to it, once; any other write
+      // it refuses. As the service would, the add puts a request row in the review's timeline.
+      const rest = new FakeRest();
+      rest.repositories = ["Nimbus"];
+      rest.reviews = new Set([REVIEW_ID]);
+      rest.respond = call => {
+        if (call.method !== "GET" &&
+          (added !== undefined || !call.path.endsWith(`/codereview/${REVIEW_ID}/reviewers`))) {
+          refused.push(`${call.method} ${call.path}`);
+          return Promise.reject(new Error("the fake REST API refuses every other write"));
+        }
+        return undefined;
+      };
+      rest.onWrite = call => {
+        const [user] = (call.body as { reviewers: string[] }).reviewers;
+        added = server.addTimeline(REVIEW_ID, user, "2026-09-22T17:30:00+01:00", `[requested-review-from]${user}`);
+      };
+      // cm for tokens, in memory as well: the review services' cm path cannot exist, and neither is the real cm run.
+      const cm = new FakeTokenCm();
+      const statuses: string[] = [];
+      reviews.dispose();
+      reviews = new PlasticReviews({
+        ...host,
+        posting: { setting: () => true, trusted: () => true, writer: new ReviewWriter(rest.transport) },
+        secrets: memorySecrets(),
+        session: {
+          ...host.session,
+          ui: {
+            ...host.session?.ui,
+            cancellable: (_title, task) => task(new CancellationTokenSource().token),
+            // The one question: whether to create the first token for the organization.
+            choose: message => {
+              asked.push(message);
+              return Promise.resolve("Create Token and Add");
+            },
+            status: message => {
+              statuses.push(message);
+            },
           },
         },
-      },
-    });
-    const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
-    const needsMe = () => session().group("needsMyReview");
-    /** The Reviewers section's lines, from its heading to the next heading. */
-    const reviewersSection = (html: string) => {
-      const rows = textLines(html);
-      const next = /^(?:Open items|Conversation|Other discussions|Changesets|History)\b/;
-      const start = rows.findIndex(line => /^Reviewers \d+$/.test(line));
-      return rows.slice(start, rows.findIndex((line, index) => index > start && next.test(line)));
-    };
-    const myCard = (html: string) => reviewersSection(html).filter(line => /^dana\.kim you\b/.test(line));
-    try {
-      session().expandGroup("needsMyReview");
-      await settle(until(() => needsMe().loadedOnce && needsMe().stage.state === "ready"), "Needs My Review");
-      expect(needsMe().reviews.map(review => review.id)).to.not.include(REVIEW_ID);
-      await activate(REVIEW_ID);
-      expect(await settle(service().whoami(), "cm whoami")).to.equal(ME);
-      // Requested once, then removed: the cm user is not a reviewer, so the Review view and the Overview offer it.
-      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true), "the Add Me as Reviewer key");
-      const before = session().overview(WORKSPACE_ID, REVIEW_ID);
-      expectWellFormed(before);
-      expect(links(before).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
-      expect(myCard(before)).to.deep.equal([]);
+        tokenCm: cm,
+      });
+      const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
+      const needsMe = () => session().group("needsMyReview");
+      /** The Reviewers section's lines, from its heading to the next heading. */
+      const reviewersSection = (html: string) => {
+        const rows = textLines(html);
+        const next = /^(?:Open items|Conversation|Other discussions|Changesets|History)\b/;
+        const start = rows.findIndex(line => /^Reviewers \d+$/.test(line));
+        return rows.slice(start, rows.findIndex((line, index) => index > start && next.test(line)));
+      };
+      const myCard = (html: string) => reviewersSection(html).filter(line => /^dana\.kim you\b/.test(line));
+      try {
+        session().expandGroup("needsMyReview");
+        await settle(until(() => needsMe().loadedOnce && needsMe().stage.state === "ready"), "Needs My Review");
+        expect(needsMe().reviews.map(review => review.id)).to.not.include(REVIEW_ID);
+        await activate(REVIEW_ID);
+        expect(await settle(service().whoami(), "cm whoami")).to.equal(ME);
+        // Requested once, then removed: the cm user is not a reviewer, so the Review view and the Overview offer it.
+        await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true), "the Add Me as Reviewer key");
+        const before = session().overview(WORKSPACE_ID, REVIEW_ID);
+        expectWellFormed(before);
+        expect(links(before).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
+        expect(myCard(before)).to.deep.equal([]);
 
-      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer");
-      expect(refused, "requests the mock refused").to.deep.equal([]);
-      expect(added, "the request row the mocked service wrote").to.be.a("number");
-      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false), "the key after the add");
-      await settle(until(() => myCard(session().overview(WORKSPACE_ID, REVIEW_ID)).length > 0), "the reviewer card");
-      const after = session().overview(WORKSPACE_ID, REVIEW_ID);
-      expectWellFormed(after);
-      // The service writes the request row as the cm user's own, and a self-request reads as Reviewing.
-      expect(myCard(after)).to.deep.equal(["dana.kim you Reviewing"]);
-      expect(links(after).filter(link => link.text === "Add me as reviewer")).to.deep.equal([]);
-      expect(readyDiscussions().reviewers.map(user => user.toLowerCase())).to.include(ME);
-      expect(statuses).to.include(`$(person-add) Added you as a reviewer on review #${REVIEW_ID}`);
-      await settle(until(() => needsMe().reviews.some(review => review.id === REVIEW_ID)), "Needs My Review after");
-      expect(needsMe().reviews.map(review => review.id)).to.deep.equal(needsMyReview());
+        await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer");
+        expect(asked).to.deep.equal([CONSENT_MESSAGE]);
+        expect(cm.calls.map(call => call.slice(0, 2).join(" "))).to.deep.equal([
+          "getconfig organization", "accesstoken create", "accesstoken reveal",
+        ]);
+        expect(refused, "writes the fake refused").to.deep.equal([]);
+        expect(added, "the request row the fake REST API wrote").to.be.a("number");
+        expect(rest.writes().map(call => call.path))
+          .to.deep.equal([`/api/v1/organizations/acme-studio/repos/Nimbus/codereview/${REVIEW_ID}/reviewers`]);
+        expect(rest.calls.every(call => call.token === cm.revealed[0])).to.equal(true);
+        await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false), "the key after the add");
+        await settle(until(() => myCard(session().overview(WORKSPACE_ID, REVIEW_ID)).length > 0), "the reviewer card");
+        const after = session().overview(WORKSPACE_ID, REVIEW_ID);
+        expectWellFormed(after);
+        // The service writes the request row as the cm user's own, and a self-request reads as Reviewing.
+        expect(myCard(after)).to.deep.equal(["dana.kim you Reviewing"]);
+        expect(links(after).filter(link => link.text === "Add me as reviewer")).to.deep.equal([]);
+        expect(readyDiscussions().reviewers.map(user => user.toLowerCase())).to.include(ME);
+        expect(statuses).to.include(`$(person-add) Added you as a reviewer on review #${REVIEW_ID}`);
+        await settle(until(() => needsMe().reviews.some(review => review.id === REVIEW_ID)), "Needs My Review after");
+        expect(needsMe().reviews.map(review => review.id)).to.deep.equal(needsMyReview());
 
-      // Run again, it sends nothing: the cm user is a reviewer now. And the mock answers no other request.
-      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer again");
-      const other = await writer.addReviewer(connection, 313, ME).then(() => "sent", (error: Error) => error.message);
-      expect(other).to.not.equal("sent");
-      expect(refused)
-        .to.deep.equal(["POST /plastic/v1/organizations/acme-studio/repositories/Nimbus/code-reviews/313/reviewers"]);
-      expect(errors, "errors shown").to.deep.equal([]);
-      expect(output.join("\n")).to.not.contain("synthetic-token");
-    } finally {
-      const row = server.comments.findIndex(comment => comment.id === added);
-      if (row >= 0) {
-        server.comments.splice(row, 1);
+        // Run again, it sends nothing and asks nothing: the cm user is a reviewer now.
+        await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer again");
+        expect([ rest.writes().length, asked.length, cm.count("create") ]).to.deep.equal([ 1, 1, 1 ]);
+        expect(errors, "errors shown").to.deep.equal([]);
+        expect(output.join("\n")).to.not.contain(cm.revealed[0]);
+      } finally {
+        const row = server.comments.findIndex(comment => comment.id === added);
+        if (row >= 0) {
+          server.comments.splice(row, 1);
+        }
+        reviews.dispose();
+        reviews = new PlasticReviews(host);
       }
-      reviews.dispose();
-      reviews = new PlasticReviews(host);
-    }
-  });
+    });
 });

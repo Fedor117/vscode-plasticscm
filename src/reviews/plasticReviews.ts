@@ -12,6 +12,7 @@ import {
   workspace,
 } from "vscode";
 import { DiscussionNode, DiscussionsProvider, discussionsViewId } from "./discussionsProvider";
+import { execFileCm, ITokenCm, ReviewTokens } from "./reviewTokens";
 import { FILE_LAYOUT_SETTING, IReviewSessionOptions, IReviewWorkspace, ReviewSession } from "./reviewSession";
 import { fileKey, IReviewComparison } from "./models";
 import { IReviewFileAt, isOverviewTab, overviewTabReview, overviewViewId, ReviewEditors } from "./reviewEditors";
@@ -29,11 +30,11 @@ export const CONTEXT_KEYS = {
   activeEditorIsReviewFile: "plastic-scm.reviews.activeEditorIsReviewFile",
   activeFileViewed: "plastic-scm.reviews.activeFileViewed",
   canAddMeAsReviewer: "plastic-scm.reviews.canAddMeAsReviewer",
+  hasAccessToken: "plastic-scm.reviews.hasAccessToken",
   hasActiveReview: "plastic-scm.reviews.hasActiveReview",
   hasUpdates: "plastic-scm.reviews.hasUpdates",
   isBranchReview: "plastic-scm.reviews.isBranchReview",
   multipleWorkspaces: "plastic-scm.reviews.multipleWorkspaces",
-  postingConfigured: "plastic-scm.reviews.postingConfigured",
   postingEnabled: "plastic-scm.reviews.postingEnabled",
 } as const;
 
@@ -51,6 +52,8 @@ export interface IPlasticReviewsHost {
   readonly session?: Partial<IReviewSessionOptions>;
   /** Test injection: the experimental setting, trust and a writer on a fake transport. */
   readonly posting?: IReviewPostingOptions;
+  /** Test injection: the cm that makes access tokens; by default the configured cm, through `execFile`. */
+  readonly tokenCm?: ITokenCm;
 }
 
 /** Comparisons whose decorations stay registered, so tabs opened before a reload keep their letters. */
@@ -97,9 +100,10 @@ export class PlasticReviews implements Disposable {
       overviewLink: link => reviewLinkUri(links, link),
       // Experimental posting is created below; it only answers once the session asks.
       reviewers: {
-        access: workspaceId => this.posting.reviewerAccess(workspaceId),
-        add: (workspaceId, reviewId, user, cancel) => this.posting.addReviewer(workspaceId, reviewId, user, cancel),
-        configure: () => this.posting.configure(),
+        access: workspaceId => this.posting.access(workspaceId),
+        add: (workspaceId, reviewId, cancel) => this.posting.addReviewer(workspaceId, reviewId, cancel),
+        consent: workspaceId => this.posting.consent(workspaceId),
+        setStatus: (workspaceId, reviewId, status) => this.posting.setMyStatus(workspaceId, reviewId, status),
         settingOn: () => this.posting.settingOn(),
       },
       shellConfig: () => host.shellConfig(),
@@ -108,8 +112,14 @@ export class PlasticReviews implements Disposable {
       ...host.session,
     });
     this.decorations = new ReviewDecorations();
-    this.posting = new ReviewPosting(
-      host.secrets, workspaceId => this.session.repository(workspaceId), this.editors, host.posting);
+    // Never the shared cm shell: it logs what cm prints, and `cm accesstoken reveal` prints the token.
+    const tokens = host.secrets && new ReviewTokens(host.secrets, host.globalState,
+      host.tokenCm ?? execFileCm(() => host.shellConfig().cmPath));
+    this.posting = new ReviewPosting(tokens, {
+      repository: workspaceId => this.session.repository(workspaceId),
+      user: workspaceId => this.session.service(workspaceId)?.whoami() ??
+        Promise.reject(new Error("The review workspace is no longer available.")),
+    }, this.editors, host.posting);
     this.listProvider = new ReviewListProvider(this.session);
     this.treeProvider = new ReviewTreeProvider(this.session);
     this.discussionsProvider = new DiscussionsProvider(this.session);
@@ -231,7 +241,7 @@ export class PlasticReviews implements Disposable {
   /** The keys follow, and so does the Overview, which offers Add me as reviewer only while the setting is on. */
   private onPostingChanged(): void {
     this.setKey(CONTEXT_KEYS.postingEnabled, this.posting.enabled);
-    this.setKey(CONTEXT_KEYS.postingConfigured, this.posting.configured);
+    this.setKey(CONTEXT_KEYS.hasAccessToken, this.posting.hasToken);
     this.updateReviewerKey();
     const active = this.session.active;
     if (active) {

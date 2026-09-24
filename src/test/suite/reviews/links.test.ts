@@ -1,6 +1,6 @@
 import { CHANGESET_REVIEW_ID, file } from "./fixtures";
+import { desktopReviewLink, IReviewLink, parseReviewLink, reviewLinkUri } from "../../../reviews/reviewLinks";
 import { expectHandlerLinksOpen, expectWellFormed, links } from "./overviewFixtures";
-import { IReviewLink, parseReviewLink, reviewLinkUri } from "../../../reviews/reviewLinks";
 import { IScenario, loadScenario, NOW, readyReview } from "./viewFixtures";
 import { expect } from "chai";
 import { fileKey } from "../../../reviews/models";
@@ -164,5 +164,31 @@ describe("Review links", () => {
       }]);
       expect(render(active)).to.not.contain("addMeAsReviewer");
     });
+  });
+});
+
+describe("Desktop review links", () => {
+  it("opens a review in Unity Version Control through plastic://, a cloud organization written <org>.cloud", () => {
+    const cases: Array<[string, number, string]> = [
+      [ "Nimbus@1234567890123@cloud", 12831, "plastic://1234567890123.cloud/repos/Nimbus/code-reviews/12831" ],
+      [ "Nimbus/Nimbus@acme-studio@unity", 12831,
+        "plastic://acme-studio@unity/repos/Nimbus/Nimbus/code-reviews/12831" ],
+      [ "Nimbus@plastic.example.test:8087", 7, "plastic://plastic.example.test:8087/repos/Nimbus/code-reviews/7" ],
+      // Each part of the repository's name is encoded, and its slashes stay.
+      [ "Nimbus Tools/Sub #1@acme-studio@CLOUD", 312,
+        "plastic://acme-studio.cloud/repos/Nimbus%20Tools/Sub%20%231/code-reviews/312" ],
+    ];
+    for (const [ repository, id, link ] of cases) {
+      expect(desktopReviewLink(repository, id), repository).to.equal(link);
+      // As the command hands it on: parsed strictly, and written back the same.
+      expect(Uri.parse(link, true).toString(), repository).to.equal(link);
+    }
+    const unusable: Array<[string, number]> = [
+      [ "Nimbus", 7 ], [ "@acme-studio@cloud", 7 ],
+      [ "Nimbus@acme-studio@cloud", 0 ], [ "Nimbus@acme-studio@cloud", 1.5 ],
+    ];
+    for (const [ repository, id ] of unusable) {
+      expect(desktopReviewLink(repository, id), `${repository} ${id}`).to.equal(undefined);
+    }
   });
 });

@@ -2,13 +2,17 @@ import {
   CancellationToken,
   commands,
   Disposable,
+  env,
   Event,
   EventEmitter,
   OutputChannel,
   ProgressLocation,
+  Uri,
   window,
   workspace,
 } from "vscode";
+import { CONSENT_MESSAGE, consentDetail } from "./reviewTokens";
+import { desktopReviewLink, IReviewLink } from "./reviewLinks";
 import { formatCount, sameStatus, threadCounts, unnamedBranchId } from "./reviewPresentation";
 import { IActiveReview, IReviewGroup, IReviewSessionView, ReviewGroupKey, Stage } from "./sessionTypes";
 import {
@@ -25,18 +29,17 @@ import {
   viewableRows,
 } from "./models";
 import { IReviewEditorContext, overviewViewId } from "./reviewEditors";
+import { isEmailAddress, ReviewWriteError } from "./reviewWriter";
 import { isReviewLoadCancelled, ReviewService } from "./reviewService";
 import { IViewedMemento, reviewKey, ViewedStore } from "./viewedStore";
-import { ReviewerBlock, reviewerBlock } from "./timeline";
+import { ReviewerBlock, reviewerBlock, reviewerStatus } from "./timeline";
 import { discussionsViewId } from "./discussionsProvider";
 import { IChangesetFileChange } from "../models";
-import { IReviewLink } from "./reviewLinks";
-import { isEmailAddress } from "./reviewWriter";
 import { IShellConfig } from "../config";
 import { PAGE_SIZE } from "./commands";
 import { randomBytes } from "crypto";
 import { renderOverview } from "./reviewOverview";
-import { ReviewerAccess } from "./reviewPosting";
+import { ReviewAccess } from "./reviewPosting";
 import { reviewListViewId } from "./reviewListProvider";
 import { reviewTreeViewId } from "./reviewTreeProvider";
 
@@ -71,22 +74,31 @@ export interface IReviewSessionUi {
   info(message: string): void;
   /** A notification with a Cancel button while `task` runs; `cancel` fires when it is pressed. */
   cancellable<T>(title: string, task: (cancel: CancellationToken) => Thenable<T>): Thenable<T>;
+  /** An error with buttons of its own; resolves the one picked, undefined when it is dismissed. */
+  alert(message: string, actions: readonly string[]): Thenable<string | undefined>;
+  /** Puts text on the clipboard. */
+  copy(text: string): Thenable<void>;
+  /** Opens a link outside VS Code, such as a `plastic://` one; resolves whether it was opened. */
+  openExternal(link: string): Thenable<boolean>;
 }
 
 /**
- * Experimental: adding the cm user to a review's reviewers through Unity's
- * hosted API, with the connection of experimental posting. ReviewPosting
- * provides it.
+ * Experimental review writes through the Unity Version Control Server REST
+ * API, with the personal access token of experimental posting: adding the cm
+ * user to a review's reviewers, and the user's own verdict. ReviewPosting
+ * provides them.
  */
 export interface IReviewSessionReviewers {
   /** The experimental setting; the Overview offers Add me as reviewer only while it is on. */
   settingOn(): boolean;
-  /** Whether adding can work in a workspace, and if not, why. */
-  access(workspaceId: string): Promise<ReviewerAccess>;
-  /** Configure Experimental Posting…; resolves true once a connection is saved. */
-  configure(): Promise<boolean>;
-  /** Rejects with a message that is safe to show. */
-  add(workspaceId: string, reviewId: number, user: string, cancel?: CancellationToken): Promise<void>;
+  /** Whether writes can work in a workspace, and if not, why; creates no token. */
+  access(workspaceId: string): Promise<ReviewAccess>;
+  /** Remembers that the user agreed to a token for the workspace's server. */
+  consent(workspaceId: string): Promise<void>;
+  /** Adds the cm user to a review's reviewers. Rejects with a message that is safe to show. */
+  add(workspaceId: string, reviewId: number, cancel?: CancellationToken): Promise<void>;
+  /** Sets the cm user's own verdict on a review. Rejects with a message that is safe to show. */
+  setStatus(workspaceId: string, reviewId: number, status: ReviewStatus): Promise<void>;
 }
 
 export interface IReviewSessionOptions {
@@ -100,7 +112,7 @@ export interface IReviewSessionOptions {
   editors?: IReviewSessionEditors;
   /** The URI that opens a thread or a file row from the Overview; without it the Overview links nothing of its own. */
   overviewLink?: (link: IReviewLink) => string;
-  /** Experimental: adds the cm user to reviewers. Without it, Set Review Status… never offers to. */
+  /** Experimental: review writes through the REST API. Without it, Set Review Status… always uses cm. */
   reviewers?: IReviewSessionReviewers;
   /** Test injection; by default every workspace gets a service with its own cm shell. */
   createService?: (workspace: IReviewWorkspace) => ReviewService;
@@ -124,10 +136,14 @@ const FIND_MAX_AGE = POLL_INTERVAL;
 const IDLE: Stage<never> = { state: "idle" };
 const LOADING: Stage<never> = { state: "loading" };
 const NOT_FOUND = "ReviewNotFound";
-/** The choices of Set Review Status… when the cm user is not a reviewer yet; a modal adds Cancel. */
+/** The choices of Set Review Status…'s and Add Me as Reviewer's dialogs; a modal adds Cancel. */
 const SET_ANYWAY = "Set Status Anyway";
-const CONFIGURE_AND_ADD = "Configure and Add…";
+const CREATE_AND_ADD = "Create Token and Add";
+const CREATE_AND_SET = "Create Token and Set";
 const WITHOUT_ADDING = "Set Status Without Adding";
+const WITH_CM = "Set Review Status with cm";
+const OPEN_IN_DESKTOP = "Open in Unity Version Control";
+const COPY_COMMAND = "Copy Command";
 /** Why the cm user cannot be added to a review's reviewers, as Add Me as Reviewer says it. */
 const BLOCKED: { [block in ReviewerBlock]: (reviewId: number) => string } = {
   assignee: id => `You're the assignee of review #${id}, which already makes you a reviewer.`,
@@ -139,16 +155,35 @@ interface ILastReviews {
   [workspaceId: string]: number | undefined;
 }
 
-/** What Set Review Status… does about the cm user's place among the reviewers; see `joinPlan`. */
-type JoinPlan =
-  | { kind: "none" }
-  | { kind: "add" | "ask"; user: string }
-  | { kind: "unable"; reason: string };
+/**
+ * How Set Review Status… sets a review's status (see `statusPlan`), and the
+ * status its picker marks current. `cm`: the review's status with cm, as
+ * without experimental posting. `personal`: the cm user's own verdict through
+ * the REST API, after adding them when `add`, and after asking to create a
+ * token for the server `consent` when there is none. `notAnAddress` and
+ * `noAccess`: the user is not a reviewer and cannot be added, for `reason`;
+ * the review's status can still be set with cm.
+ */
+export type StatusPlan =
+  | { kind: "cm"; current: string }
+  | { kind: "personal"; current: ReviewStatus; user: string; add: boolean; consent?: string }
+  | { kind: "notAnAddress" | "noAccess"; current: string; reason: string };
 
-/** Why the cm user was not added to a review's reviewers; see `addUser`. */
+/** cm's refusal to create a personal access token, as the access of experimental posting says it. */
+type TokenRefusal = Extract<ReviewAccess, { message: string }>;
+
+/** The cm user, why they cannot be added to a review's reviewers, and the status they gave it; see `joining`. */
+interface IJoining {
+  user: string;
+  block?: ReviewerBlock;
+  own: ReviewStatus;
+}
+
+/** Why the cm user was not added to a review's reviewers; see `addUser`. `uncertain`: they may have been. */
 interface IAddFailure {
   message: string;
   cancelled: boolean;
+  uncertain: boolean;
 }
 
 /**
@@ -652,91 +687,123 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   }
 
   /**
-   * Changes a review's status. Marking a review Reviewed while change requests
-   * are pending or files are unviewed asks first, as does marking one whose
-   * counts cannot be known; nothing is written unless the user confirms.
-   *
-   * With experimental posting on, a cm user who can be added to the reviewers
-   * (see `reviewerBlock`) is added first: straight away when the workspace has
-   * a connection, otherwise after asking, in one dialog with any Reviewed
-   * warning. An add of the user to the review already in flight, from Add Me
-   * as Reviewer, stands in for that one: its end is awaited and no second
-   * request goes out. A failed add asks before the status is set anyway. The
-   * review is read back afterwards, and a failed write leaves every displayed
-   * status as it was.
+   * How Set Review Status… would set a review's status, and the status its
+   * picker starts from; asks the user nothing and writes nothing. With
+   * experimental posting on and able to work, a cm user who is a reviewer, or
+   * can be added as one (see `reviewerBlock`), gives their own verdict through
+   * the REST API, and the current status is theirs (`reviewerStatus`). The
+   * review's author and assignee, and everyone while posting is off or
+   * blocked, set the review's status with cm. When cm cannot say who the user
+   * is or where they stand, so does the user, and the output channel says why.
    */
-  public async setStatus(workspaceId: string, review: IReview, status: ReviewStatus): Promise<IReview | undefined> {
+  public async statusPlan(workspaceId: string, review: IReview): Promise<StatusPlan> {
+    const cm: StatusPlan = { current: review.status, kind: "cm" };
+    const reviewers = this.options.reviewers;
+    const service = this.service(workspaceId);
+    if (!reviewers || !service) {
+      return cm;
+    }
+    let access: ReviewAccess;
+    let joining: IJoining;
+    try {
+      access = await reviewers.access(workspaceId);
+      if (access.state === "settingOff" || access.state === "blocked") {
+        return cm;
+      }
+      joining = await this.joining(workspaceId, review, service);
+    } catch (error) {
+      this.log(`Couldn't tell whether you are a reviewer on review #${review.id}: ${errorText(error)}`);
+      return cm;
+    }
+    const { block, own, user } = joining;
+    if (block === "author" || block === "assignee") {
+      return cm;
+    }
+    const add = block !== "requested";
+    if (access.state === "notAllowed" || access.state === "disabled") {
+      return add ? { current: review.status, kind: "noAccess", reason: access.message } : cm;
+    }
+    if (add && !isEmailAddress(user)) {
+      return { current: review.status, kind: "notAnAddress", reason: notAnAddress(user) };
+    }
+    const consent = access.state === "needsConsent" ? { consent: access.server } : {};
+    return { add, current: own, kind: "personal", user, ...consent };
+  }
+
+  /**
+   * Changes a review's status as `plan` says, or as `statusPlan` says when
+   * the caller has no plan. Marking a review Reviewed while change requests
+   * are pending or files are unviewed asks first, as does marking one whose
+   * counts cannot be known, in one dialog with anything else there is to ask:
+   * whether to create a token, or to set the status with cm instead. Nothing
+   * is written unless the user confirms.
+   *
+   * A cm user who is not a reviewer is added before their verdict. An add of
+   * the user to the review already in flight, from Add Me as Reviewer, stands
+   * in for that one: its end is awaited and no second request goes out. A
+   * failed add asks before the status is set with cm anyway; an add whose
+   * result is unknown stops. When cm refuses to create the token only then,
+   * the choices are those of a refusal known beforehand. The review is read
+   * back afterwards, and a failed write leaves every displayed status as it was.
+   */
+  public async setStatus(workspaceId: string, review: IReview, status: ReviewStatus, plan?: StatusPlan):
+      Promise<IReview | undefined> {
     const service = this.service(workspaceId);
     if (!service) {
       throw new Error("This review's Plastic workspace is no longer open.");
     }
-    if (sameStatus(review.status, status)) {
+    const route = plan ?? await this.statusPlan(workspaceId, review);
+    if (sameStatus(route.current, status)) {
       return undefined;
     }
-    const join = await this.joinPlan(workspaceId, review, service);
     const warning = status === "Reviewed" ? await this.reviewedWarning(workspaceId, review, service) : undefined;
     // The Reviewed warning, in a dialog that asks about something else first.
     const also = warning && `Marking it Reviewed: ${warning}`;
-    let user: string | undefined;
-    if (join.kind === "ask") {
-      const choice = await this.ui.choose(`You're not a reviewer on #${review.id}. Add yourself first?`,
-        joinLines(also, "Adding yourself needs a Unity user token, which Configure Experimental Posting… saves."),
-        [ CONFIGURE_AND_ADD, WITHOUT_ADDING ]);
-      if (choice === CONFIGURE_AND_ADD && !await this.configureReviewers()) {
-        return undefined;
+    const withCm = () => this.statusWithCm(workspaceId, review, status, service);
+    if (route.kind === "notAnAddress" || route.kind === "noAccess") {
+      const actions = route.kind === "noAccess" ? [ WITHOUT_ADDING, OPEN_IN_DESKTOP ] : [SET_ANYWAY];
+      const choice = await this.ui.choose(`Couldn't add you as a reviewer on review #${review.id}.`,
+        joinLines(route.reason, also), actions);
+      if (choice === OPEN_IN_DESKTOP) {
+        await this.openInDesktop(workspaceId, review.id);
       }
-      if (choice !== CONFIGURE_AND_ADD && choice !== WITHOUT_ADDING) {
-        return undefined;
-      }
-      user = choice === CONFIGURE_AND_ADD ? join.user : undefined;
-    } else if (join.kind === "unable") {
-      const title = `Couldn't add you as a reviewer on review #${review.id}.`;
-      if (await this.ui.choose(title, joinLines(join.reason, also), [SET_ANYWAY]) !== SET_ANYWAY) {
-        return undefined;
-      }
-    } else {
-      user = join.kind === "add" ? join.user : undefined;
-      const detail = warning && (user ? `${warning} You will be added as a reviewer first.` : warning);
-      if (detail && !await this.ui.confirm(`Mark review #${review.id} as Reviewed?`, detail, "Mark Reviewed")) {
-        return undefined;
-      }
+      return choice === WITHOUT_ADDING || choice === SET_ANYWAY ? withCm() : undefined;
     }
-    let added = false;
-    let claim: IAddClaim | undefined;
-    try {
-      if (user !== undefined) {
-        claim = this.claimAdd(workspaceId, review.id);
-        // Undefined while Add Me as Reviewer adds the user already: how that add ended stands for this one.
-        const failure = claim
-          ? await this.addUser(claim, workspaceId, review.id, user)
-          : await this.adds.get(addKey(workspaceId, review.id))?.ended;
-        if (failure && (failure.cancelled || await this.ui.choose(
-          `Couldn't add you as a reviewer on review #${review.id}.`, failure.message, [SET_ANYWAY]) !== SET_ANYWAY)) {
-          return undefined;
-        }
-        added = !failure;
+    if (route.kind === "personal" && route.consent !== undefined) {
+      const needs = `${route.add ? "Adding yourself" : "Your own status"} needs a personal access token. ` +
+        consentDetail(route.consent);
+      const title = route.add
+        ? `You're not a reviewer on #${review.id}. Add yourself first?`
+        : `Set your own status on #${review.id}?`;
+      const actions = route.add ? [ CREATE_AND_ADD, WITHOUT_ADDING ] : [ CREATE_AND_SET, WITH_CM ];
+      const choice = await this.ui.choose(title, joinLines(also, needs), actions);
+      if (choice === WITHOUT_ADDING || choice === WITH_CM) {
+        return withCm();
       }
-      const fresh = await this.writeStatus(workspaceId, review, status, service);
-      if (added) {
-        // The request row, and the status row when the write went through.
-        await this.reloadDiscussions(workspaceId, review.id);
+      if ((choice !== CREATE_AND_ADD && choice !== CREATE_AND_SET) || !await this.consentTo(workspaceId)) {
+        return undefined;
       }
-      return fresh;
-    } finally {
-      if (claim) {
-        this.releaseAdd(workspaceId, review.id, claim);
-      }
+      return this.ownStatus(workspaceId, review, status, route.add, service);
     }
+    const adding = route.kind === "personal" && route.add;
+    const detail = warning && (adding ? `${warning} You will be added as a reviewer first.` : warning);
+    if (detail && !await this.ui.confirm(`Mark review #${review.id} as Reviewed?`, detail, "Mark Reviewed")) {
+      return undefined;
+    }
+    return route.kind === "personal"
+      ? this.ownStatus(workspaceId, review, status, route.add, service)
+      : this.writeStatus(workspaceId, review, status, service);
   }
 
   /**
-   * Add Me as Reviewer, once the caller has made sure experimental posting can
-   * work in this workspace. The review's author, its assignee and anyone
-   * already requested are told why not instead, as is a second click while
-   * the first add is in flight. Afterwards the open review's discussions load
-   * again, which draws the new reviewer card, and Needs My Review loads again
-   * when the review now belongs in it. A failure is shown and changes nothing.
-   * Resolves true once added.
+   * Add Me as Reviewer, once the caller has made sure experimental posting is
+   * on and not blocked in this workspace. The review's author, its assignee
+   * and anyone already requested are told why not instead, as is a second
+   * click while the first add is in flight. Without a token yet it asks to
+   * create one; when cm refuses to, it says what an admin can do. Afterwards
+   * the open review's discussions load again, which draws the new reviewer
+   * card, and Needs My Review loads again when the review now belongs in it.
+   * A failure is shown and changes nothing. Resolves true once added.
    */
   public async addMe(workspaceId: string, review: IReview): Promise<boolean> {
     const service = this.service(workspaceId);
@@ -754,7 +821,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       return false;
     };
     try {
-      let joining: { user: string; block?: ReviewerBlock };
+      let joining: IJoining;
       try {
         joining = await this.joining(workspaceId, review, service);
       } catch (error) {
@@ -770,9 +837,21 @@ export class ReviewSession implements IReviewSessionView, Disposable {
         this.log(`Couldn't add you as a reviewer on review #${review.id}: ${notAnAddress(user)}`);
         return failed(notAnAddress(user));
       }
-      const failure = await this.addUser(claim, workspaceId, review.id, user);
+      if (!await this.readyToAdd(workspaceId, review.id)) {
+        return false;
+      }
+      const failure = await this.addUser(claim, workspaceId, review.id);
       if (failure) {
-        return failure.cancelled ? false : failed(failure.message);
+        if (failure.cancelled) {
+          return false;
+        }
+        // cm refused to create the token only now, for this add: said as when that is known beforehand.
+        const refusal = failure.uncertain ? undefined : await this.refusal(workspaceId);
+        if (refusal) {
+          this.refusalAlert(workspaceId, review.id, refusal);
+          return false;
+        }
+        return failed(failure.message);
       }
       this.ui.status(`$(person-add) Added you as a reviewer on review #${review.id}`);
       if (workspaceId === this.selected) {
@@ -783,6 +862,21 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     } finally {
       this.releaseAdd(workspaceId, review.id, claim);
     }
+  }
+
+  /**
+   * Open in Unity Version Control: the review in the desktop app, through its
+   * `plastic://` link. Resolves whether the link was handed on.
+   */
+  public async openInDesktop(workspaceId: string, reviewId: number): Promise<boolean> {
+    const repository = this.repository(workspaceId);
+    const link = repository ? desktopReviewLink(repository, reviewId) : undefined;
+    if (!link) {
+      this.ui.info(`The repository of review #${reviewId} is not known yet, so it can't open in Unity Version ` +
+        "Control.");
+      return false;
+    }
+    return !!await this.ui.openExternal(link);
   }
 
   /**
@@ -1416,64 +1510,232 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   }
 
   /**
-   * The cm user, and why they cannot be added to the review's reviewers when
-   * they cannot. The open review answers from its discussions; any other
-   * review costs one comment query. Rejects when cm cannot say.
+   * The cm user's own verdict, after adding them when `add`; see `setStatus`.
+   * A definite add failure asks before the review's status is set with cm
+   * anyway, and an unknown result stops. A plan made before an add that has
+   * ended since, such as Add Me as Reviewer's while the picker was open, adds
+   * no one a second time.
    */
-  private async joining(
+  private async ownStatus(
       workspaceId: string,
       review: IReview,
-      service: ReviewService): Promise<{ user: string; block?: ReviewerBlock }> {
+      status: ReviewStatus,
+      add: boolean,
+      service: ReviewService): Promise<IReview | undefined> {
+    let claim: IAddClaim | undefined;
+    let added = add;
+    try {
+      if (add) {
+        claim = this.claimAdd(workspaceId, review.id);
+        if (claim && await this.requested(workspaceId, review, service)) {
+          added = false;
+        } else {
+          // Undefined while Add Me as Reviewer adds the user already: how that add ended stands for this one.
+          const failure = claim
+            ? await this.addUser(claim, workspaceId, review.id)
+            : await this.adds.get(addKey(workspaceId, review.id))?.ended;
+          if (failure) {
+            return await this.afterFailedAdd(workspaceId, review, status, service, failure, !!claim);
+          }
+        }
+      }
+      return await this.writeOwnStatus(workspaceId, review, status, service, added);
+    } finally {
+      if (claim) {
+        this.releaseAdd(workspaceId, review.id, claim);
+      }
+    }
+  }
+
+  /**
+   * After the add before a verdict failed: an unknown result stops, and a
+   * definite failure asks before the review's status is set with cm. When
+   * the add failed because cm refused to create the token, the choices are
+   * those of a refusal known beforehand. `own`: the add was this action's.
+   */
+  private async afterFailedAdd(
+      workspaceId: string,
+      review: IReview,
+      status: ReviewStatus,
+      service: ReviewService,
+      failure: IAddFailure,
+      own: boolean): Promise<IReview | undefined> {
+    if (failure.cancelled || failure.uncertain) {
+      if (failure.uncertain && !failure.cancelled && own) {
+        // Add Me as Reviewer says so itself when the add was its own.
+        this.ui.error(`Couldn't add you as a reviewer on review #${review.id}: ${failure.message}`);
+      }
+      return undefined;
+    }
+    const refusal = await this.refusal(workspaceId);
+    const choice = await this.ui.choose(`Couldn't add you as a reviewer on review #${review.id}.`,
+      refusal?.message ?? failure.message, refusal ? [ WITHOUT_ADDING, OPEN_IN_DESKTOP ] : [SET_ANYWAY]);
+    if (choice === OPEN_IN_DESKTOP) {
+      await this.openInDesktop(workspaceId, review.id);
+    }
+    return choice === SET_ANYWAY || choice === WITHOUT_ADDING
+      ? this.statusWithCm(workspaceId, review, status, service)
+      : undefined;
+  }
+
+  /** The review's status with cm, where the plan was another; a review with that status already is left alone. */
+  private async statusWithCm(
+      workspaceId: string,
+      review: IReview,
+      status: ReviewStatus,
+      service: ReviewService): Promise<IReview | undefined> {
+    if (sameStatus(review.status, status)) {
+      this.ui.info(`Review #${review.id} is already ${review.status}.`);
+      return undefined;
+    }
+    return this.writeStatus(workspaceId, review, status, service);
+  }
+
+  /**
+   * The cm user's own verdict through the REST API; then the review read back
+   * through cm and shown everywhere, the queue following, and its discussions
+   * loaded again for the verdict's row and an add's. A failure is shown; when
+   * it is cm's refusal to create the token, which only now shows, the
+   * review's status can be set with cm instead.
+   */
+  private async writeOwnStatus(
+      workspaceId: string,
+      review: IReview,
+      status: ReviewStatus,
+      service: ReviewService,
+      added: boolean): Promise<IReview | undefined> {
+    const reviewers = this.options.reviewers;
+    try {
+      if (!reviewers) {
+        throw new Error("Experimental posting is not available here.");
+      }
+      await this.track(() => this.ui.progress(reviewTreeViewId,
+        () => reviewers.setStatus(workspaceId, review.id, status)));
+    } catch (error) {
+      this.log(`Couldn't set your status on review #${review.id} to ${status}: ${errorText(error)}`);
+      const refusal = added || (error instanceof ReviewWriteError && error.uncertain)
+        ? undefined
+        : await this.refusal(workspaceId);
+      if (refusal) {
+        const choice = await this.ui.choose(`Couldn't set your own status on review #${review.id}.`, refusal.message,
+          [ WITH_CM, OPEN_IN_DESKTOP ]);
+        if (choice === OPEN_IN_DESKTOP) {
+          await this.openInDesktop(workspaceId, review.id);
+        }
+        return choice === WITH_CM ? this.statusWithCm(workspaceId, review, status, service) : undefined;
+      }
+      this.ui.error(`Couldn't set your status on review #${review.id} to ${status}: ${errorText(error)}`);
+      if (added) {
+        await this.reloadDiscussions(workspaceId, review.id);
+      }
+      return undefined;
+    }
+    let fresh = review;
+    try {
+      fresh = await this.track(() => service.review(review.id)) ?? review;
+    } catch (error) {
+      this.log(`Couldn't read review #${review.id} again: ${errorText(error)}`);
+    }
+    this.applyReview(workspaceId, fresh);
+    this.ui.status(`Your status on review #${review.id}: ${status}`);
+    if (workspaceId === this.selected) {
+      this.refreshAfterStatus(fresh);
+    }
+    await this.reloadDiscussions(workspaceId, review.id);
+    return fresh;
+  }
+
+  /**
+   * The cm user, why they cannot be added to the review's reviewers when they
+   * cannot, and the status they gave it. The open review answers from its
+   * discussions; any other review costs one comment query. Rejects when cm
+   * cannot say.
+   */
+  private async joining(workspaceId: string, review: IReview, service: ReviewService): Promise<IJoining> {
     const user = await this.track(() => service.whoami());
     const open = this.openReview(workspaceId, review.id);
     const timeline = open?.discussions.state === "ready"
       ? open.discussions.value.timeline
       : await this.track(() => service.timeline(review));
-    return { block: reviewerBlock(timeline, review, user), user };
+    return { block: reviewerBlock(timeline, review, user), own: reviewerStatus(timeline, review, user), user };
+  }
+
+  /** Whether the cm user is a requested reviewer of the review now; false when cm cannot say. */
+  private async requested(workspaceId: string, review: IReview, service: ReviewService): Promise<boolean> {
+    try {
+      return (await this.joining(workspaceId, review, service)).block === "requested";
+    } catch (error) {
+      this.log(`Couldn't tell whether you are a reviewer on review #${review.id}: ${errorText(error)}`);
+      return false;
+    }
+  }
+
+  /** cm's refusal to create a token, as the workspace's access says it now; undefined for any other access. */
+  private async refusal(workspaceId: string): Promise<TokenRefusal | undefined> {
+    let access: ReviewAccess | undefined;
+    try {
+      access = await this.options.reviewers?.access(workspaceId);
+    } catch {
+      access = undefined;
+    }
+    return access?.state === "notAllowed" || access?.state === "disabled" ? access : undefined;
   }
 
   /**
-   * Whether Set Review Status… adds the cm user to the reviewers first: only
-   * while experimental posting is on and can work in the workspace, and only
-   * for a user who can be added. Otherwise cm is asked nothing more. When cm
-   * cannot say, the status is set as it would be without posting, and the
-   * output channel says why.
+   * Add Me as Reviewer's error when cm refuses to create a token: what an
+   * admin can do, the admin's command to copy for `notAllowed`, and the
+   * desktop app at hand. It does not wait for the notification.
    */
-  private async joinPlan(workspaceId: string, review: IReview, service: ReviewService): Promise<JoinPlan> {
-    const reviewers = this.options.reviewers;
-    if (!reviewers) {
-      return { kind: "none" };
-    }
-    let access: ReviewerAccess;
-    let joining: { user: string; block?: ReviewerBlock };
+  private refusalAlert(workspaceId: string, reviewId: number, refusal: TokenRefusal): void {
+    const actions = refusal.state === "notAllowed" ? [ COPY_COMMAND, OPEN_IN_DESKTOP ] : [OPEN_IN_DESKTOP];
+    void this.ui.alert(`Couldn't add you as a reviewer on review #${reviewId}: ${refusal.message}`, actions)
+      .then(async choice => {
+        if (choice === COPY_COMMAND && refusal.state === "notAllowed") {
+          await this.ui.copy(refusal.command);
+        } else if (choice === OPEN_IN_DESKTOP) {
+          await this.openInDesktop(workspaceId, reviewId);
+        }
+      });
+  }
+
+  /**
+   * Whether Add Me as Reviewer can send its add now: without a token yet it
+   * asks to create one, and when cm refused to, it says what an admin can do,
+   * without waiting for the notification.
+   */
+  private async readyToAdd(workspaceId: string, reviewId: number): Promise<boolean> {
+    let access: ReviewAccess;
     try {
-      access = await reviewers.access(workspaceId);
-      if (access.state === "settingOff" || access.state === "blocked") {
-        return { kind: "none" };
-      }
-      joining = await this.joining(workspaceId, review, service);
+      access = await this.options.reviewers?.access(workspaceId) ??
+        { reason: "Experimental posting is not available here.", state: "blocked" };
     } catch (error) {
-      this.log(`Couldn't tell whether you are a reviewer on review #${review.id}: ${errorText(error)}`);
-      return { kind: "none" };
+      access = { reason: errorText(error), state: "blocked" };
     }
-    if (joining.block) {
-      return { kind: "none" };
+    const title = `Couldn't add you as a reviewer on review #${reviewId}`;
+    switch (access.state) {
+    case "ready":
+      return true;
+    case "needsConsent":
+      return await this.ui.choose(CONSENT_MESSAGE, consentDetail(access.server), [CREATE_AND_ADD]) === CREATE_AND_ADD &&
+        this.consentTo(workspaceId);
+    case "notAllowed":
+    case "disabled":
+      this.refusalAlert(workspaceId, reviewId, access);
+      return false;
+    case "settingOff":
+      this.ui.error(`${title}: experimental posting is off.`);
+      return false;
+    default:
+      this.ui.error(`${title}: ${access.reason}`);
+      return false;
     }
-    if (!isEmailAddress(joining.user)) {
-      return { kind: "unable", reason: notAnAddress(joining.user) };
-    }
-    return { kind: access.state === "ready" ? "add" : "ask", user: joining.user };
   }
 
   /**
    * Adds the cm user under a notification that can cancel it; resolves why
    * not, or undefined once added, and records the same in `claim`.
    */
-  private async addUser(
-      claim: IAddClaim,
-      workspaceId: string,
-      reviewId: number,
-      user: string): Promise<IAddFailure | undefined> {
+  private async addUser(claim: IAddClaim, workspaceId: string, reviewId: number): Promise<IAddFailure | undefined> {
     const reviewers = this.options.reviewers;
     let token: CancellationToken | undefined;
     claim.failure = undefined;
@@ -1483,11 +1745,15 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       }
       await this.track(() => this.ui.cancellable(`Adding you as a reviewer on review #${reviewId}…`, cancel => {
         token = cancel;
-        return reviewers.add(workspaceId, reviewId, user, cancel);
+        return reviewers.add(workspaceId, reviewId, cancel);
       }));
     } catch (error) {
       this.log(`Couldn't add you as a reviewer on review #${reviewId}: ${errorText(error)}`);
-      claim.failure = { cancelled: !!token?.isCancellationRequested, message: errorText(error) };
+      claim.failure = {
+        cancelled: !!token?.isCancellationRequested,
+        message: errorText(error),
+        uncertain: error instanceof ReviewWriteError && error.uncertain,
+      };
     }
     return claim.failure;
   }
@@ -1507,7 +1773,9 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       end = resolve;
     });
     const claim: IAddClaim = {
-      end, ended, failure: { cancelled: false, message: "Add Me as Reviewer stopped before it sent anything." },
+      end,
+      ended,
+      failure: { cancelled: false, message: "Add Me as Reviewer stopped before it sent anything.", uncertain: false },
     };
     this.adds.set(key, claim);
     this.addsChanged(workspaceId, reviewId);
@@ -1530,12 +1798,17 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     }
   }
 
-  /** Configure Experimental Posting…, from Set Review Status…; a failure is shown. Resolves true once saved. */
-  private async configureReviewers(): Promise<boolean> {
+  /** Records the user's consent to a personal access token; a failure is shown. Resolves true once recorded. */
+  private async consentTo(workspaceId: string): Promise<boolean> {
+    const reviewers = this.options.reviewers;
     try {
-      return !!await this.options.reviewers?.configure();
+      if (!reviewers) {
+        throw new Error("Experimental posting is not available here.");
+      }
+      await reviewers.consent(workspaceId);
+      return true;
     } catch (error) {
-      this.ui.error(`Couldn't configure experimental posting: ${errorText(error)}`);
+      this.ui.error(`Couldn't create a personal access token: ${errorText(error)}`);
       return false;
     }
   }
@@ -1619,19 +1892,21 @@ function joinLines(...parts: Array<string | undefined>): string {
   return parts.filter(Boolean).join("\n");
 }
 
-/** Why the hosted API cannot take the cm user as a reviewer. */
+/** Why the REST API cannot take the cm user as a reviewer. */
 function notAnAddress(user: string): string {
-  return `cm names you "${user}", which is not an e-mail address, and the review service names reviewers by ` +
+  return `cm names you "${user}", which is not an e-mail address, and Unity Version Control names reviewers by ` +
     "e-mail address.";
 }
 
 function defaultUi(): IReviewSessionUi {
   return {
+    alert: (message, actions) => window.showErrorMessage(message, ...actions),
     cancellable: (title, task) => window.withProgress(
       { cancellable: true, location: ProgressLocation.Notification, title }, (_progress, cancel) => task(cancel)),
     choose: (message, detail, actions) => window.showWarningMessage(message, { detail, modal: true }, ...actions),
     confirm: async (message, detail, action) =>
       await window.showWarningMessage(message, { detail, modal: true }, action) === action,
+    copy: text => env.clipboard.writeText(text),
     error: message => {
       void window.showErrorMessage(message, "Show Output").then(choice => {
         if (choice) {
@@ -1642,6 +1917,7 @@ function defaultUi(): IReviewSessionUi {
     info: message => {
       void window.showInformationMessage(message);
     },
+    openExternal: link => env.openExternal(Uri.parse(link, true)),
     progress: (viewId, task) => window.withProgress({ location: { viewId }}, task),
     status: message => {
       window.setStatusBarMessage(message, 4000);

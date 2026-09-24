@@ -146,8 +146,9 @@ replies.
   requests are pending or files are not viewed asks first. So does marking one where either count
   is unknown: a review that is not the open one, or whose files or discussions have not loaded.
   The change runs `cm codereview -e <id> --status=…` and reads the review back. If it fails, the
-  status shown does not change. With experimental posting on, it can first add you as a reviewer:
-  see [Add Me as Reviewer](#experimental-add-me-as-reviewer).
+  status shown does not change. With experimental review writes on, it can set your own status as
+  a reviewer instead, adding you as a reviewer first: see
+  [Experimental: review writes](#experimental-review-writes).
 * While a review view or the open review's Overview is visible, the extension checks for changes
   every minute, unless one of your own actions is still running. The queue updates in place. For
   the open review, a **Review updated** row describes what changed (branch moved to a new head,
@@ -176,68 +177,50 @@ this to your `keybindings.json`:
 ]
 ```
 
-### Experimental comment posting
+### Open in Unity Version Control
 
-Posting is off by default and is limited to Unity Version Control cloud repositories. It goes
-through Unity's hosted API with a token you enter, has been tested with mocks only, and its
-sign-in, line encoding and reply payload have not been verified against a live write. Your
-existing `cm` login does not enable it.
+**Open in Unity Version Control** (a review's context menu in Reviews, and the Review view's `…`
+menu) opens the review in the Unity Version Control desktop app through a `plastic://` code-review
+link. It works without the experimental setting. The desktop app must be installed.
 
-1. Turn on `plastic-scm.reviews.experimentalPosting` (an application-wide setting). The workspace
-   must be trusted.
-2. From the Reviews view's `…` menu, choose **Configure Experimental Posting…** and enter the
-   hosted organization and repository names and a review-service bearer token. The token is kept
-   in VS Code SecretStorage, scoped to the workspace and its repository.
-   **Forget Experimental Posting Token** removes it.
-3. In a review diff, use the gutter `+` on any line of a non-empty side and choose **Post Comment
-   (Experimental)**, or reply in a thread with **Post Reply (Experimental)**. Only comments and
-   replies can be posted.
-4. Every send first shows a confirmation naming the destination and the file and line (and, for
-   a new comment, the revision).
+### Experimental: review writes
 
-The result stays in the thread as a local comment that keeps your text:
+`cm` has no command to add a reviewer, to set one reviewer's own status, or to post a comment. With
+`plastic-scm.reviews.experimentalPosting` on, the extension does these through the
+[Unity Version Control Server REST API](https://docs.unity.com/en-us/oas-unity-version-control-server/1.0.0),
+with a personal access token it creates with `cm accesstoken`. The writes need a trusted workspace
+and a cloud repository (`@cloud` or `@unity`). The setting is off by default.
 
-* **Posted · refresh to verify**: refresh the review to see it as the server stored it.
-* **Not sent: <reason>**: **Send Again** reuses the same request key, so an accepted comment is
-  never posted twice.
-* **Result unknown**: check the review first. **Allow Another Attempt** takes a new key and may
-  post a duplicate if the first attempt arrived.
+Personal access tokens are opt-in per organization. An organization admin allows you once:
 
-The experimental adapter assumes a zero-based decimal string for `locationSpec` and
-`{ "commentText": "..." }` for replies. These assumptions are isolated in `reviewWriter.ts`.
-The endpoint is fixed to `https://services.api.unity.com/plastic/v1`; redirects and automatic
-write retries are not followed.
+```bash
+cm accesstoken admin allowlist add --users=<you> <org>@unity
+```
 
-Validate actual writes in a separately designated test repository before relying on this feature.
-See [the investigation](docs/plastic-review-comment-research.md) for the unresolved API details.
+Until then, the extension shows that command and offers
+[**Open in Unity Version Control**](#open-in-unity-version-control) instead.
 
-### Experimental: Add Me as Reviewer
+* **The token.** The first write asks before creating one (`cm accesstoken create`, 180 days). It
+  is kept in VS Code's secret storage, revealed again with `cm accesstoken reveal` when it expires,
+  and never shown or written to the output channel. **Revoke Review Access Token** revokes it with
+  `cm accesstoken revoke`.
+* **Add Me as Reviewer** (Review view title bar, a review's context menu, the Command Palette, or
+  **Add me as reviewer** under the Overview's reviewer cards) adds your `cm whoami` name, which must
+  be an e-mail address. It is not offered to the review's author or assignee, or when you are
+  already a reviewer.
+* **Set Review Status…** sets your own status as a reviewer, adding you first when you are not one
+  yet. The author, the assignee, anyone without a token, and **Set Status Without Adding** set the
+  review's status with `cm` as before, so a missing token never blocks a change `cm` can make. If
+  the add fails, no status is written.
+* **Comments and replies.** In a review diff, the gutter `+` offers **Post Comment
+  (Experimental)**, and review threads offer **Post Reply (Experimental)**. Every send asks for
+  confirmation first. The result stays in the thread: **Posted · refresh to verify**, **Not sent**
+  with **Send Again** (which never posts twice), or **Result unknown** with **Allow Another
+  Attempt**.
 
-With `plastic-scm.reviews.experimentalPosting` on, you can add yourself to a review's reviewers
-through the same hosted API and connection as comment posting. It works with Unity Version
-Control cloud repositories only and needs a bearer token for that API, saved with **Configure
-Experimental Posting…**. `cm` has no way to add a reviewer, and changing the assignee would
-replace one, so the extension does neither.
-
-* **Add Me as Reviewer** (Review view title bar, a review's context menu in Reviews, the Command
-  Palette, or **Add me as reviewer** under the Overview's reviewer cards) sends your `cm whoami`
-  name, which must be an e-mail address, to the review's reviewers. It then reloads the
-  discussions and the timeline, so your reviewer card appears. You can be added when you are not
-  the review's author or its assignee and nobody's request for you is still active; someone who
-  only left a verdict can be added. The title bar and the Overview offer it only then, and hide it
-  while the add is in flight. From a review's context menu or the Command Palette it says why
-  when you can't be added.
-* **Set Review Status…** adds you first when you can be added. With a saved token it adds you and
-  then writes the status. If the add fails, it asks whether to set the status anyway. Without a
-  token it asks whether to configure one and add you, or to set the status without adding you.
-  When a Reviewed warning also applies, it is part of the same question. While Add Me as Reviewer
-  is still adding you, it waits for that add instead of sending another. With the setting off,
-  Set Review Status… works as before.
-* A token refused with 401 or 403 has expired or lacks permission: set a new one with
-  **Configure Experimental Posting…**.
-
-Unity does not document how a user gets a token for this API, and the reviewer endpoint has not
-been verified against a live write; see [the investigation](docs/plastic-review-comment-research.md).
+A write whose result is unknown is never retried automatically. These writes have been tested
+against fakes only: the organization name and repository encoding in request paths, and the line
+encoding of inline comments, have not been verified against the live service.
 
 ## Install
 
@@ -271,7 +254,7 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted
 |`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 |`plastic-scm.reviews.fileLayout`                     |`string` |`tree`   |How Plastic Reviews lists changed files: `tree` (folders) or `list` (sorted by path)
-|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Experimental.** Allows posting review comments and replies, and adding yourself as a reviewer, through Unity's hosted API with a token you enter (cloud repositories only)
+|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Experimental.** Allows adding yourself as a reviewer, setting your own review status, and posting review comments and replies (cloud repositories only). Writes use a personal access token that the extension creates with `cm` (it asks first) and the Unity Version Control Server REST API. An organization admin has to allow tokens. Request details are unverified against the live service
 
 ## Commands
 
@@ -345,7 +328,9 @@ a *New changesets* row instead of reloading under you.
 ### Show Output
 
 Reveals the `Plastic SCM` output channel, which carries every `cm` command and
-its output. Failure notifications link to it directly.
+its output, except those for review access tokens (`cm getconfig organization`
+and `cm accesstoken`): they are never logged, because `cm accesstoken reveal`
+prints the token. Failure notifications link to it directly.
 
 ## Contribute
 

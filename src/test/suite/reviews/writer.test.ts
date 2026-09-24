@@ -1,28 +1,64 @@
 import * as https from "https";
-import { CancellationToken, CancellationTokenSource } from "vscode";
+import { FakeRest, IRestCall, json } from "./restFixtures";
 import {
-  commentRequest,
   httpsTransport,
+  IReviewConnection,
   IReviewDraft,
-  IReviewWriteConnection,
-  IWriteRequest,
-  IWriteResponse,
+  repositoryForms,
+  REST_HOSTS,
+  restOrigin,
+  restUrl,
   ReviewRequestError,
   ReviewWriteError,
   ReviewWriter,
+  serverMessage,
 } from "../../../reviews/reviewWriter";
+import { ORIGIN, REGION } from "./tokenFixtures";
+import { CancellationTokenSource } from "vscode";
 import { expect } from "chai";
 
-const connection: IReviewWriteConnection = { organization: "org", repository: "project/repo", token: "test-token" };
+/**
+ * Review writes to the Unity Version Control Server REST API, on a fake
+ * transport: nothing reaches the network. Every organization, repository,
+ * review, user and token here is made up.
+ */
+
+const ME = "dana.kim@example.test";
+const REVIEW = 12831;
+const API = "/api/v1/organizations/acme-studio/repos/Nimbus%2FNimbus/codereview/12831";
 const draft: IReviewDraft = {
   changesetId: 21,
   key: "draft-one",
   location: 4,
   path: "/Code/Test.cs",
-  reviewId: 7,
+  reviewId: REVIEW,
   revisionId: 42,
   workspaceId: "workspace",
 };
+
+/** A connection whose tokens are `synthetic-token-1`, then `-2` and on, a new one per renewal it is asked for. */
+function connection(overrides: Partial<IReviewConnection> = {}):
+    IReviewConnection & { stale: Array<string | undefined> } {
+  const stale: Array<string | undefined> = [];
+  let current = 1;
+  return {
+    organizations: ["acme-studio"],
+    origin: ORIGIN,
+    repository: "Nimbus/Nimbus",
+    server: "acme-studio@unity",
+    stale,
+    token: previous => {
+      stale.push(previous);
+      if (previous !== undefined) {
+        current++;
+      }
+      return Promise.resolve(`synthetic-token-${current}`);
+    },
+    user: ME,
+    ...overrides,
+  };
+}
+
 async function failure(action: Promise<unknown>): Promise<ReviewWriteError> {
   try {
     await action;
@@ -31,179 +67,329 @@ async function failure(action: Promise<unknown>): Promise<ReviewWriteError> {
   }
   throw new Error("Expected rejection");
 }
-describe("Experimental review writer (mock HTTP only)", () => {
-  it("builds a pinned inline comment with the isolated speculative location encoding", () => {
-    const call = commentRequest(connection, draft, "First line\nSecond line");
-    expect(call.url.origin).to.equal("https://services.api.unity.com");
-    expect(call.url.pathname).to.contain("repositories/project%2Frepo/code-reviews/7/comments");
-    expect(call.url.toString()).not.to.contain(connection.token);
-    expect(JSON.parse(call.body)).to.deep.equal({
-      changesetId: 21, commentText: "First line\nSecond line", locationSpec: "4", revisionId: 42, type: "Comment",
-    });
-  });
-  it("builds a reply to the parent, including general conversations without revision anchors", () => {
-    const call = commentRequest(connection, { ...draft, location: -1, parentId: 2227, revisionId: -1 }, "Reply");
-    expect(call.url.pathname).to.match(/comments\/2227\/replies$/);
-    expect(JSON.parse(call.body)).to.deep.equal({ commentText: "Reply" });
-  });
-  it("rejects empty text, invalid anchors and header injection before contacting the service", () => {
-    expect(() => commentRequest(connection, draft, "  ")).to.throw();
-    expect(() => commentRequest(connection, { ...draft, location: -1 }, "Hello")).to.throw();
-    expect(() => commentRequest({ ...connection, token: "secret\nheader" }, draft, "Hello")).to.throw();
-    expect(commentRequest({ ...connection, repository: "../../elsewhere" }, draft, "Hello").url.origin)
-      .to.equal("https://services.api.unity.com");
-  });
-  it("blocks concurrent duplicate sends and never resends an accepted draft", async () => {
-    let release!: () => void;
-    let calls = 0;
-    const writer = new ReviewWriter(() => {
-      calls++;
-      return new Promise(resolve => {
-        release = () => resolve({ body: "{}", status: 201 });
+
+/** Each call as `METHOD path`. */
+function lines(calls: readonly IRestCall[]): string[] {
+  return calls.map(call => `${call.method} ${call.path}`);
+}
+
+/** A fake API that answers writes with `status` and `body`, and the settling reads as usual. */
+function answeringWrites(status: number, body: object | string = {}): FakeRest {
+  const rest = new FakeRest();
+  rest.respond = call => (call.method === "GET" ? undefined
+    : { body: typeof body === "string" ? body : JSON.stringify(body), status });
+  return rest;
+}
+
+describe("Review writes through the Server REST API (fake transport)", () => {
+  it("settles the organization and the repository with reads, then adds the user with the token only in a header",
+    async () => {
+      const rest = new FakeRest();
+      const requests: Array<{ headers: { readonly [name: string]: string }; url: string }> = [];
+      const writer = new ReviewWriter((call, cancel) => {
+        requests.push({ headers: call.headers, url: call.url.toString() });
+        return rest.transport(call, cancel);
       });
+      await writer.addReviewer(connection({ user: ` ${ME} ` }), REVIEW);
+      expect(lines(rest.calls)).to.deep.equal([
+        "GET /api/v1/organizations/acme-studio/user",
+        `GET ${API}`,
+        `POST ${API}/reviewers`,
+      ]);
+      expect(rest.calls[2].body).to.deep.equal({ reviewers: [ME] });
+      expect(requests[0].headers)
+        .to.deep.equal({ Accept: "application/json", Authorization: "Bearer synthetic-token-1" });
+      expect(requests[2].headers).to.deep.equal({
+        "Accept": "application/json", "Authorization": "Bearer synthetic-token-1", "Content-Type": "application/json",
+      });
+      expect(requests.map(request => request.url).join(" ")).to.not.contain("synthetic-token");
+      expect(requests[2].url).to.equal(`https://${REGION}:7178${API}/reviewers`);
+
+      // Both answers are kept: the next write is the only request.
+      await writer.setStatus(connection(), REVIEW, "Reviewed");
+      expect(lines(rest.calls.slice(3))).to.deep.equal([`PUT ${API}/reviewers/dana.kim%40example.test/status`]);
+      expect(rest.calls[3].body).to.deep.equal({ status: "Reviewed" });
     });
-    const first = writer.send(connection, draft, "Hello");
-    expect((await failure(writer.send(connection, draft, "Hello"))).message).to.contain("already");
+
+  it("sends each write's documented method, path and body", async () => {
+    const rest = new FakeRest();
+    const writer = new ReviewWriter(rest.transport);
+    for (const status of [ "Under review", "Reviewed", "Rework required" ] as const) {
+      await writer.setStatus(connection(), REVIEW, status);
+    }
+    await writer.send(connection(), draft, "First line\nSecond line");
+    await writer.send(connection(), { ...draft, key: "reply", location: -1, parentId: 2227, revisionId: -1 }, "Reply");
+    expect(rest.writes().map(call => [ call.method, call.path.substring(API.length), call.body ])).to.deep.equal([
+      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Under review" }],
+      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Reviewed" }],
+      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Rework required" }],
+      [ "POST", "/comment", {
+        changesetId: 21, commentText: "First line\nSecond line", locationSpec: "4", revisionId: 42, type: "Comment",
+      }],
+      [ "POST", "/comment/2227/reply", { commentText: "Reply" }],
+    ]);
+  });
+
+  it("names the organization by its unityid when the REST API does not take its name, and says when it takes neither",
+    async () => {
+      const rest = new FakeRest();
+      rest.organizations = ["1234567890123"];
+      const writer = new ReviewWriter(rest.transport);
+      await writer.addReviewer(connection({ organizations: [ "acme-studio", "1234567890123" ] }), REVIEW);
+      expect(lines(rest.calls)).to.deep.equal([
+        "GET /api/v1/organizations/acme-studio/user",
+        "GET /api/v1/organizations/1234567890123/user",
+        "GET /api/v1/organizations/1234567890123/repos/Nimbus%2FNimbus/codereview/12831",
+        "POST /api/v1/organizations/1234567890123/repos/Nimbus%2FNimbus/codereview/12831/reviewers",
+      ]);
+
+      const refusing = new FakeRest();
+      refusing.organizations = [];
+      const error = await failure(new ReviewWriter(refusing.transport)
+        .addReviewer(connection({ organizations: [ "acme-studio", "1234567890123" ] }), REVIEW));
+      expect(error.message)
+        .to.equal("The Unity Version Control REST API did not accept the token for this organization.");
+      expect(error.uncertain).to.equal(false);
+      expect(refusing.writes()).to.deep.equal([]);
+    });
+
+  it("encodes the repository as one segment, then as a path after a 404, and names the review when neither answers",
+    async () => {
+      const rest = new FakeRest();
+      rest.repositories = ["Nimbus/Nimbus"];
+      const writer = new ReviewWriter(rest.transport);
+      await writer.send(connection(), draft, "Hello");
+      expect(lines(rest.calls).slice(1)).to.deep.equal([
+        `GET ${API}`,
+        "GET /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/12831",
+        "POST /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/12831/comment",
+      ]);
+      // The form that answered is kept for the repository, whichever review comes next.
+      await writer.addReviewer(connection(), 312);
+      expect(lines(rest.calls).slice(4))
+        .to.deep.equal(["POST /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/312/reviewers"]);
+
+      rest.repositories = [];
+      const missing = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), 7));
+      expect(missing.message).to.equal("The Unity Version Control REST API has no review #7 in Nimbus/Nimbus, " +
+        "with the repository's name as one path segment or as a path.");
+      expect(repositoryForms("Nimbus")).to.deep.equal(["Nimbus"]);
+      expect(repositoryForms("Nimbus/Sub Repo")).to.deep.equal([ "Nimbus%2FSub%20Repo", "Nimbus/Sub%20Repo" ]);
+    });
+
+  it("answers a 401 once with a renewed token, and a second 401 is an error", async () => {
+    const rest = new FakeRest();
+    rest.expired.add("synthetic-token-1");
+    const conn = connection();
+    const writer = new ReviewWriter(rest.transport);
+    await writer.addReviewer(conn, REVIEW);
+    expect(conn.stale).to.deep.equal([ undefined, "synthetic-token-1", undefined, undefined ]);
+    expect(rest.calls.map(call => call.token)).to.deep.equal([
+      "synthetic-token-1", "synthetic-token-2", "synthetic-token-2", "synthetic-token-2",
+    ]);
+
+    // Expired again at the write, and the renewed one too: sent twice, then refused, never a third time.
+    rest.respond = call => (call.method === "POST" ? json(401, { error: { message: "The token has expired." }})
+      : undefined);
+    const error = await failure(writer.addReviewer(conn, REVIEW));
+    expect(rest.writes().map(call => call.token).slice(1)).to.deep.equal([ "synthetic-token-2", "synthetic-token-3" ]);
+    expect(error.message).to.equal("The Unity Version Control server refused the request: The token has expired.");
+    expect(error.uncertain).to.equal(false);
+  });
+
+  it("sends nothing to a host the REST API does not document", async () => {
+    expect(REST_HOSTS.map(host => restOrigin(host))).to.deep.equal(REST_HOSTS.map(host => `https://${host}:7178`));
+    for (const region of [ "", "-", "cloud.plasticscm.com", `${REGION}.example.test`, `evil.${REGION}`, "localhost" ]) {
+      expect(restOrigin(region), region).to.equal(undefined);
+    }
+    for (const origin of [ "https://api.example.test:7178", `http://${REGION}:7178`, `https://${REGION}:443`,
+      `https://${REGION}` ]) {
+      expect(() => restUrl(origin, "/api/v1/organizations"), origin).to.throw(ReviewWriteError);
+    }
+    expect(() => restUrl(ORIGIN, "//api.example.test/api")).to.throw(ReviewWriteError);
+    expect(() => restUrl(ORIGIN, "/api/v1/organizations/../x")).to.throw(ReviewWriteError);
+    expect(() => restUrl(ORIGIN, "/api/v1/organizations/%2e%2e/x")).to.throw(ReviewWriteError);
+    expect(() => restUrl(ORIGIN, "/api/v1/organizations/a?b")).to.throw(ReviewWriteError);
+    expect(restUrl(ORIGIN, "/api/v1/organizations/acme-studio/user").toString())
+      .to.equal(`${ORIGIN}/api/v1/organizations/acme-studio/user`);
+
+    let sent = 0;
+    const writer = new ReviewWriter(() => {
+      sent++;
+      return Promise.resolve(json(200, {}));
+    });
+    const elsewhere = await failure(
+      writer.addReviewer(connection({ origin: "https://api.example.test:7178" }), REVIEW));
+    expect(elsewhere.message).to.equal("The Unity Version Control REST API did not accept the token for this " +
+      "organization.");
+    // A repository that would climb out of its path has no form to send.
+    const climbing = await failure(writer.addReviewer(connection({ repository: ".." }), REVIEW));
+    expect(climbing.message).to.contain("has no review #12831 in ..");
+    expect(sent).to.equal(1);
+  });
+
+  it("takes any 2xx as success, and maps 400, 403, 404 and other 4xx to what the server said", async () => {
+    for (const status of [ 200, 201, 204 ]) {
+      await new ReviewWriter(answeringWrites(status).transport).setStatus(connection(), REVIEW, "Reviewed");
+    }
+    const message = { error: { message: "Status is not valid for this review." }};
+    const cases: Array<{ status: number; body: object | string; expected: string; write?: "status" }> = [
+      { body: message, expected: "The Unity Version Control server rejected the request: Status is not valid for " +
+        "this review.", status: 400 },
+      { body: "", expected: "The Unity Version Control server rejected the request (HTTP 400).", status: 400 },
+      { body: { title: "Forbidden", type: "about:blank" }, expected: "The Unity Version Control server refused the " +
+        "request: Forbidden. Only reviewers can set their own status.", status: 403, write: "status" },
+      { body: {}, expected: "The Unity Version Control server refused the request.", status: 403 },
+      { body: message, expected: "The Unity Version Control server has no review #12831 in Nimbus/Nimbus.",
+        status: 404 },
+      { body: { detail: "Too many requests" }, expected: "The Unity Version Control server refused the request " +
+        "(HTTP 429): Too many requests.", status: 429 },
+      { body: "", expected: "The Unity Version Control server refused the request (HTTP 302).", status: 302 },
+    ];
+    for (const entry of cases) {
+      const rest = answeringWrites(entry.status, entry.body);
+      const writer = new ReviewWriter(rest.transport);
+      const error = await failure(entry.write === "status"
+        ? writer.setStatus(connection(), REVIEW, "Reviewed")
+        : writer.send(connection(), draft, "Hello"));
+      expect(error.message, `${entry.status} ${JSON.stringify(entry.body)}`).to.equal(entry.expected);
+      expect(error.uncertain).to.equal(false);
+      expect(rest.writes(), String(entry.status)).to.have.length(1);
+    }
+  });
+
+  it("says a 5xx, a 408 and no complete answer may have taken effect, and never sends such a write again",
+    async () => {
+      for (const status of [ 500, 502, 503, 408 ]) {
+        const rest = answeringWrites(status, { error: { message: "Internal error" }});
+        const error = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
+        expect(error.message).to.equal(`The Unity Version Control server returned HTTP ${status}. You may have been ` +
+          "added; refresh the review before retrying.");
+        expect(error.uncertain).to.equal(true);
+        expect(rest.writes()).to.have.length(1);
+      }
+      const rejecting = (reason: Error) => {
+        const rest = new FakeRest();
+        rest.respond = call => (call.method === "GET" ? undefined : Promise.reject(reason));
+        return rest;
+      };
+      const cases: Array<[Error, string]> = [
+        [ new ReviewRequestError("failed", true), "No complete response was received. Your status may have been " +
+          "set; refresh the review before retrying." ],
+        [ new ReviewRequestError("interrupted", true), "The response was interrupted. Your status may have been set; " +
+          "refresh the review before retrying." ],
+        [ new ReviewRequestError("cancelled", true), "Cancelled before the Unity Version Control server answered. " +
+          "Your status may have been set; refresh the review before retrying." ],
+        [ new Error("synthetic-token-1 socket detail"), "The request ended without a confirmed result. Your status " +
+          "may have been set; refresh the review before retrying." ],
+      ];
+      for (const [ reason, expected ] of cases) {
+        const rest = rejecting(reason);
+        const error = await failure(new ReviewWriter(rest.transport).setStatus(connection(), REVIEW, "Reviewed"));
+        expect(error.message).to.equal(expected);
+        expect(error.uncertain).to.equal(true);
+        expect(rest.writes()).to.have.length(1);
+      }
+      const unsent = rejecting(new ReviewRequestError("cancelled", false));
+      const cancelled = await failure(new ReviewWriter(unsent.transport).send(connection(), draft, "Hello"));
+      expect(cancelled.message).to.equal("Cancelled before anything was sent.");
+      expect(cancelled.uncertain).to.equal(false);
+    });
+
+  it("treats a failed read as certain: nothing was written", async () => {
+    const rest = new FakeRest();
+    rest.respond = call => (call.path.endsWith("/user") ? json(503, {}) : undefined);
+    const busy = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
+    expect(busy.message)
+      .to.equal("The Unity Version Control server returned HTTP 503. Nothing was changed; try again.");
+    expect(busy.uncertain).to.equal(false);
+
+    rest.respond = call => (call.method === "GET" && !call.path.endsWith("/user")
+      ? Promise.reject(new ReviewRequestError("failed", true)) : undefined);
+    const silent = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
+    expect(silent.message).to.equal("The Unity Version Control server did not answer. Nothing was changed; try again.");
+    expect(silent.uncertain).to.equal(false);
+
+    rest.respond = call => (call.method === "GET" && !call.path.endsWith("/user")
+      ? json(403, { message: "No access to this repository." }) : undefined);
+    const refused = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
+    expect(refused.message).to.equal("The Unity Version Control server refused the request: No access to this " +
+      "repository.");
+    expect(rest.writes()).to.deep.equal([]);
+  });
+
+  it("fails an add answered with another reviewer as a result to check, and takes the user in any case", async () => {
+    const other = answeringWrites(201, { isGroup: false, reviewer: "sam.rivera@example.test", status: "Under review" });
+    const error = await failure(new ReviewWriter(other.transport).addReviewer(connection(), REVIEW));
+    expect(error.message).to.equal("The Unity Version Control server answered with another reviewer. Refresh the " +
+      "review to check whether you were added.");
+    expect(error.uncertain).to.equal(true);
+    const same = answeringWrites(201, { isGroup: false, reviewer: "Dana.Kim@Example.TEST", status: "Under review" });
+    await new ReviewWriter(same.transport).addReviewer(connection(), REVIEW);
+    // A body that is not a CodeReviewerModel says nothing about who was added.
+    await new ReviewWriter(answeringWrites(200, "[]").transport).addReviewer(connection(), REVIEW);
+  });
+
+  it("refuses a user that is not an e-mail address, a bad review id, status or anchor, and a token unfit for a header",
+    async () => {
+      const rest = new FakeRest();
+      const writer = new ReviewWriter(rest.transport);
+      for (const user of [ "dana", "dana@localhost", "dana kim@example.test", "", "<dana@example.test>" ]) {
+        const error = await failure(writer.addReviewer(connection({ user }), REVIEW));
+        expect(error.message, user).to.contain("is not an e-mail address");
+      }
+      for (const id of [ 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1 ]) {
+        expect((await failure(writer.addReviewer(connection(), id))).message, String(id))
+          .to.match(/^Invalid review id/);
+      }
+      expect((await failure(writer.setStatus(connection(), REVIEW, "Approved" as "Reviewed"))).message)
+        .to.equal("Invalid review status: Approved");
+      expect((await failure(writer.send(connection(), draft, "  "))).message)
+        .to.equal("Enter a comment of at most 64,000 characters.");
+      expect((await failure(writer.send(connection(), { ...draft, location: -1 }, "Hello"))).message)
+        .to.equal("This comment does not have a valid pinned revision and line.");
+      expect((await failure(writer.send(connection(), { ...draft, parentId: -2 }, "Hello"))).message)
+        .to.equal("Invalid reply target.");
+      const injected = await failure(writer.addReviewer(connection({
+        token: () => Promise.resolve("synthetic-token\r\nX-Evil: 1"),
+      }), REVIEW));
+      expect(injected.message).to.equal("cm revealed a token that cannot be sent in a request.");
+      const refused = await failure(writer.addReviewer(connection({
+        token: () => Promise.reject(new Error("Create a personal access token for acme-studio@unity first.")),
+      }), REVIEW));
+      expect(refused.message).to.equal("Create a personal access token for acme-studio@unity first.");
+      expect(refused.uncertain).to.equal(false);
+      expect(rest.calls).to.deep.equal([]);
+    });
+
+  it("blocks concurrent duplicate sends and never resends an accepted draft", async () => {
+    const rest = new FakeRest();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    rest.respond = call => (call.method === "POST" ? held.then(() => json(201, { id: 20001 })) : undefined);
+    const writer = new ReviewWriter(rest.transport);
+    const first = writer.send(connection(), draft, "Hello");
+    expect((await failure(writer.send(connection(), draft, "Hello"))).message)
+      .to.equal("This draft is already sending or has been sent.");
     release();
     await first;
-    expect((await failure(writer.send(connection, draft, "Hello"))).message).to.contain("already");
-    expect(calls).to.equal(1);
+    expect((await failure(writer.send(connection(), draft, "Hello"))).message).to.contain("already");
+    expect(rest.writes()).to.have.length(1);
   });
-  it("does not retry, follow redirects, or echo response bodies and credentials in errors", async () => {
-    for (const status of [ 301, 401, 403, 400, 429, 500 ]) {
-      let calls = 0;
-      const writer = new ReviewWriter(() => {
-        calls++;
-        return Promise.resolve({ body: "test-token private server detail", status });
-      });
-      const error = await failure(writer.send(connection, draft, "Hello"));
-      expect(calls).to.equal(1);
-      expect(error.message).not.to.contain("test-token");
-      expect(error.message).not.to.contain("private server detail");
-      expect(error.uncertain).to.equal(status === 500);
+
+  it("shows what an ErrorResponse or ProblemDetails says, without anything shaped like a token", () => {
+    const jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGlj";
+    expect(serverMessage(JSON.stringify({ error: { message: `Token ${jwt} is not valid.` }})))
+      .to.equal("Token [token] is not valid.");
+    expect(serverMessage(JSON.stringify({ message: "Plain synthetic-token-1 text" }), "synthetic-token-1"))
+      .to.equal("Plain [token] text");
+    expect(serverMessage(JSON.stringify({ detail: "Details", title: "  Title\nhere " }))).to.equal("Title here");
+    expect(serverMessage(JSON.stringify({ detail: "x".repeat(300) }))).to.have.length(200);
+    for (const body of [ "", "not json", "[]", "{}", JSON.stringify({ message: 5 }), JSON.stringify({ title: " " }) ]) {
+      expect(serverMessage(body), body).to.equal(undefined);
     }
-  });
-});
-
-describe("Experimental Add Reviewers request (mock HTTP only)", () => {
-  const ME = "dana.kim@example.com";
-  const nimbus: IReviewWriteConnection = { organization: "acme studio", repository: "Nimbus/Nimbus", token: "test-token" };
-  const listing = (...reviewers: unknown[]) => JSON.stringify({ reviewers });
-
-  /** A writer whose transport records every request and answers with `respond`. */
-  function recording(respond: (call: IWriteRequest, cancel?: CancellationToken) => Promise<IWriteResponse>): {
-    calls: IWriteRequest[]; writer: ReviewWriter;
-  } {
-    const calls: IWriteRequest[] = [];
-    const writer = new ReviewWriter((call, cancel) => {
-      calls.push(call);
-      return respond(call, cancel);
-    });
-    return { calls, writer };
-  }
-  const answering = (status: number, body = "") => recording(() => Promise.resolve({ body, status }));
-
-  it("posts the user's e-mail address to the review's reviewers, with the token only in the Authorization header",
-    async () => {
-      const { calls, writer } = answering(201, listing({ isGroup: false, name: ME, status: "under-review" }));
-      await writer.addReviewer(nimbus, 312, ` ${ME} `);
-      expect(calls).to.have.length(1);
-      const [call] = calls;
-      expect(call.method).to.equal("POST");
-      expect(call.url.toString()).to.equal("https://services.api.unity.com/plastic/v1/organizations/acme%20studio" +
-        "/repositories/Nimbus%2FNimbus/code-reviews/312/reviewers");
-      expect(call.headers).to.deep.equal({ "Authorization": "Bearer test-token", "Content-Type": "application/json" });
-      expect(JSON.parse(call.body)).to.deep.equal({ reviewers: [ME] });
-      expect(call.url.toString() + call.body).not.to.contain("test-token");
-    });
-
-  it("percent-encodes the organization and repository as one path segment each, on the fixed host", async () => {
-    const { calls, writer } = answering(200);
-    await writer.addReviewer({ ...nimbus, organization: "acme/../x?y", repository: "Nimbus#1/../../elsewhere" }, 7, ME);
-    const url = calls[0].url;
-    expect(url.origin).to.equal("https://services.api.unity.com");
-    expect(url.pathname).to.equal("/plastic/v1/organizations/acme%2F..%2Fx%3Fy" +
-      "/repositories/Nimbus%231%2F..%2F..%2Felsewhere/code-reviews/7/reviewers");
-    expect(url.search + url.hash).to.equal("");
-  });
-
-  it("takes 200, and a 201 that lists the user in any case as a name or a reviewer, as success", async () => {
-    await answering(200).writer.addReviewer(nimbus, 312, ME);
-    await answering(201, listing("priya.nair@example.com", "DANA.KIM@EXAMPLE.COM")).writer.addReviewer(nimbus, 312, ME);
-    await answering(201, listing({ isGroup: false, name: "Dana.Kim@Example.com", status: "under-review" }))
-      .writer.addReviewer(nimbus, 312, ME);
-  });
-
-  it("fails a 201 whose reviewers leave the user out, or that lists none, as a result to check", async () => {
-    const bodies = [ listing({ isGroup: false, name: "priya.nair@example.com" }), listing(), "", "{\"reviewers\":5}" ];
-    for (const body of bodies) {
-      const error = await failure(answering(201, body).writer.addReviewer(nimbus, 312, ME));
-      expect(error, body).to.be.instanceOf(ReviewWriteError);
-      expect(error.message, body).to.equal(
-        "The review service answered, but its list of reviewers does not include you. Refresh the review to check.");
-      expect(error.uncertain, body).to.equal(true);
-    }
-  });
-
-  it("says a token refused with 401 or 403 has expired or lacks permission, and echoes nothing the server sent",
-    async () => {
-      for (const status of [ 401, 403 ]) {
-        const error = await failure(answering(status, "test-token private server detail").writer
-          .addReviewer(nimbus, 312, ME));
-        expect(error.message).to.equal("The review service refused the token: it has expired or lacks permission to " +
-          "change reviewers. Unity user tokens are short-lived; set a new one with Configure Experimental Posting… " +
-          "and try again.");
-        expect(error.uncertain).to.equal(false);
-      }
-    });
-
-  it("names what a 404 did not find, and refuses other 4XX RestFailures without echoing them", async () => {
-    const missing = await failure(answering(404, "{\"errors\":[{\"message\":\"test-token\"}]}").writer
-      .addReviewer(nimbus, 312, ME));
-    expect(missing.message).to.equal("The review service has no review #312 in acme studio / Nimbus/Nimbus. " +
-      "Check both names with Configure Experimental Posting… and try again.");
-    const failures = JSON.stringify({
-      errors: [{ code: "InvalidReviewer", message: "test-token private server detail" }],
-    });
-    for (const status of [ 400, 409, 422, 429, 301 ]) {
-      const error = await failure(answering(status, failures).writer.addReviewer(nimbus, 312, ME));
-      expect(error.message).to.equal(`The review service refused the request (HTTP ${status}). ` +
-        "The experimental request format or repository mapping may not match this service.");
-      expect(error.uncertain).to.equal(false);
-    }
-    for (const status of [ 500, 503, 408 ]) {
-      const error = await failure(answering(status, failures).writer.addReviewer(nimbus, 312, ME));
-      expect(error.message).to.equal(`The review service returned HTTP ${status}. ` +
-        "You may have been added; refresh the review before retrying.");
-      expect(error.uncertain).to.equal(true);
-    }
-  });
-
-  it("turns a network failure, an interrupted answer and a cancellation into what may have happened", async () => {
-    const rejecting = (error: Error) => recording(() => Promise.reject(error)).writer;
-    const network = await failure(rejecting(new ReviewRequestError("failed", true)).addReviewer(nimbus, 312, ME));
-    expect(network.message).to.equal(
-      "No complete response was received. You may have been added. Check the review before retrying.");
-    expect(network.uncertain).to.equal(true);
-    const interrupted = await failure(
-      rejecting(new ReviewRequestError("interrupted", true)).addReviewer(nimbus, 312, ME));
-    expect(interrupted.message).to.equal("The response was interrupted. Check the review before retrying.");
-    const unknown = await failure(rejecting(new Error("test-token socket detail")).addReviewer(nimbus, 312, ME));
-    expect(unknown.message).to.equal(
-      "The request ended without a confirmed result. You may have been added. Check the review before retrying.");
-
-    // Cancelled while the request is out: the transport sees the token fire.
-    const source = new CancellationTokenSource();
-    const { writer } = recording((_call, cancel) => new Promise((_resolve, reject) => {
-      cancel!.onCancellationRequested(() => reject(new ReviewRequestError("cancelled", true)));
-    }));
-    const pending = failure(writer.addReviewer(nimbus, 312, ME, source.token));
-    source.cancel();
-    const cancelled = await pending;
-    expect(cancelled.message).to.equal(
-      "Cancelled before the review service answered. You may have been added. Check the review before retrying.");
-    expect(cancelled.uncertain).to.equal(true);
-    source.dispose();
   });
 
   it("sends nothing when cancelled first: the https transport rejects before it opens a request", async () => {
@@ -217,30 +403,17 @@ describe("Experimental Add Reviewers request (mock HTTP only)", () => {
     const source = new CancellationTokenSource();
     source.cancel();
     try {
-      const error = await failure(new ReviewWriter(httpsTransport).addReviewer(nimbus, 312, ME, source.token));
-      expect(error.message).to.equal("Cancelled before anything was sent.");
+      const writer = new ReviewWriter(httpsTransport);
+      const error = await failure(writer.addReviewer(connection(), REVIEW, source.token));
+      expect(error.message).to.equal("Cancelled before anything was changed.");
       expect(error.uncertain).to.equal(false);
       const direct = await failure(httpsTransport({ body: "{}", headers: {}, method: "POST",
-        url: new URL("https://services.api.unity.com/plastic/v1") }, source.token));
+        url: restUrl(ORIGIN, "/api/v1/organizations/acme-studio/user") }, source.token));
       expect(direct).to.be.instanceOf(ReviewRequestError);
       expect(opened).to.equal(0);
     } finally {
       api.request = original;
       source.dispose();
     }
-  });
-
-  it("refuses a user that is not an e-mail address, a bad review id and a token that injects a header", async () => {
-    const { calls, writer } = answering(201, listing(ME));
-    for (const user of [ "dana", "dana@localhost", "dana kim@example.com", "", "<dana@example.com>" ]) {
-      const error = await failure(writer.addReviewer(nimbus, 312, user));
-      expect(error.message, user).to.contain("is not an e-mail address");
-    }
-    for (const id of [ 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1 ]) {
-      expect((await failure(writer.addReviewer(nimbus, id, ME))).message, String(id)).to.match(/^Invalid review id/);
-    }
-    const injected = await failure(writer.addReviewer({ ...nimbus, token: "test-token\r\nX-Evil: 1" }, 312, ME));
-    expect(injected.message).to.equal("Configure a valid review-service bearer token first.");
-    expect(calls).to.deep.equal([]);
   });
 });

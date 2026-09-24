@@ -139,7 +139,7 @@
         "plastic-scm.reviews.experimentalPosting": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Experimental.** Allows posting review comments and replies, and adding yourself as a reviewer, through Unity's hosted API with a token you enter. Authentication, line encoding and the reply format are unverified. Only Unity Version Control cloud repositories are supported.",
+          "markdownDescription": "**Experimental.** Allows posting review comments and replies, adding yourself as a reviewer and setting your own review status through the Unity Version Control Server REST API. The extension creates a personal access token for this with cm, and asks first; an organization admin has to allow personal access tokens for you. Request details are unverified against the live service. Only Unity Version Control cloud repositories are supported.",
           "scope": "application"
         }
       }
@@ -406,15 +406,15 @@
         "title": "Copy Discussion Text"
       },
       {
-        "command": "plastic-scm.reviews.configurePosting",
+        "command": "plastic-scm.reviews.openInDesktop",
         "category": "Plastic Reviews",
-        "title": "Configure Experimental Posting…",
-        "icon": "$(beaker)"
+        "title": "Open in Unity Version Control",
+        "icon": "$(link-external)"
       },
       {
-        "command": "plastic-scm.reviews.forgetPosting",
+        "command": "plastic-scm.reviews.revokeAccessToken",
         "category": "Plastic Reviews",
-        "title": "Forget Experimental Posting Token"
+        "title": "Revoke Review Access Token"
       },
       {
         "command": "plastic-scm.reviews.postComment",
@@ -594,14 +594,9 @@
           "group": "1_workspace@1"
         },
         {
-          "command": "plastic-scm.reviews.configurePosting",
-          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting",
+          "command": "plastic-scm.reviews.revokeAccessToken",
+          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.hasAccessToken",
           "group": "8_experimental@1"
-        },
-        {
-          "command": "plastic-scm.reviews.forgetPosting",
-          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.postingConfigured",
-          "group": "8_experimental@2"
         },
         {
           "command": "plastic-scm.showOutput",
@@ -654,6 +649,11 @@
           "group": "1_review@2"
         },
         {
+          "command": "plastic-scm.reviews.openInDesktop",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "1_review@3"
+        },
+        {
           "command": "plastic-scm.reviews.close",
           "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
           "group": "1_review@9"
@@ -664,6 +664,11 @@
           "command": "plastic-scm.reviews.open",
           "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
           "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.reviews.openInDesktop",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "1_open@2"
         },
         {
           "command": "plastic-scm.reviews.setStatus",
@@ -900,12 +905,12 @@
           "when": "plastic-scm.reviews.activeEditorIsReviewFile"
         },
         {
-          "command": "plastic-scm.reviews.configurePosting",
-          "when": "config.plastic-scm.reviews.experimentalPosting"
+          "command": "plastic-scm.reviews.openInDesktop",
+          "when": "plastic-scm.reviews.hasActiveReview"
         },
         {
-          "command": "plastic-scm.reviews.forgetPosting",
-          "when": "config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.postingConfigured"
+          "command": "plastic-scm.reviews.revokeAccessToken",
+          "when": "config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.hasAccessToken"
         },
         {
           "command": "plastic-scm.reviews.open",

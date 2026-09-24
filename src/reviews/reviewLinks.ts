@@ -1,4 +1,4 @@
-import { fileKey } from "./models";
+import { fileKey, repositoryName, repositoryServer } from "./models";
 import { FileScope } from "./sessionTypes";
 import { OverviewLinkTarget } from "./reviewOverview";
 import { Uri } from "vscode";
@@ -63,6 +63,25 @@ export function reviewLinkUri(base: IReviewLinkBase, link: IReviewLink): string 
     query.push(`key=${link.key ?? ""}`);
   }
   return `${base.scheme}://${base.authority}${PATHS[target.kind]}?${query.join("&")}`;
+}
+
+/**
+ * The `plastic://` link that opens a review in the Unity Version Control
+ * desktop app (release notes 10.0.16.5338 and later):
+ * `plastic://{server}/repos/{repository}/code-reviews/{id}`. The server is
+ * the repository spec's, with a trailing `@cloud` written `.cloud` as release
+ * 11.0.16.8953 documents for cloud organizations, and any other spec as it
+ * is; each `/`-separated part of the repository's name is encoded. Undefined
+ * for a spec without a server.
+ */
+export function desktopReviewLink(repository: string, reviewId: number): string | undefined {
+  const server = repositoryServer(repository).trim();
+  const name = repositoryName(repository).trim();
+  if (!server || !name || !Number.isSafeInteger(reviewId) || reviewId <= 0) {
+    return undefined;
+  }
+  const path = name.split("/").map(part => encodeURIComponent(part)).join("/");
+  return `plastic://${server.replace(/@cloud$/i, ".cloud")}/repos/${path}/code-reviews/${reviewId}`;
 }
 
 /**

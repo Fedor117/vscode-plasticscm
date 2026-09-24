@@ -67,7 +67,6 @@ export const REVIEW_COMMANDS = [
   "allowRetry",
   "cancelComment",
   "close",
-  "configurePosting",
   "copyChangesetComment",
   "copyChangesetId",
   "copyDiscussionText",
@@ -76,7 +75,6 @@ export const REVIEW_COMMANDS = [
   "copyTitle",
   "discardLocal",
   "find",
-  "forgetPosting",
   "loadMore",
   "loadMoreChangesets",
   "loadUpdates",
@@ -89,6 +87,7 @@ export const REVIEW_COMMANDS = [
   "openById",
   "openChanges",
   "openDiscussion",
+  "openInDesktop",
   "openNextUnviewed",
   "openOverview",
   "openWorkspaceFile",
@@ -98,6 +97,7 @@ export const REVIEW_COMMANDS = [
   "refresh",
   "refreshReview",
   "retry",
+  "revokeAccessToken",
   "sendAgain",
   "setStatus",
   "show",
@@ -190,7 +190,6 @@ const STATUS_ICONS: { [status in ReviewStatus]: string } = {
 const ICONS_ROOT = path.join(__dirname, "..", "..", "images", "icons");
 /** The buttons of Add Me as Reviewer's messages. */
 const OPEN_SETTING = "Open Setting";
-const CONFIGURE_POSTING = "Configure Experimental Posting…";
 const ADD_ME = "Add Me as Reviewer";
 
 /**
@@ -236,7 +235,6 @@ export class ReviewActions implements Disposable {
       allowRetry: arg => this.withComment(arg, comment => this.options.posting.allowRetry(comment)),
       cancelComment: arg => this.cancelComment(arg),
       close: () => this.closeReview(),
-      configurePosting: () => this.options.posting.configure(),
       copyChangesetComment: arg => this.copyChangeset(arg, "comment"),
       copyChangesetId: arg => this.copyChangeset(arg, "id"),
       copyDiscussionText: arg => this.copyDiscussionText(arg),
@@ -245,7 +243,6 @@ export class ReviewActions implements Disposable {
       copyTitle: arg => this.copyReview(arg, "title"),
       discardLocal: arg => this.withComment(arg, comment => this.options.posting.discardLocal(comment)),
       find: () => this.find(),
-      forgetPosting: () => this.options.posting.forget(),
       loadMore: arg => this.loadMore(arg),
       loadMoreChangesets: () => this.options.session.loadMoreChangesets(),
       loadUpdates: () => this.loadUpdates(),
@@ -258,6 +255,7 @@ export class ReviewActions implements Disposable {
       openById: () => this.openById(),
       openChanges: arg => this.openChanges(arg),
       openDiscussion: arg => this.openDiscussion(arg),
+      openInDesktop: arg => this.openInDesktop(arg),
       openNextUnviewed: () => this.openNextUnviewed(),
       openOverview: arg => this.showOverview(isObject(arg) && arg.kind === "overview"),
       openWorkspaceFile: arg => this.openWorkspaceFile(arg),
@@ -267,6 +265,7 @@ export class ReviewActions implements Disposable {
       refresh: () => this.options.session.refreshList(),
       refreshReview: () => this.options.session.reload(),
       retry: arg => this.retry(arg),
+      revokeAccessToken: () => this.revokeAccessToken(),
       sendAgain: arg => this.withComment(arg, comment => this.options.posting.sendAgain(comment)),
       setStatus: arg => this.setStatus(arg),
       show: () => commands.executeCommand("workbench.view.extension.plastic-scm-reviews"),
@@ -510,49 +509,46 @@ export class ReviewActions implements Disposable {
     }
   }
 
+  /**
+   * Set Review Status…, on a Reviews row or the active review. The picker
+   * starts from the status the write would change (see `statusPlan`): the cm
+   * user's own when they give their verdict through the REST API, the
+   * review's otherwise.
+   */
   private async setStatus(arg: unknown): Promise<void> {
     const session = this.options.session;
-    const active = session.active;
-    let target: { workspaceId: string; review: IReview } | undefined;
-    if (isReviewRow(arg)) {
-      target = { review: arg.review, workspaceId: arg.workspaceId };
-    } else if (active) {
-      target = { review: active.review, workspaceId: active.workspaceId };
-    }
+    const target = this.reviewTarget(arg);
     if (!target) {
       void window.showInformationMessage("Open a review in Plastic Reviews first.");
       return;
     }
     const { review, workspaceId } = target;
-    const choice = await pickStatus(review);
-    if (choice && !sameStatus(choice, review.status)) {
-      await session.setStatus(workspaceId, review, choice);
+    const plan = await session.statusPlan(workspaceId, review);
+    const choice = await pickStatus(review.id, plan.current, plan.kind === "personal");
+    if (choice && !sameStatus(choice, plan.current)) {
+      await session.setStatus(workspaceId, review, choice, plan);
     }
   }
 
   /**
    * Add Me as Reviewer, on a Reviews row or the active review. Experimental:
-   * with the setting off it offers the setting, and without a connection for
-   * the workspace it offers Configure Experimental Posting….
+   * with the setting off it offers the setting, and where posting is blocked
+   * it says why; the session asks for a token when there is none.
    */
   private async addMeAsReviewer(arg: unknown): Promise<void> {
-    const session = this.options.session;
-    const active = session.active;
-    const target = isReviewRow(arg) ? { review: arg.review, workspaceId: arg.workspaceId }
-      : active && { review: active.review, workspaceId: active.workspaceId };
+    const target = this.reviewTarget(arg);
     if (!target) {
       void window.showInformationMessage("Open a review in Plastic Reviews first.");
       return;
     }
     if (await this.readyToAddReviewer(target.workspaceId)) {
-      await session.addMe(target.workspaceId, target.review);
+      await this.options.session.addMe(target.workspaceId, target.review);
     }
   }
 
-  /** Whether experimental posting can add a reviewer in the workspace; offers what is missing when it cannot. */
+  /** Whether experimental posting is on and not blocked in the workspace; says what is missing when it is not. */
   private async readyToAddReviewer(workspaceId: string): Promise<boolean> {
-    const posting = this.options.posting;
-    const access = await posting.reviewerAccess(workspaceId);
+    const access = await this.options.posting.access(workspaceId);
     if (access.state === "settingOff") {
       const choice = await window.showInformationMessage(
         `Add Me as Reviewer is experimental. Turn on the ${POSTING_SETTING} setting to use it.`, OPEN_SETTING);
@@ -565,12 +561,29 @@ export class ReviewActions implements Disposable {
       void window.showInformationMessage(access.reason);
       return false;
     }
-    if (access.state === "unconfigured") {
-      const choice = await window.showInformationMessage(
-        "Adding yourself as a reviewer needs a Unity user token for this workspace.", CONFIGURE_POSTING);
-      return choice === CONFIGURE_POSTING && await posting.configure();
-    }
     return true;
+  }
+
+  /** Open in Unity Version Control, for a Reviews row or the active review, whatever the experimental setting. */
+  private async openInDesktop(arg: unknown): Promise<void> {
+    const target = this.reviewTarget(arg);
+    if (!target) {
+      void window.showInformationMessage("Open a review in Plastic Reviews first.");
+      return;
+    }
+    await this.options.session.openInDesktop(target.workspaceId, target.review.id);
+  }
+
+  /** Revoke Review Access Token, for the selected workspace's server and cm user. */
+  private async revokeAccessToken(): Promise<void> {
+    void window.showInformationMessage(await this.options.posting.revoke());
+  }
+
+  /** The review a row command acts on: the row's, or else the active review. */
+  private reviewTarget(arg: unknown): { workspaceId: string; review: IReview } | undefined {
+    const active = this.options.session.active;
+    return isReviewRow(arg) ? { review: arg.review, workspaceId: arg.workspaceId }
+      : active && { review: active.review, workspaceId: active.workspaceId };
   }
 
   /**
@@ -1024,14 +1037,17 @@ function showUnsupported(review: IReview): void {
 
 /**
  * The status picker. It opens on the first status that is not the current one,
- * so Enter changes something; undefined when it is dismissed.
+ * so Enter changes something; undefined when it is dismissed. `own`: the
+ * current status is the cm user's own verdict, not the review's.
  */
-function pickStatus(review: IReview): Promise<ReviewStatus | undefined> {
-  const items = statusItems(review.status);
+function pickStatus(reviewId: number, current: string, own: boolean): Promise<ReviewStatus | undefined> {
+  const items = statusItems(current);
   const picker = window.createQuickPick<IStatusItem>();
   picker.items = items;
-  picker.placeholder = `Set status of review #${review.id} (currently ${review.status || "unknown"})`;
-  picker.activeItems = items.filter(item => item.status && !sameStatus(item.status, review.status)).slice(0, 1);
+  picker.placeholder = own
+    ? `Set your status on review #${reviewId} (currently ${current})`
+    : `Set status of review #${reviewId} (currently ${current || "unknown"})`;
+  picker.activeItems = items.filter(item => item.status && !sameStatus(item.status, current)).slice(0, 1);
   return new Promise(resolve => {
     picker.onDidAccept(() => {
       resolve(picker.selectedItems[0]?.status);

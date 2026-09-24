@@ -1052,7 +1052,8 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
   private applyPostingOptions(): void {
     this.controller.options = this.postingEnabled ? {
       placeHolder:
-        "Experimental: posts through Unity's hosted API with your saved token. Refresh afterwards to verify.",
+        "Experimental: posts through the Unity Version Control REST API with a personal access token. " +
+        "Refresh afterwards to verify.",
       prompt: "Reply (experimental)",
     } : undefined;
     // Assigning the provider again makes VS Code ask for the commenting ranges anew.

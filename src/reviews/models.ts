@@ -226,6 +226,12 @@ export function repositoryName(repository: string): string {
   return at < 0 ? repository : repository.substring(0, at);
 }
 
+/** The server part of a repository spec: `Nimbus/Nimbus@acme-studio@unity` → `acme-studio@unity`; empty without one. */
+export function repositoryServer(repository: string): string {
+  const at = repository.indexOf("@");
+  return at < 0 ? "" : repository.substring(at + 1);
+}
+
 /**
  * Merge rows sometimes list an item as Changed with neither a base nor a parent
  * revision although the same revision sits at that path on both sides. There is
