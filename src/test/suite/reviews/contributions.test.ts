@@ -1,16 +1,20 @@
 import * as fs from "fs";
 import * as path from "path";
 import {
+  AUTHOR,
   BRANCH_ID,
   BRANCH_NAME,
   BRANCH_REVIEW_ID,
   branchRowXml,
   CHANGESET_REVIEW_ID,
+  comment,
+  commentsXml,
   HEAD,
   ME,
   REPOSITORY,
   ReviewShell,
   reviewsXml,
+  SCENARIO_COMMENTS,
   scenarioAnswer,
   WORKSPACE_ROOT,
 } from "./fixtures";
@@ -41,16 +45,18 @@ import {
   reviewScheme,
 } from "../../../reviews/reviewEditors";
 import { layoutTarget, REVIEW_COMMAND_PREFIX, REVIEW_COMMANDS, statusItems } from "../../../reviews/reviewActions";
-import { numberedText, until } from "./editorFixtures";
+import { memorySecrets, numberedText, until } from "./editorFixtures";
 import { ReviewTreeNode, ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
 import { DiscussionsProvider } from "../../../reviews/discussionsProvider";
 import { expect } from "chai";
 import { fileKey } from "../../../reviews/models";
 import { IReviewPickItem } from "../../../reviews/reviewPresentation";
+import { IReviewPostingOptions } from "../../../reviews/reviewPosting";
 import { OverviewLinkTarget } from "../../../reviews/reviewOverview";
 import { review as reviewFixture } from "./viewFixtures";
 import { reviewLinkUri } from "../../../reviews/reviewLinks";
 import { ReviewService } from "../../../reviews/reviewService";
+import { ReviewWriter } from "../../../reviews/reviewWriter";
 
 interface IMenuEntry {
   command: string;
@@ -238,6 +244,32 @@ describe("Plastic Reviews contributions", () => {
     expect(manifest.activationEvents).to.include(`onFileSystem:${reviewScheme}`);
   });
 
+  it("contributes Add Me as Reviewer to the Review view's title, the Reviews rows and the palette, all experimental",
+    () => {
+      const id = "plastic-scm.reviews.addMeAsReviewer";
+      expect(contributes.commands.find(entry => entry.command === id)).to.deep.equal({
+        category: "Plastic Reviews",
+        command: id,
+        icon: "$(person-add)",
+        title: "Add Me as Reviewer",
+      });
+      const entries = (menu: string) => contributes.menus[menu].filter(entry => entry.command === id)
+        .map(entry => ({ group: entry.group, when: entry.when }));
+      const setting = "config.plastic-scm.reviews.experimentalPosting";
+      expect(entries("view/title")).to.deep.equal([{
+        group: "navigation@2",
+        when: `view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && ${setting} && ` +
+          CONTEXT_KEYS.canAddMeAsReviewer,
+      }]);
+      expect(entries("view/item/context")).to.deep.equal([{
+        group: "2_status@2",
+        when: `view == plastic-scm.reviews.list && viewItem =~ /^review;/ && ${setting}`,
+      }]);
+      expect(entries("commandPalette"))
+        .to.deep.equal([{ group: undefined, when: `plastic-scm.reviews.hasActiveReview && ${setting}` }]);
+      expect(entries("editor/title")).to.deep.equal([]);
+    });
+
   it("puts the review's actions on the Overview's tab, scoped to the active review's Overview", () => {
     const overview = contributes.menus["editor/title"]
       .filter(entry => entry.when?.includes(CONTEXT_KEYS.activeEditorIsOverview));
@@ -337,13 +369,20 @@ describe("Plastic Reviews contributions", () => {
 
     /** A PlasticReviews on the fixture shell. A later one can share the mementos, as after a window reload. */
     function create(
-        options: { workspaces?: Array<typeof WORKSPACE>; globalState?: Memento; workspaceState?: Memento } = {}) {
+        options: {
+          workspaces?: Array<typeof WORKSPACE>;
+          globalState?: Memento;
+          workspaceState?: Memento;
+          posting?: IReviewPostingOptions;
+          secrets?: ReturnType<typeof memorySecrets>;
+        } = {}) {
       const workspaces = options.workspaces ?? [WORKSPACE];
       return new PlasticReviews({
         channel,
         extensionId: EXTENSION_ID,
         globalState: options.globalState ?? memento(),
-        secrets: undefined,
+        posting: options.posting,
+        secrets: options.secrets,
         session: {
           createService: wk => {
             const service = new ReviewService(wk.id, wk.path, channel, SHELL_CONFIG, shell);
@@ -1120,6 +1159,245 @@ describe("Plastic Reviews contributions", () => {
       } finally {
         await extensions.update("confirmedUriHandlerExtensionIds", undefined, ConfigurationTarget.Global);
       }
+    });
+
+    describe("Add Me as Reviewer", () => {
+      const SAM = "sam.rivera@example.com";
+      const SECRET = `plastic-reviews.experimental:${JSON.stringify([ "wk", REPOSITORY ])}`;
+      const CONNECTION = { organization: "acme-studio", repository: "Nimbus/Nimbus", token: "test-token" };
+      /** The scenario's comment rows without those that request the cm user; their verdicts stay. */
+      const UNREQUESTED = SCENARIO_COMMENTS.filter(row => !/^\[requested-review-from/.test(row.text));
+      const requests: Array<{ url: string; body: string }> = [];
+      let comments = UNREQUESTED;
+      let people = { assignee: SAM, owner: AUTHOR };
+      let setting = true;
+
+      /** The scenario, with the review's people and comment rows as the test sets them. */
+      function answer(command: string, args: string[]): string {
+        if (args[0] === "review" && (args[1] ?? "").includes(`id = ${BRANCH_REVIEW_ID}`)) {
+          return reviewsXml([{ ...people, id: BRANCH_REVIEW_ID, title: "Lap Timer Accuracy" }]);
+        }
+        return args[0] === "changereviewcomment" ? commentsXml(comments) : scenarioAnswer(command, args);
+      }
+
+      function marker(id: number, text: string): (typeof UNREQUESTED)[number] {
+        return comment({
+          changesetId: -1, date: `2026-09-22T18:0${id % 10}:00+01:00`, id, location: -1, owner: AUTHOR,
+          reviewId: BRANCH_REVIEW_ID, revisionId: -1, text: `[${text}]${ME}`, type: "timeline",
+        });
+      }
+
+      /** A PlasticReviews with experimental posting on a fake writer; it adds the cm user as the service would. */
+      function withPosting(connected = true): PlasticReviews {
+        reviews?.dispose();
+        const writer = new ReviewWriter(call => {
+          requests.push({ body: call.body, url: call.url.toString() });
+          comments = comments.concat(marker(13001, "requested-review-from"));
+          return Promise.resolve({
+            body: JSON.stringify({ reviewers: [{ isGroup: false, name: ME, status: "under-review" }] }),
+            status: 201,
+          });
+        });
+        reviews = create({
+          posting: { setting: () => setting, trusted: () => true, writer },
+          secrets: memorySecrets(connected ? { [SECRET]: JSON.stringify(CONNECTION) } : {}),
+        });
+        return reviews;
+      }
+
+      /**
+       * Opens review 12831 and waits until its discussions have loaded and, with
+       * the setting on (only then is cm asked), until cm has said who the user is.
+       */
+      async function opened(): Promise<Map<string, unknown>> {
+        await commands.executeCommand("plastic-scm.reviews.open", "wk", BRANCH_REVIEW_ID);
+        const session = reviews!.session;
+        await until(() => session.active?.discussions.state === "ready" &&
+          (!setting || session.service("wk")?.knownUser !== undefined));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        return (reviews as unknown as { keys: Map<string, unknown> }).keys;
+      }
+
+      /** The add-me link as the Overview writes it, with this window's key or another. */
+      function addMeLink(key: string): Uri {
+        const base = { authority: EXTENSION_ID, scheme: env.uriScheme };
+        return Uri.parse(reviewLinkUri(base,
+          { key, reviewId: BRANCH_REVIEW_ID, target: { kind: "addMeAsReviewer" }, workspaceId: "wk" }));
+      }
+
+      /** Runs `task` with the modal warning answering `reply`; the messages it showed are returned. */
+      async function warned(reply: string | undefined, task: () => Thenable<unknown>): Promise<string[]> {
+        const shown: string[] = [];
+        const api = window as unknown as { showWarningMessage: (message: string) => Thenable<string | undefined> };
+        const original = api.showWarningMessage;
+        api.showWarningMessage = message => {
+          shown.push(message);
+          return Promise.resolve(reply);
+        };
+        try {
+          await task();
+        } finally {
+          api.showWarningMessage = original;
+        }
+        return shown;
+      }
+
+      beforeEach(() => {
+        requests.length = 0;
+        comments = UNREQUESTED;
+        people = { assignee: SAM, owner: AUTHOR };
+        setting = true;
+        shell.answer = answer;
+      });
+
+      afterEach(() => {
+        expect(shell.calls.filter(call => call.command === "codereview"), "status writes").to.deep.equal([]);
+      });
+
+      it("offers itself in the Review view only while the setting is on and the cm user can be added", async () => {
+        const removed = UNREQUESTED.concat(marker(13002, "requested-review-from"),
+          marker(13003, "removed-requested-review-from"));
+        const cases: Array<{ name: string; rows: typeof UNREQUESTED; who?: typeof people; can: boolean }> = [
+          { can: false, name: "requested", rows: SCENARIO_COMMENTS },
+          { can: false, name: "removed, then requested again",
+            rows: removed.concat(marker(13004, "re-requested-review-from")) },
+          { can: true, name: "removed", rows: removed },
+          { can: true, name: "a verdict nobody asked for", rows: UNREQUESTED },
+          { can: true, name: "no row at all", rows: UNREQUESTED.filter(row => row.owner !== ME) },
+          { can: false, name: "the assignee", rows: UNREQUESTED, who: { assignee: ME, owner: AUTHOR }},
+          { can: false, name: "the author", rows: UNREQUESTED, who: { assignee: SAM, owner: ME }},
+        ];
+        for (const entry of cases) {
+          comments = entry.rows;
+          people = entry.who ?? { assignee: SAM, owner: AUTHOR };
+          withPosting();
+          const keys = await opened();
+          if (entry.can) {
+            await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true);
+          }
+          expect(keys.get(CONTEXT_KEYS.canAddMeAsReviewer), entry.name).to.equal(entry.can);
+          expect(reviews!.session.canAddMe(), entry.name).to.equal(entry.can);
+        }
+
+        // With the setting off it is never offered, even once the session knows the user could be added.
+        comments = UNREQUESTED;
+        people = { assignee: SAM, owner: AUTHOR };
+        setting = false;
+        withPosting();
+        const keys = await opened();
+        await until(() => reviews!.session.canAddMe());
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(keys.get(CONTEXT_KEYS.canAddMeAsReviewer)).to.equal(false);
+        expect(requests).to.deep.equal([]);
+      });
+
+      it("adds the cm user to the active review once, then shows them and stops offering itself", async () => {
+        withPosting();
+        const keys = await opened();
+        await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true);
+        await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
+        expect(requests).to.have.length(1);
+        expect(new URL(requests[0].url).pathname).to.match(/\/code-reviews\/12831\/reviewers$/);
+        expect(JSON.parse(requests[0].body)).to.deep.equal({ reviewers: [ME] });
+        await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false);
+        const active = reviews!.session.active!;
+        expect(active.discussions.state === "ready" && active.discussions.value.reviewers).to.include(ME);
+        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+        expect(lines.join("\n")).to.not.contain("test-token");
+      });
+
+      it("adds the cm user to a Reviews row's review, which need not be open", async () => {
+        withPosting();
+        await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer", await reviewRow(BRANCH_REVIEW_ID));
+        expect(requests.map(request => new URL(request.url).pathname.replace(/^.*\/code-reviews\//, "")))
+          .to.deep.equal(["12831/reviewers"]);
+        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+      });
+
+      it("offers the setting while it is off, Configure Experimental Posting… without a token, and sends nothing",
+        async () => {
+          setting = false;
+          withPosting();
+          await opened();
+          const settingOff = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
+          expect(settingOff).to.deep.equal([
+            "Add Me as Reviewer is experimental. Turn on the plastic-scm.reviews.experimentalPosting setting " +
+              "to use it.",
+          ]);
+          setting = true;
+          withPosting(false);
+          await opened();
+          expect(await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer")))
+            .to.deep.equal(["Adding yourself as a reviewer needs a Unity user token for this workspace."]);
+          expect(requests).to.deep.equal([]);
+          // Dismissing either offer stops there: nothing fails for want of a token.
+          expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+        });
+
+      it("adds once Configure Experimental Posting…, chosen from its offer, has saved a token", async () => {
+        withPosting(false);
+        await opened();
+        const api = window as unknown as {
+          showInformationMessage: (message: string) => Thenable<string | undefined>;
+          showInputBox: () => Thenable<string | undefined>;
+        };
+        const { showInformationMessage, showInputBox } = api;
+        const offers: string[] = [];
+        let answers: string[] = [];
+        api.showInformationMessage = message => {
+          offers.push(message);
+          return Promise.resolve("Configure Experimental Posting…");
+        };
+        api.showInputBox = () => Promise.resolve(answers.shift());
+        try {
+          // Configuration cancelled at its first box: nothing is saved or sent.
+          await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
+          expect(requests).to.deep.equal([]);
+          answers = [ "acme-studio", "Nimbus/Nimbus", "test-token" ];
+          await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
+        } finally {
+          api.showInformationMessage = showInformationMessage;
+          api.showInputBox = showInputBox;
+        }
+        const offer = "Adding yourself as a reviewer needs a Unity user token for this workspace.";
+        expect(offers).to.deep.equal([ offer, offer ]);
+        expect(answers).to.deep.equal([]);
+        expect(requests.map(request => new URL(request.url).pathname)).to.deep.equal([
+          "/plastic/v1/organizations/acme-studio/repositories/Nimbus%2FNimbus/code-reviews/12831/reviewers",
+        ]);
+        expect(JSON.parse(requests[0].body)).to.deep.equal({ reviewers: [ME] });
+        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
+      });
+
+      it("follows the Overview's link, and asks first when the link lacks this window's key", async () => {
+        withPosting();
+        const keys = await opened();
+        const addMe = "plastic-scm.reviews.addMeAsReviewer";
+        const ran = (calls: ICommandCall[]) => calls.filter(call => call.command === addMe).length;
+        let calls: ICommandCall[] = [];
+        const foreign = await warned(undefined, async () => {
+          calls = await executed(() => reviews!.actions.handleUri(addMeLink("c29tZW9uZSBlbHNl")));
+        });
+        expect(foreign).to.deep.equal([`Add yourself as a reviewer on review #${BRANCH_REVIEW_ID}?`]);
+        expect([ ran(calls), requests.length ]).to.deep.equal([ 0, 0 ]);
+
+        await warned("Add Me as Reviewer", async () => {
+          calls = await executed(() => reviews!.actions.handleUri(addMeLink("c29tZW9uZSBlbHNl")));
+        });
+        expect([ ran(calls), requests.length ]).to.deep.equal([ 1, 1 ]);
+        await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false);
+
+        // This window's own link asks nothing; the user is a reviewer now, so it says so and sends nothing.
+        let shown: string[] = [];
+        const own = await warned(undefined, async () => {
+          shown = await informed(async () => {
+            calls = await executed(() => reviews!.actions.handleUri(addMeLink(reviews!.session.linkKey)));
+          });
+        });
+        expect(own).to.deep.equal([]);
+        expect([ ran(calls), requests.length ]).to.deep.equal([ 1, 1 ]);
+        expect(shown).to.deep.equal([`You're already a reviewer on review #${BRANCH_REVIEW_ID}.`]);
+      });
     });
   });
 });

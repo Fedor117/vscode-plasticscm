@@ -46,8 +46,8 @@ describe("Experimental native posting (mock HTTP only)", () => {
     repository = REPOSITORY;
     secrets = memorySecrets({ [secretKey("workspace")]: JSON.stringify(connection) });
     let key = "";
-    const writer = new ReviewWriter((url, _token, body) => {
-      requests.push({ body, key, url });
+    const writer = new ReviewWriter(call => {
+      requests.push({ body: call.body, key, url: call.url });
       return respond();
     });
     const send = writer.send.bind(writer);

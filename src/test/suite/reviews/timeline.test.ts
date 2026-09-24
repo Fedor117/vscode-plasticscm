@@ -7,6 +7,7 @@ import {
   parseTimelineEvent,
   pendingReviewRequests,
   removedReviewers,
+  reviewerBlock,
   reviewerStates,
   reviewHistory,
   ReviewHistoryEntry,
@@ -118,6 +119,24 @@ describe("Review timeline", () => {
         row(`[requested-review-from]${ME}`, { reviewId: 5, type: "comment" }),
       ];
       expect(pendingReviewRequests(rows, ME)).to.deep.equal([ 1, 3 ]);
+    });
+
+    it("blocks adding the author, the assignee and someone still requested; a verdict or a removal does not", () => {
+      const other = { assignee: "", owner: "sam.rivera@example.com" };
+      const block = (rows: IReviewComment[], review = other) => reviewerBlock(parseTimeline(rows), review, ME);
+      expect(block([])).to.equal(undefined);
+      expect(block([], { assignee: "", owner: ME.toUpperCase() })).to.equal("author");
+      expect(block([row(`[requested-review-from]${ME}`)], { assignee: "", owner: ME })).to.equal("author");
+      expect(block([], { assignee: ME, owner: other.owner })).to.equal("assignee");
+      expect(block([], { assignee: " ", owner: other.owner })).to.equal(undefined);
+      expect(block([row(`[requested-review-from]${ME.toUpperCase()}`)])).to.equal("requested");
+      expect(block([row(`[requested-review-from-${ME}]`)])).to.equal("requested");
+      const removed = [ row(`[requested-review-from]${ME}`), row(`[removed-requested-review-from]${ME}`) ];
+      expect(block(removed)).to.equal(undefined);
+      expect(block(removed.concat(row(`[re-requested-review-from]${ME}`)))).to.equal("requested");
+      // A verdict nobody asked for leaves the user free to be added.
+      expect(block([row("[status-reviewed]LGTM", { owner: ME })])).to.equal(undefined);
+      expect(block([row("[requested-review-from]dana.kim@example.com")])).to.equal(undefined);
     });
   });
 

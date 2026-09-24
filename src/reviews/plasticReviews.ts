@@ -15,19 +15,20 @@ import { DiscussionNode, DiscussionsProvider, discussionsViewId } from "./discus
 import { FILE_LAYOUT_SETTING, IReviewSessionOptions, IReviewWorkspace, ReviewSession } from "./reviewSession";
 import { fileKey, IReviewComparison } from "./models";
 import { IReviewFileAt, isOverviewTab, overviewTabReview, overviewViewId, ReviewEditors } from "./reviewEditors";
+import { IReviewPostingOptions, ReviewPosting } from "./reviewPosting";
 import { ReviewListNode, ReviewListProvider, reviewListViewId } from "./reviewListProvider";
 import { ReviewTreeNode, ReviewTreeProvider, reviewTreeViewId, scopeKey } from "./reviewTreeProvider";
 import { IShellConfig } from "../config";
 import { ReviewActions } from "./reviewActions";
 import { ReviewDecorations } from "./reviewDecorations";
 import { reviewLinkUri } from "./reviewLinks";
-import { ReviewPosting } from "./reviewPosting";
 
 /** Every context key Plastic Reviews sets; package.json `when` clauses may use no other `plastic-scm.reviews.*` key. */
 export const CONTEXT_KEYS = {
   activeEditorIsOverview: "plastic-scm.reviews.activeEditorIsOverview",
   activeEditorIsReviewFile: "plastic-scm.reviews.activeEditorIsReviewFile",
   activeFileViewed: "plastic-scm.reviews.activeFileViewed",
+  canAddMeAsReviewer: "plastic-scm.reviews.canAddMeAsReviewer",
   hasActiveReview: "plastic-scm.reviews.hasActiveReview",
   hasUpdates: "plastic-scm.reviews.hasUpdates",
   isBranchReview: "plastic-scm.reviews.isBranchReview",
@@ -48,6 +49,8 @@ export interface IPlasticReviewsHost {
   shellConfig(): IShellConfig;
   /** Test injection: fake services, a UI that answers by itself. */
   readonly session?: Partial<IReviewSessionOptions>;
+  /** Test injection: the experimental setting, trust and a writer on a fake transport. */
+  readonly posting?: IReviewPostingOptions;
 }
 
 /** Comparisons whose decorations stay registered, so tabs opened before a reload keep their letters. */
@@ -92,13 +95,21 @@ export class PlasticReviews implements Disposable {
       editors: this.editors,
       globalState: host.globalState,
       overviewLink: link => reviewLinkUri(links, link),
+      // Experimental posting is created below; it only answers once the session asks.
+      reviewers: {
+        access: workspaceId => this.posting.reviewerAccess(workspaceId),
+        add: (workspaceId, reviewId, user, cancel) => this.posting.addReviewer(workspaceId, reviewId, user, cancel),
+        configure: () => this.posting.configure(),
+        settingOn: () => this.posting.settingOn(),
+      },
       shellConfig: () => host.shellConfig(),
       workspaceState: host.workspaceState,
       workspaces: () => host.workspaces(),
       ...host.session,
     });
     this.decorations = new ReviewDecorations();
-    this.posting = new ReviewPosting(host.secrets, workspaceId => this.session.repository(workspaceId), this.editors);
+    this.posting = new ReviewPosting(
+      host.secrets, workspaceId => this.session.repository(workspaceId), this.editors, host.posting);
     this.listProvider = new ReviewListProvider(this.session);
     this.treeProvider = new ReviewTreeProvider(this.session);
     this.discussionsProvider = new DiscussionsProvider(this.session);
@@ -127,6 +138,7 @@ export class PlasticReviews implements Disposable {
       this.session.onDidChangeActive(() => this.onActiveChanged()),
       this.session.onDidChangeViewed(() => this.onViewedChanged()),
       this.session.onDidChangeWorkspace(() => this.onWorkspaceChanged()),
+      this.session.onDidChangeCanAddMe(() => this.updateReviewerKey()),
       this.posting.onDidChange(() => this.onPostingChanged()),
       this.treeView.onDidChangeCheckboxState(event => this.treeProvider.handleCheckboxes(event)),
       window.onDidChangeActiveTextEditor(() => this.onEditorChanged()),
@@ -191,6 +203,7 @@ export class PlasticReviews implements Disposable {
     this.setKey(CONTEXT_KEYS.hasActiveReview, !!active);
     this.setKey(CONTEXT_KEYS.isBranchReview, active?.review.targetType === "branch");
     this.setKey(CONTEXT_KEYS.hasUpdates, !!active?.updates);
+    this.updateReviewerKey();
     this.treeView.title = this.treeProvider.title();
     this.treeView.description = this.treeProvider.description();
     this.discussionsView.badge = this.discussionsProvider.badge();
@@ -205,9 +218,25 @@ export class PlasticReviews implements Disposable {
     this.updateEditorKeys();
   }
 
+  /**
+   * Whether the Review view offers Add Me as Reviewer. Only asked of the
+   * session while the experimental setting is on, since the first ask runs
+   * `cm whoami`; `onDidChangeCanAddMe` brings the answer, and hides the button
+   * while an add is in flight.
+   */
+  private updateReviewerKey(): void {
+    this.setKey(CONTEXT_KEYS.canAddMeAsReviewer, this.posting.settingOn() && this.session.canAddMe());
+  }
+
+  /** The keys follow, and so does the Overview, which offers Add me as reviewer only while the setting is on. */
   private onPostingChanged(): void {
     this.setKey(CONTEXT_KEYS.postingEnabled, this.posting.enabled);
     this.setKey(CONTEXT_KEYS.postingConfigured, this.posting.configured);
+    this.updateReviewerKey();
+    const active = this.session.active;
+    if (active) {
+      this.editors.refreshOverview(active.workspaceId, active.review.id);
+    }
   }
 
   /**

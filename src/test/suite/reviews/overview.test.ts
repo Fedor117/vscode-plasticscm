@@ -965,4 +965,28 @@ describe("Review overview", () => {
       .to.deep.equal([ "Open items 1", "Question revision 11:4 alex.reviewer · 1 hour ago", "Why this?" ]);
     expect(html).to.contain("<p class=\"text\" title=\"Why this?&#10;And that?&#10;&#10;More\">Why this?</p>");
   });
+
+  it("offers Add me as reviewer under the reviewer cards only when asked to and it has a link", () => {
+    const active = readyReview(scenario);
+    const offered = renderOverview(active, options({ addMe: true, link: testLink, whoami: ME }));
+    expectWellFormed(offered);
+    expect(section(textLines(offered), "Reviewers").slice(-1)).to.deep.equal(["Add me as reviewer"]);
+    expect(offered).to.contain(`<p class="add-me"><a href="${HANDLER}?addMeAsReviewer">Add me as reviewer</a></p>`);
+    expect(links(offered).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
+    expectLinksOpen(offered, active);
+    const nobody = withComments(scenario, [], { review: { ...scenario.review, assignee: "" }});
+    const empty = renderOverview(nobody, options({ addMe: true, link: testLink }));
+    expectWellFormed(empty);
+    expect(section(textLines(empty), "Reviewers").slice(1))
+      .to.deep.equal([ "No reviewers requested yet.", "Add me as reviewer" ]);
+    const without = [
+      renderOverview(active, options({ link: testLink, whoami: ME })),
+      renderOverview(active, options({ addMe: false, link: testLink })),
+      renderOverview(active, options({ addMe: true })),
+      renderOverview(active, options({ addMe: true, link: () => undefined })),
+    ];
+    for (const html of without) {
+      expect(html).to.not.contain("add-me").and.not.contain("Add me as reviewer");
+    }
+  });
 });

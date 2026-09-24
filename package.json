@@ -139,7 +139,7 @@
         "plastic-scm.reviews.experimentalPosting": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Experimental.** Allows posting review comments and replies through Unity's hosted API with a token you enter. Authentication, line encoding and the reply format are unverified. Only Unity Version Control cloud repositories are supported.",
+          "markdownDescription": "**Experimental.** Allows posting review comments and replies, and adding yourself as a reviewer, through Unity's hosted API with a token you enter. Authentication, line encoding and the reply format are unverified. Only Unity Version Control cloud repositories are supported.",
           "scope": "application"
         }
       }
@@ -270,6 +270,12 @@
         "category": "Plastic Reviews",
         "title": "Set Review Status…",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "plastic-scm.reviews.addMeAsReviewer",
+        "category": "Plastic Reviews",
+        "title": "Add Me as Reviewer",
+        "icon": "$(person-add)"
       },
       {
         "command": "plastic-scm.reviews.openNextUnviewed",
@@ -613,6 +619,11 @@
           "group": "navigation@2"
         },
         {
+          "command": "plastic-scm.reviews.addMeAsReviewer",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.canAddMeAsReviewer",
+          "group": "navigation@2"
+        },
+        {
           "command": "plastic-scm.reviews.viewAsList",
           "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && !plastic-scm.reviews.hasUpdates && config.plastic-scm.reviews.fileLayout == tree",
           "group": "navigation@3"
@@ -658,6 +669,11 @@
           "command": "plastic-scm.reviews.setStatus",
           "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
           "group": "2_status@1"
+        },
+        {
+          "command": "plastic-scm.reviews.addMeAsReviewer",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/ && config.plastic-scm.reviews.experimentalPosting",
+          "group": "2_status@2"
         },
         {
           "command": "plastic-scm.reviews.copyReviewId",
@@ -834,6 +850,10 @@
         {
           "command": "plastic-scm.reviews.setStatus",
           "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.reviews.addMeAsReviewer",
+          "when": "plastic-scm.reviews.hasActiveReview && config.plastic-scm.reviews.experimentalPosting"
         },
         {
           "command": "plastic-scm.reviews.openNextUnviewed",

@@ -36,6 +36,7 @@ describe("Review links", () => {
       },
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: "merged" }, workspaceId: "wk & co=1/2?#" },
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: { changesetId: 3699 }}, workspaceId: "wk" },
+      { key: "Zm9v_-9", reviewId: 12831, target: { kind: "addMeAsReviewer" }, workspaceId: "wk" },
     ];
     for (const link of written) {
       const href = reviewLinkUri(BASE, link);
@@ -84,6 +85,12 @@ describe("Review links", () => {
       `file?workspace=d2s&review=5&scope=all&file=${key}`,
       `file?workspace=d2s&review=5&scope=cs0&file=${key}`,
       `file?workspace=d2s&review=5&file=${key}`,
+      "addMeAsReviewer?workspace=d2s&review=5",
+      "addMeAsReviewer?workspace=d2s&review=5&key=",
+      "addMeAsReviewer?workspace=d2s&review=5&key=a.b",
+      "addMeAsReviewer?workspace=d2s&review=5&key=a%2Bb",
+      "addMeAsReviewer?workspace=d2s&review=5&key=k&thread=9",
+      "addMeAsReviewer?workspace=d2s&review=x&key=k",
     ];
     for (const path of malformed) {
       expect(parseReviewLink(Uri.parse(PREFIX + path)).kind, path).to.equal("malformed");
@@ -94,6 +101,7 @@ describe("Review links", () => {
     // The shortest well-formed links, for contrast.
     expect(parseReviewLink(Uri.parse(`${PREFIX}${thread}&thread=9`)).kind).to.equal("link");
     expect(parseReviewLink(Uri.parse(`${PREFIX}${changes}&file=${key}`)).kind).to.equal("link");
+    expect(parseReviewLink(Uri.parse(`${PREFIX}addMeAsReviewer?workspace=d2s&review=5&key=k`)).kind).to.equal("link");
   });
 
   describe("on a rendered Overview", () => {
@@ -134,6 +142,27 @@ describe("Review links", () => {
         kind: "file",
         scope: "changes",
       });
+    });
+
+    it("links Add me as reviewer with the key it was given, as a link the handler reads", () => {
+      const active = readyReview(branch);
+      const html = renderOverview(active, {
+        addMe: true,
+        isViewed: () => false,
+        link: target => reviewLinkUri(BASE, {
+          key: target.kind === "addMeAsReviewer" ? "c2Vzc2lvbg" : undefined,
+          reviewId: active.review.id,
+          target,
+          workspaceId: active.workspaceId,
+        }),
+        now: NOW,
+      });
+      expectWellFormed(html);
+      const found = expectHandlerLinksOpen(html, active, PREFIX).filter(link => link.target.kind === "addMeAsReviewer");
+      expect(found).to.deep.equal([{
+        key: "c2Vzc2lvbg", reviewId: active.review.id, target: { kind: "addMeAsReviewer" }, workspaceId: "wk",
+      }]);
+      expect(render(active)).to.not.contain("addMeAsReviewer");
     });
   });
 });

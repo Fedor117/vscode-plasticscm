@@ -53,16 +53,17 @@ import {
   overviewTabReview,
   reviewOverviewUri,
 } from "./reviewEditors";
+import { POSTING_SETTING, ReviewPosting } from "./reviewPosting";
 import { FileScope } from "./sessionTypes";
 import { FIND_LIMIT } from "./commands";
 import { IChangesetFileChange } from "../models";
 import { isDiffable } from "./reviewFileTree";
 import { parseReviewLink } from "./reviewLinks";
-import { ReviewPosting } from "./reviewPosting";
 import { ReviewTreeProvider } from "./reviewTreeProvider";
 
 /** Every command of Plastic Reviews, without its `plastic-scm.reviews.` prefix. */
 export const REVIEW_COMMANDS = [
+  "addMeAsReviewer",
   "allowRetry",
   "cancelComment",
   "close",
@@ -187,6 +188,10 @@ const STATUS_ICONS: { [status in ReviewStatus]: string } = {
 
 /** The extension's icons, from the compiled `out/reviews`. */
 const ICONS_ROOT = path.join(__dirname, "..", "..", "images", "icons");
+/** The buttons of Add Me as Reviewer's messages. */
+const OPEN_SETTING = "Open Setting";
+const CONFIGURE_POSTING = "Configure Experimental Posting…";
+const ADD_ME = "Add Me as Reviewer";
 
 /**
  * The Set Review Status rows in cm's order, each with its coloured icon: a
@@ -227,6 +232,7 @@ export class ReviewActions implements Disposable {
 
   public constructor(private readonly options: IReviewActionsOptions) {
     const handlers: { [name in ReviewCommandName]: (...args: unknown[]) => unknown } = {
+      addMeAsReviewer: arg => this.addMeAsReviewer(arg),
       allowRetry: arg => this.withComment(arg, comment => this.options.posting.allowRetry(comment)),
       cancelComment: arg => this.cancelComment(arg),
       close: () => this.closeReview(),
@@ -296,9 +302,11 @@ export class ReviewActions implements Disposable {
   /**
    * Opens what an Overview link names, as a click on its row in Discussions or
    * the Review view does. Anything can send such a URI (a browser passes
-   * vscode:// links on), so it is read strictly, acts only on the active review
-   * of a known workspace and never writes. A link that cannot open says why; a
-   * path that is not one of ours is logged and ignored.
+   * vscode:// links on), so it is read strictly and acts only on the active
+   * review of a known workspace. The one link that writes, Add me as
+   * reviewer, asks first unless it carries this window's key. A link that
+   * cannot open says why; a path that is not one of ours is logged and
+   * ignored.
    */
   public handleUri(uri: Uri): Promise<void> {
     return this.run("openLink", () => this.openLink(uri));
@@ -520,6 +528,49 @@ export class ReviewActions implements Disposable {
     if (choice && !sameStatus(choice, review.status)) {
       await session.setStatus(workspaceId, review, choice);
     }
+  }
+
+  /**
+   * Add Me as Reviewer, on a Reviews row or the active review. Experimental:
+   * with the setting off it offers the setting, and without a connection for
+   * the workspace it offers Configure Experimental Posting….
+   */
+  private async addMeAsReviewer(arg: unknown): Promise<void> {
+    const session = this.options.session;
+    const active = session.active;
+    const target = isReviewRow(arg) ? { review: arg.review, workspaceId: arg.workspaceId }
+      : active && { review: active.review, workspaceId: active.workspaceId };
+    if (!target) {
+      void window.showInformationMessage("Open a review in Plastic Reviews first.");
+      return;
+    }
+    if (await this.readyToAddReviewer(target.workspaceId)) {
+      await session.addMe(target.workspaceId, target.review);
+    }
+  }
+
+  /** Whether experimental posting can add a reviewer in the workspace; offers what is missing when it cannot. */
+  private async readyToAddReviewer(workspaceId: string): Promise<boolean> {
+    const posting = this.options.posting;
+    const access = await posting.reviewerAccess(workspaceId);
+    if (access.state === "settingOff") {
+      const choice = await window.showInformationMessage(
+        `Add Me as Reviewer is experimental. Turn on the ${POSTING_SETTING} setting to use it.`, OPEN_SETTING);
+      if (choice === OPEN_SETTING) {
+        await commands.executeCommand("workbench.action.openSettings", POSTING_SETTING);
+      }
+      return false;
+    }
+    if (access.state === "blocked") {
+      void window.showInformationMessage(access.reason);
+      return false;
+    }
+    if (access.state === "unconfigured") {
+      const choice = await window.showInformationMessage(
+        "Adding yourself as a reviewer needs a Unity user token for this workspace.", CONFIGURE_POSTING);
+      return choice === CONFIGURE_POSTING && await posting.configure();
+    }
+    return true;
   }
 
   /**
@@ -774,9 +825,27 @@ export class ReviewActions implements Disposable {
     }
     if (target.kind === "thread") {
       await this.openThreadLink(workspaceId, reviewId, target.threadId);
-    } else {
+    } else if (target.kind === "file") {
       await this.openFileLink(reviewId, target.scope, target.fileKey);
+    } else {
+      await this.addMeFromLink(reviewId, parsed.link.key);
     }
+  }
+
+  /**
+   * Add me as reviewer on the Overview: the command, on the active review. A
+   * link without this window's key did not come from its Overview, so it
+   * asks first.
+   */
+  private async addMeFromLink(reviewId: number, key: string | undefined): Promise<void> {
+    if (key !== this.options.session.linkKey) {
+      const choice = await window.showWarningMessage(`Add yourself as a reviewer on review #${reviewId}?`,
+        { detail: "This link did not come from the review's Overview in this window.", modal: true }, ADD_ME);
+      if (choice !== ADD_ME) {
+        return;
+      }
+    }
+    await commands.executeCommand(`${REVIEW_COMMAND_PREFIX}addMeAsReviewer`);
   }
 
   /** A discussion link: what selecting the thread's row in Discussions does. */

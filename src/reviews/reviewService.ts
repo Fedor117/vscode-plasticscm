@@ -16,6 +16,7 @@ import {
   IReviewQueue,
   IReviewRevision,
   IReviewThread,
+  IReviewTimelineEvent,
   IReviewUpdates,
   repositoryName,
   ReviewStatus,
@@ -311,6 +312,16 @@ export class ReviewService implements Disposable {
       throw new Error(read.message);
     }
     return groupReviewThreads(read.comments, parseTimeline(read.comments));
+  }
+
+  /** A review's timeline, from one comment query: who is requested, for a review whose stages are not loaded. */
+  public async timeline(review: IReview): Promise<IReviewTimelineEvent[]> {
+    await this.ready();
+    const read = await this.readComments(review.id);
+    if (read.message) {
+      throw new Error(read.message);
+    }
+    return parseTimeline(read.comments);
   }
 
   /**

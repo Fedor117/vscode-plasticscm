@@ -5,21 +5,24 @@ import { Uri } from "vscode";
 
 /**
  * The Overview's links to discussions and files: `vscode://<extension id>/thread?…`
- * and `/file?…` URIs, which the extension's URI handler opens. The Markdown
+ * and `/file?…` URIs, which the extension's URI handler opens, and
+ * `/addMeAsReviewer?…`, which runs Add Me as Reviewer. The Markdown
  * preview opens only http(s), mailto and vscode(-insiders) links, and a click
  * and a Cmd/Ctrl+click on one both reach the handler.
  *
  * VS Code decodes a URI's query once before the handler sees it, and a URI
  * that comes from a browser may take another route, so every value is written
- * in characters no encoding changes: decimal ids, a word for the scope, and
- * base64url for the workspace id and the file key.
+ * in characters no encoding changes: decimal ids, a word for the scope,
+ * base64url for the workspace id and the file key, and the key as it is.
  */
 
-/** A thread or a file row of one review. */
+/** A thread or a file row of one review, or Add Me as Reviewer on it. */
 export interface IReviewLink {
   workspaceId: string;
   reviewId: number;
   target: OverviewLinkTarget;
+  /** Add Me as Reviewer only: the session's `linkKey`, which tells the Overview's own link from any other. */
+  key?: string;
 }
 
 /** Where the links point: the product's URI scheme (`vscode.env.uriScheme`) and the extension's id. */
@@ -35,8 +38,13 @@ export type ParsedReviewLink =
   /** Any other path: nothing of ours. */
   | { kind: "unknown" };
 
-const PATHS: { [kind in OverviewLinkTarget["kind"]]: string } = { file: "/file", thread: "/thread" };
+const PATHS: { [kind in OverviewLinkTarget["kind"]]: string } = {
+  addMeAsReviewer: "/addMeAsReviewer",
+  file: "/file",
+  thread: "/thread",
+};
 const PARAMETERS: { [kind in OverviewLinkTarget["kind"]]: readonly string[] } = {
+  addMeAsReviewer: [ "workspace", "review", "key" ],
   file: [ "workspace", "review", "scope", "file" ],
   thread: [ "workspace", "review", "thread" ],
 };
@@ -49,8 +57,10 @@ export function reviewLinkUri(base: IReviewLinkBase, link: IReviewLink): string 
   const query = [ `workspace=${encode(link.workspaceId)}`, `review=${link.reviewId}` ];
   if (target.kind === "thread") {
     query.push(`thread=${target.threadId}`);
-  } else {
+  } else if (target.kind === "file") {
     query.push(`scope=${scopeName(target.scope)}`, `file=${encode(target.fileKey)}`);
+  } else {
+    query.push(`key=${link.key ?? ""}`);
   }
   return `${base.scheme}://${base.authority}${PATHS[target.kind]}?${query.join("&")}`;
 }
@@ -61,7 +71,7 @@ export function reviewLinkUri(base: IReviewLinkBase, link: IReviewLink): string 
  * in their canonical form, and nothing else.
  */
 export function parseReviewLink(uri: Uri): ParsedReviewLink {
-  const kind = uri.path === PATHS.thread ? "thread" : uri.path === PATHS.file ? "file" : undefined;
+  const kind = (Object.keys(PATHS) as Array<OverviewLinkTarget["kind"]>).find(name => PATHS[name] === uri.path);
   if (!kind) {
     return { kind: "unknown" };
   }
@@ -85,6 +95,12 @@ export function parseReviewLink(uri: Uri): ParsedReviewLink {
   const reviewId = id(values.get("review")!);
   if (workspaceId === undefined || reviewId === undefined) {
     return malformed(workspaceId === undefined ? "a malformed workspace" : "a malformed review id");
+  }
+  if (kind === "addMeAsReviewer") {
+    const key = values.get("key")!;
+    return TOKEN.test(key)
+      ? { kind: "link", link: { key, reviewId, target: { kind }, workspaceId }}
+      : malformed("a malformed key");
   }
   if (kind === "thread") {
     const threadId = id(values.get("thread")!);

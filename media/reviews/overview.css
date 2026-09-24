@@ -390,6 +390,12 @@
   gap: 10px;
 }
 
+/* Add me as reviewer, under the cards or the note that there are none. */
+.plastic-review .add-me {
+  margin-top: 8px;
+  font-size: 0.93em;
+}
+
 .plastic-review .items,
 .plastic-review .comments {
   display: flex;

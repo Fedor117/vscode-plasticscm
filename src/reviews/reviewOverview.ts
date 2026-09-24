@@ -63,7 +63,9 @@ import { toFileRow } from "../history/historyViewProvider";
 /** Where a link on the page leads; `IOverviewOptions.link` turns it into a URI the preview can open. */
 export type OverviewLinkTarget =
   | { kind: "thread"; threadId: number }
-  | { kind: "file"; scope: FileScope; fileKey: string };
+  | { kind: "file"; scope: FileScope; fileKey: string }
+  /** Add Me as Reviewer, on the review the page shows. */
+  | { kind: "addMeAsReviewer" };
 
 export interface IOverviewOptions {
   /** The clock for relative ages. */
@@ -71,6 +73,8 @@ export interface IOverviewOptions {
   isViewed?: (file: IChangesetFileChange) => boolean;
   /** The `cm whoami` user, marked "you" on the page. */
   whoami?: string;
+  /** The cm user can be added to the reviewers: the Reviewers section links Add me as reviewer. */
+  addMe?: boolean;
   /**
    * An absolute URI that opens the target, or undefined when it cannot be
    * opened. Without one the only links are the URLs people wrote.
@@ -119,6 +123,7 @@ interface IPage {
   readonly active: IActiveReview;
   readonly now: number;
   readonly whoami?: string;
+  readonly addMe: boolean;
   readonly isViewed?: (file: IChangesetFileChange) => boolean;
   /** The caller's link builder, limited to URIs the preview opens. */
   readonly link: (target: OverviewLinkTarget) => string | undefined;
@@ -148,6 +153,7 @@ export function renderOverview(active: IActiveReview, options: IOverviewOptions)
   }
   const page: IPage = {
     active,
+    addMe: !!options.addMe,
     cards,
     discussions,
     isViewed: options.isViewed,
@@ -441,13 +447,18 @@ function discussionSections(page: IPage): string[] {
   ];
 }
 
+/** The reviewer cards, and Add me as reviewer when the page offers it and can link it. */
 function reviewersSection(page: IPage): string[] {
   const heading = `<h2>Reviewers ${countBadge(page.cards.length)}</h2>`;
+  const addMe = page.addMe ? page.link({ kind: "addMeAsReviewer" }) : undefined;
+  const action = addMe ? [`<p class="add-me"><a href="${escapeHtml(addMe)}">Add me as reviewer</a></p>`] : [];
   if (!page.cards.length) {
     const empty = page.removed.length ? "No reviewers left." : "No reviewers requested yet.";
-    return [ heading, `<p class="empty dim">${empty}</p>` ];
+    return [ heading, `<p class="empty dim">${empty}</p>`, ...action ];
   }
-  return [ heading, "<ul class=\"people\">", ...page.cards.map(reviewer => reviewerCard(page, reviewer)), "</ul>" ];
+  return [
+    heading, "<ul class=\"people\">", ...page.cards.map(reviewer => reviewerCard(page, reviewer)), "</ul>", ...action,
+  ];
 }
 
 /** A reviewer's state; a verdict's replies sit under its quote, the only place the page prints that thread. */

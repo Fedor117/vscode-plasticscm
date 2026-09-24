@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+  CancellationTokenSource,
   commands,
   env,
   Memento,
@@ -12,6 +13,7 @@ import {
   window,
   workspace,
 } from "vscode";
+import { CONTEXT_KEYS, IPlasticReviewsHost, PlasticReviews } from "../../../reviews/plasticReviews";
 import { DiscussionsProvider, IDiscussionThreadNode } from "../../../reviews/discussionsProvider";
 import {
   EMAIL,
@@ -27,11 +29,10 @@ import {
 import { FileChangeStatus, RevisionType } from "../../../models";
 import { fileKey, IReviewChangesets, IReviewDiscussions, IReviewFiles, IReviewThread } from "../../../reviews/models";
 import { IOverviewTarget, INimbusScenario, ME, nimbusRepository } from "./syntheticNimbus";
-import { IPlasticReviewsHost, PlasticReviews } from "../../../reviews/plasticReviews";
 import { IReviewLink, parseReviewLink } from "../../../reviews/reviewLinks";
 import { ISyntheticComment, ISyntheticDiffRow, ISyntheticReview, SyntheticPlasticServer } from "./syntheticServer";
 import { label, NOW } from "./viewFixtures";
-import { nativeThread, until } from "./editorFixtures";
+import { memorySecrets, nativeThread, until } from "./editorFixtures";
 import { noDiffMessage, reviewPickItems } from "../../../reviews/reviewPresentation";
 import { expect } from "chai";
 import { IActiveReview } from "../../../reviews/sessionTypes";
@@ -41,6 +42,7 @@ import { ReviewListQuery } from "../../../reviews/commands";
 import { ReviewService } from "../../../reviews/reviewService";
 import { ReviewSession } from "../../../reviews/reviewSession";
 import { ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
+import { ReviewWriter } from "../../../reviews/reviewWriter";
 import { splitLines } from "../../../reviews/anchors";
 
 /**
@@ -1028,7 +1030,7 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
           if (linked.kind === "file") {
             expect(reviews.editors.activeFile() && fileKey(reviews.editors.activeFile()!.file), href)
               .to.equal(linked.fileKey);
-          } else {
+          } else if (linked.kind === "thread") {
             const thread = value.threads.find(candidate => candidate.id === linked.threadId)!;
             expect(window.tabGroups.activeTabGroup.activeTab!.label, href).to.contain(baseName(thread.path ?? ""));
           }
@@ -1047,5 +1049,100 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       .reduce((sum, count) => sum + count, 0);
     expect(explained, "links that say why they open no diff").to.equal(binaries);
     expect(opened, "links dispatched through the handler").to.be.greaterThan(0);
+  });
+
+  it("adds the cm user as a reviewer through a mocked review service, and the Overview shows them", async () => {
+    const REVIEW_ID = 312;
+    const REVIEWERS_PATH = `/code-reviews/${REVIEW_ID}/reviewers`;
+    const refused: string[] = [];
+    let added: number | undefined;
+    // The review service, mocked where the writer hands a request to HTTPS: it answers this one POST, once, and
+    // refuses anything else. As the service would, the add puts a request row in the review's timeline.
+    const writer = new ReviewWriter(call => {
+      if (call.method !== "POST" || call.url.hostname !== "services.api.unity.com" ||
+        !call.url.pathname.endsWith(REVIEWERS_PATH) || added !== undefined) {
+        refused.push(`${call.method} ${call.url.pathname}`);
+        return Promise.reject(new Error("the mocked review service refuses every other request"));
+      }
+      const [user] = (JSON.parse(call.body) as { reviewers: string[] }).reviewers;
+      added = server.addTimeline(REVIEW_ID, user, "2026-09-22T17:30:00+01:00", `[requested-review-from]${user}`);
+      return Promise.resolve({
+        body: JSON.stringify({ reviewers: [{ isGroup: false, name: user, status: "under-review" }] }),
+        status: 201,
+      });
+    });
+    const connection = { organization: "acme-studio", repository: "Nimbus", token: "synthetic-token" };
+    const secretKey = `plastic-reviews.experimental:${JSON.stringify([ WORKSPACE_ID, server.repository ])}`;
+    const statuses: string[] = [];
+    reviews.dispose();
+    reviews = new PlasticReviews({
+      ...host,
+      posting: { setting: () => true, trusted: () => true, writer },
+      secrets: memorySecrets({ [secretKey]: JSON.stringify(connection) }),
+      session: {
+        ...host.session,
+        ui: {
+          ...host.session?.ui,
+          cancellable: (_title, task) => task(new CancellationTokenSource().token),
+          status: message => {
+            statuses.push(message);
+          },
+        },
+      },
+    });
+    const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
+    const needsMe = () => session().group("needsMyReview");
+    /** The Reviewers section's lines, from its heading to the next heading. */
+    const reviewersSection = (html: string) => {
+      const rows = textLines(html);
+      const next = /^(?:Open items|Conversation|Other discussions|Changesets|History)\b/;
+      const start = rows.findIndex(line => /^Reviewers \d+$/.test(line));
+      return rows.slice(start, rows.findIndex((line, index) => index > start && next.test(line)));
+    };
+    const myCard = (html: string) => reviewersSection(html).filter(line => /^dana\.kim you\b/.test(line));
+    try {
+      session().expandGroup("needsMyReview");
+      await settle(until(() => needsMe().loadedOnce && needsMe().stage.state === "ready"), "Needs My Review");
+      expect(needsMe().reviews.map(review => review.id)).to.not.include(REVIEW_ID);
+      await activate(REVIEW_ID);
+      expect(await settle(service().whoami(), "cm whoami")).to.equal(ME);
+      // Requested once, then removed: the cm user is not a reviewer, so the Review view and the Overview offer it.
+      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true), "the Add Me as Reviewer key");
+      const before = session().overview(WORKSPACE_ID, REVIEW_ID);
+      expectWellFormed(before);
+      expect(links(before).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
+      expect(myCard(before)).to.deep.equal([]);
+
+      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer");
+      expect(refused, "requests the mock refused").to.deep.equal([]);
+      expect(added, "the request row the mocked service wrote").to.be.a("number");
+      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false), "the key after the add");
+      await settle(until(() => myCard(session().overview(WORKSPACE_ID, REVIEW_ID)).length > 0), "the reviewer card");
+      const after = session().overview(WORKSPACE_ID, REVIEW_ID);
+      expectWellFormed(after);
+      // The service writes the request row as the cm user's own, and a self-request reads as Reviewing.
+      expect(myCard(after)).to.deep.equal(["dana.kim you Reviewing"]);
+      expect(links(after).filter(link => link.text === "Add me as reviewer")).to.deep.equal([]);
+      expect(readyDiscussions().reviewers.map(user => user.toLowerCase())).to.include(ME);
+      expect(statuses).to.include(`$(person-add) Added you as a reviewer on review #${REVIEW_ID}`);
+      await settle(until(() => needsMe().reviews.some(review => review.id === REVIEW_ID)), "Needs My Review after");
+      expect(needsMe().reviews.map(review => review.id)).to.deep.equal(needsMyReview());
+
+      // Run again, it sends nothing: the cm user is a reviewer now. And the mock answers no other request.
+      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer again");
+      const other = await writer.addReviewer(connection, 313, ME).then(() => "sent", (error: Error) => error.message);
+      expect(other).to.not.equal("sent");
+      expect(refused)
+        .to.deep.equal(["POST /plastic/v1/organizations/acme-studio/repositories/Nimbus/code-reviews/313/reviewers"]);
+      expect(errors, "errors shown").to.deep.equal([]);
+      expect(output.join("\n")).to.not.contain("synthetic-token");
+    } finally {
+      const row = server.comments.findIndex(comment => comment.id === added);
+      if (row >= 0) {
+        server.comments.splice(row, 1);
+      }
+      reviews.dispose();
+      reviews = new PlasticReviews(host);
+    }
   });
 });

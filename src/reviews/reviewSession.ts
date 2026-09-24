@@ -1,9 +1,11 @@
 import {
+  CancellationToken,
   commands,
   Disposable,
   Event,
   EventEmitter,
   OutputChannel,
+  ProgressLocation,
   window,
   workspace,
 } from "vscode";
@@ -25,12 +27,16 @@ import {
 import { IReviewEditorContext, overviewViewId } from "./reviewEditors";
 import { isReviewLoadCancelled, ReviewService } from "./reviewService";
 import { IViewedMemento, reviewKey, ViewedStore } from "./viewedStore";
+import { ReviewerBlock, reviewerBlock } from "./timeline";
 import { discussionsViewId } from "./discussionsProvider";
 import { IChangesetFileChange } from "../models";
 import { IReviewLink } from "./reviewLinks";
+import { isEmailAddress } from "./reviewWriter";
 import { IShellConfig } from "../config";
 import { PAGE_SIZE } from "./commands";
+import { randomBytes } from "crypto";
 import { renderOverview } from "./reviewOverview";
+import { ReviewerAccess } from "./reviewPosting";
 import { reviewListViewId } from "./reviewListProvider";
 import { reviewTreeViewId } from "./reviewTreeProvider";
 
@@ -59,6 +65,28 @@ export interface IReviewSessionUi {
   status(message: string): void;
   /** A progress bar on a view while `task` runs. */
   progress<T>(viewId: string, task: () => Thenable<T>): Thenable<T>;
+  /** A modal with several action buttons; resolves the one picked, undefined for Cancel. */
+  choose(message: string, detail: string, actions: readonly string[]): Thenable<string | undefined>;
+  /** Something the user should read, without blocking. */
+  info(message: string): void;
+  /** A notification with a Cancel button while `task` runs; `cancel` fires when it is pressed. */
+  cancellable<T>(title: string, task: (cancel: CancellationToken) => Thenable<T>): Thenable<T>;
+}
+
+/**
+ * Experimental: adding the cm user to a review's reviewers through Unity's
+ * hosted API, with the connection of experimental posting. ReviewPosting
+ * provides it.
+ */
+export interface IReviewSessionReviewers {
+  /** The experimental setting; the Overview offers Add me as reviewer only while it is on. */
+  settingOn(): boolean;
+  /** Whether adding can work in a workspace, and if not, why. */
+  access(workspaceId: string): Promise<ReviewerAccess>;
+  /** Configure Experimental Posting…; resolves true once a connection is saved. */
+  configure(): Promise<boolean>;
+  /** Rejects with a message that is safe to show. */
+  add(workspaceId: string, reviewId: number, user: string, cancel?: CancellationToken): Promise<void>;
 }
 
 export interface IReviewSessionOptions {
@@ -72,6 +100,8 @@ export interface IReviewSessionOptions {
   editors?: IReviewSessionEditors;
   /** The URI that opens a thread or a file row from the Overview; without it the Overview links nothing of its own. */
   overviewLink?: (link: IReviewLink) => string;
+  /** Experimental: adds the cm user to reviewers. Without it, Set Review Status… never offers to. */
+  reviewers?: IReviewSessionReviewers;
   /** Test injection; by default every workspace gets a service with its own cm shell. */
   createService?: (workspace: IReviewWorkspace) => ReviewService;
   ui?: Partial<IReviewSessionUi>;
@@ -94,9 +124,42 @@ const FIND_MAX_AGE = POLL_INTERVAL;
 const IDLE: Stage<never> = { state: "idle" };
 const LOADING: Stage<never> = { state: "loading" };
 const NOT_FOUND = "ReviewNotFound";
+/** The choices of Set Review Status… when the cm user is not a reviewer yet; a modal adds Cancel. */
+const SET_ANYWAY = "Set Status Anyway";
+const CONFIGURE_AND_ADD = "Configure and Add…";
+const WITHOUT_ADDING = "Set Status Without Adding";
+/** Why the cm user cannot be added to a review's reviewers, as Add Me as Reviewer says it. */
+const BLOCKED: { [block in ReviewerBlock]: (reviewId: number) => string } = {
+  assignee: id => `You're the assignee of review #${id}, which already makes you a reviewer.`,
+  author: id => `You opened review #${id}, and authors don't review their own change.`,
+  requested: id => `You're already a reviewer on review #${id}.`,
+};
 
 interface ILastReviews {
   [workspaceId: string]: number | undefined;
+}
+
+/** What Set Review Status… does about the cm user's place among the reviewers; see `joinPlan`. */
+type JoinPlan =
+  | { kind: "none" }
+  | { kind: "add" | "ask"; user: string }
+  | { kind: "unable"; reason: string };
+
+/** Why the cm user was not added to a review's reviewers; see `addUser`. */
+interface IAddFailure {
+  message: string;
+  cancelled: boolean;
+}
+
+/**
+ * An add of the cm user to one review in flight (see `claimAdd`). `failure`
+ * is what `addUser` resolved or, until it has, why nothing was sent; the end
+ * of the claim resolves `ended` with it.
+ */
+interface IAddClaim {
+  readonly ended: Promise<IAddFailure | undefined>;
+  failure: IAddFailure | undefined;
+  end: (failure: IAddFailure | undefined) => void;
 }
 
 /** A settled promise, as `Promise.allSettled` would give it (not in this project's ES6 library). */
@@ -104,6 +167,11 @@ type Settled<T> = { value: T } | { error: unknown };
 
 function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
   return promise.then(value => ({ value }), (error: unknown) => ({ error }));
+}
+
+/** The key of an add in flight: a review of a workspace. */
+function addKey(workspaceId: string, reviewId: number): string {
+  return JSON.stringify([ workspaceId, reviewId ]);
 }
 
 /** cm prefixes its own diagnostics with "Error: "; the message after it is what the user needs. */
@@ -128,16 +196,27 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   public readonly onDidChangeViewed: Event<void>;
   /** The selected workspace changed; the queue and the active review were reset. */
   public readonly onDidChangeWorkspace: Event<void>;
+  /** `canAddMe` may answer differently for the same review: cm said who the user is, or an add started or ended. */
+  public readonly onDidChangeCanAddMe: Event<void>;
+  /** Written into the Overview's Add me as reviewer link; a link without it asks before it writes. */
+  public readonly linkKey = randomBytes(18).toString("base64url");
   public readonly now: () => number;
   private readonly listChanged = new EventEmitter<ReviewGroupKey | undefined>();
   private readonly activeChanged = new EventEmitter<void>();
   private readonly viewedChanged = new EventEmitter<void>();
   private readonly workspaceChanged = new EventEmitter<void>();
+  private readonly canAddMeChanged = new EventEmitter<void>();
   private readonly services = new Map<string, ReviewService>();
   private readonly groups = new Map<ReviewGroupKey, IReviewGroup>();
   private readonly changesetStages = new Map<number, Stage<IReviewComparison>>();
   private readonly visibleViews = new Set<string>();
   private readonly restoredWorkspaces = new Set<string>();
+  /**
+   * The adds of the cm user in flight, by `addKey`. Each is held until the
+   * open review shows its result, so neither a second Add Me as Reviewer nor
+   * a Set Review Status… meanwhile sends a second request.
+   */
+  private readonly adds = new Map<string, IAddClaim>();
   private readonly viewed: ViewedStore;
   private readonly ui: IReviewSessionUi;
   private readonly pollInterval: number;
@@ -164,6 +243,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     this.onDidChangeActive = this.activeChanged.event;
     this.onDidChangeViewed = this.viewedChanged.event;
     this.onDidChangeWorkspace = this.workspaceChanged.event;
+    this.onDidChangeCanAddMe = this.canAddMeChanged.event;
     this.now = options.now ?? Date.now;
     this.pollInterval = options.pollInterval ?? POLL_INTERVAL;
     this.viewed = new ViewedStore(options.globalState, this.now);
@@ -220,6 +300,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     this.activeChanged.dispose();
     this.viewedChanged.dispose();
     this.workspaceChanged.dispose();
+    this.canAddMeChanged.dispose();
   }
 
   public workspaces(): readonly IReviewWorkspace[] {
@@ -573,7 +654,14 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   /**
    * Changes a review's status. Marking a review Reviewed while change requests
    * are pending or files are unviewed asks first, as does marking one whose
-   * counts cannot be known; nothing is written unless the user confirms. The
+   * counts cannot be known; nothing is written unless the user confirms.
+   *
+   * With experimental posting on, a cm user who can be added to the reviewers
+   * (see `reviewerBlock`) is added first: straight away when the workspace has
+   * a connection, otherwise after asking, in one dialog with any Reviewed
+   * warning. An add of the user to the review already in flight, from Add Me
+   * as Reviewer, stands in for that one: its end is awaited and no second
+   * request goes out. A failed add asks before the status is set anyway. The
    * review is read back afterwards, and a failed write leaves every displayed
    * status as it was.
    */
@@ -585,28 +673,132 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     if (sameStatus(review.status, status)) {
       return undefined;
     }
-    if (status === "Reviewed") {
-      const warning = await this.reviewedWarning(workspaceId, review, service);
-      if (warning && !await this.ui.confirm(`Mark review #${review.id} as Reviewed?`, warning, "Mark Reviewed")) {
+    const join = await this.joinPlan(workspaceId, review, service);
+    const warning = status === "Reviewed" ? await this.reviewedWarning(workspaceId, review, service) : undefined;
+    // The Reviewed warning, in a dialog that asks about something else first.
+    const also = warning && `Marking it Reviewed: ${warning}`;
+    let user: string | undefined;
+    if (join.kind === "ask") {
+      const choice = await this.ui.choose(`You're not a reviewer on #${review.id}. Add yourself first?`,
+        joinLines(also, "Adding yourself needs a Unity user token, which Configure Experimental Posting… saves."),
+        [ CONFIGURE_AND_ADD, WITHOUT_ADDING ]);
+      if (choice === CONFIGURE_AND_ADD && !await this.configureReviewers()) {
+        return undefined;
+      }
+      if (choice !== CONFIGURE_AND_ADD && choice !== WITHOUT_ADDING) {
+        return undefined;
+      }
+      user = choice === CONFIGURE_AND_ADD ? join.user : undefined;
+    } else if (join.kind === "unable") {
+      const title = `Couldn't add you as a reviewer on review #${review.id}.`;
+      if (await this.ui.choose(title, joinLines(join.reason, also), [SET_ANYWAY]) !== SET_ANYWAY) {
+        return undefined;
+      }
+    } else {
+      user = join.kind === "add" ? join.user : undefined;
+      const detail = warning && (user ? `${warning} You will be added as a reviewer first.` : warning);
+      if (detail && !await this.ui.confirm(`Mark review #${review.id} as Reviewed?`, detail, "Mark Reviewed")) {
         return undefined;
       }
     }
-    let fresh: IReview;
+    let added = false;
+    let claim: IAddClaim | undefined;
     try {
-      fresh = await this.track(() => this.ui.progress(reviewTreeViewId, () => service.setStatus(review.id, status)));
-    } catch (error) {
-      this.log(`Couldn't set review #${review.id} to ${status}: ${errorText(error)}`);
-      this.ui.error(`Couldn't set review #${review.id} to ${status}: ${errorText(error)}`);
-      return undefined;
+      if (user !== undefined) {
+        claim = this.claimAdd(workspaceId, review.id);
+        // Undefined while Add Me as Reviewer adds the user already: how that add ended stands for this one.
+        const failure = claim
+          ? await this.addUser(claim, workspaceId, review.id, user)
+          : await this.adds.get(addKey(workspaceId, review.id))?.ended;
+        if (failure && (failure.cancelled || await this.ui.choose(
+          `Couldn't add you as a reviewer on review #${review.id}.`, failure.message, [SET_ANYWAY]) !== SET_ANYWAY)) {
+          return undefined;
+        }
+        added = !failure;
+      }
+      const fresh = await this.writeStatus(workspaceId, review, status, service);
+      if (added) {
+        // The request row, and the status row when the write went through.
+        await this.reloadDiscussions(workspaceId, review.id);
+      }
+      return fresh;
+    } finally {
+      if (claim) {
+        this.releaseAdd(workspaceId, review.id, claim);
+      }
     }
-    this.applyReview(workspaceId, fresh);
-    const icon = fresh.status === "Reviewed" ? "$(pass) " : "";
-    this.ui.status(`${icon}Review #${fresh.id} marked ${fresh.status}`);
-    // The row may belong in another group now; the queue follows without losing the pages shown.
-    if (workspaceId === this.selected) {
-      this.refreshAfterStatus(fresh);
+  }
+
+  /**
+   * Add Me as Reviewer, once the caller has made sure experimental posting can
+   * work in this workspace. The review's author, its assignee and anyone
+   * already requested are told why not instead, as is a second click while
+   * the first add is in flight. Afterwards the open review's discussions load
+   * again, which draws the new reviewer card, and Needs My Review loads again
+   * when the review now belongs in it. A failure is shown and changes nothing.
+   * Resolves true once added.
+   */
+  public async addMe(workspaceId: string, review: IReview): Promise<boolean> {
+    const service = this.service(workspaceId);
+    if (!service) {
+      throw new Error("This review's Plastic workspace is no longer open.");
     }
-    return fresh;
+    // Claimed before cm is asked anything, so that a second click cannot pass the same checks meanwhile.
+    const claim = this.claimAdd(workspaceId, review.id);
+    if (!claim) {
+      this.ui.info(`You're already being added as a reviewer on review #${review.id}.`);
+      return false;
+    }
+    const failed = (message: string) => {
+      this.ui.error(`Couldn't add you as a reviewer on review #${review.id}: ${message}`);
+      return false;
+    };
+    try {
+      let joining: { user: string; block?: ReviewerBlock };
+      try {
+        joining = await this.joining(workspaceId, review, service);
+      } catch (error) {
+        this.log(`Couldn't add you as a reviewer on review #${review.id}: ${errorText(error)}`);
+        return failed(errorText(error));
+      }
+      const { block, user } = joining;
+      if (block) {
+        this.ui.info(BLOCKED[block](review.id));
+        return false;
+      }
+      if (!isEmailAddress(user)) {
+        this.log(`Couldn't add you as a reviewer on review #${review.id}: ${notAnAddress(user)}`);
+        return failed(notAnAddress(user));
+      }
+      const failure = await this.addUser(claim, workspaceId, review.id, user);
+      if (failure) {
+        return failure.cancelled ? false : failed(failure.message);
+      }
+      this.ui.status(`$(person-add) Added you as a reviewer on review #${review.id}`);
+      if (workspaceId === this.selected) {
+        this.refreshNeedsMyReview(review);
+      }
+      await this.reloadDiscussions(workspaceId, review.id);
+      return true;
+    } finally {
+      this.releaseAdd(workspaceId, review.id, claim);
+    }
+  }
+
+  /**
+   * Whether the cm user can be added to the active review's reviewers (see
+   * `reviewerBlock`): false until cm has said who the user is and the
+   * discussions have loaded, and while an add to the review is in flight. The
+   * first ask asks cm; `onDidChangeCanAddMe` fires once it has answered.
+   */
+  public canAddMe(): boolean {
+    const active = this.current;
+    if (!active || active.discussions.state !== "ready" ||
+      this.adds.has(addKey(active.workspaceId, active.review.id))) {
+      return false;
+    }
+    const user = this.whoami(active);
+    return user !== undefined && reviewerBlock(active.discussions.value.timeline, active.review, user) === undefined;
   }
 
   public isViewed(file: IChangesetFileChange): boolean {
@@ -699,7 +891,9 @@ export class ReviewSession implements IReviewSessionView, Disposable {
    * The Overview document of a review; only the active review has one. Its
    * links open threads and file rows through `overviewLink`, and the cm user
    * is marked once `cm whoami` has answered: asked here the first time, after
-   * which the Overview is drawn again.
+   * which the Overview is drawn again. With experimental posting on, a user
+   * who can be added to the reviewers is offered a link that does it; the
+   * link carries `linkKey`.
    */
   public overview(workspaceId: string, reviewId: number): string {
     const active = this.current;
@@ -708,8 +902,14 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     }
     const link = this.options.overviewLink;
     return renderOverview(active, {
+      addMe: !!this.options.reviewers?.settingOn() && this.canAddMe(),
       isViewed: file => this.isViewed(file),
-      link: link && (target => link({ reviewId, target, workspaceId })),
+      link: link && (target => link({
+        ...(target.kind === "addMeAsReviewer" ? { key: this.linkKey } : {}),
+        reviewId,
+        target,
+        workspaceId,
+      })),
       now: this.now(),
       whoami: this.whoami(active),
     });
@@ -1058,12 +1258,15 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     }
   }
 
-  /** The cm user, once known; the first ask draws the Overview again when cm answers. */
+  /** The cm user, once known; the first ask redraws the Overview and fires `onDidChangeCanAddMe` when cm answers. */
   private whoami(active: IActiveReview): string | undefined {
     const service = this.service(active.workspaceId);
     if (service && service.knownUser === undefined) {
       service.whoami().then(
-        () => this.refreshOverview(this.openReview(active.workspaceId, active.review.id)),
+        () => {
+          this.refreshOverview(this.openReview(active.workspaceId, active.review.id));
+          this.canAddMeChanged.fire();
+        },
         error => this.log(`Couldn't ask cm who the user is: ${errorText(error)}`));
     }
     return service?.knownUser;
@@ -1188,6 +1391,191 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     return active && active.workspaceId === workspaceId && active.review.id === reviewId ? active : undefined;
   }
 
+  /** The status write: read back, shown everywhere, and the queue follows. A failure is shown. */
+  private async writeStatus(
+      workspaceId: string,
+      review: IReview,
+      status: ReviewStatus,
+      service: ReviewService): Promise<IReview | undefined> {
+    let fresh: IReview;
+    try {
+      fresh = await this.track(() => this.ui.progress(reviewTreeViewId, () => service.setStatus(review.id, status)));
+    } catch (error) {
+      this.log(`Couldn't set review #${review.id} to ${status}: ${errorText(error)}`);
+      this.ui.error(`Couldn't set review #${review.id} to ${status}: ${errorText(error)}`);
+      return undefined;
+    }
+    this.applyReview(workspaceId, fresh);
+    const icon = fresh.status === "Reviewed" ? "$(pass) " : "";
+    this.ui.status(`${icon}Review #${fresh.id} marked ${fresh.status}`);
+    // The row may belong in another group now; the queue follows without losing the pages shown.
+    if (workspaceId === this.selected) {
+      this.refreshAfterStatus(fresh);
+    }
+    return fresh;
+  }
+
+  /**
+   * The cm user, and why they cannot be added to the review's reviewers when
+   * they cannot. The open review answers from its discussions; any other
+   * review costs one comment query. Rejects when cm cannot say.
+   */
+  private async joining(
+      workspaceId: string,
+      review: IReview,
+      service: ReviewService): Promise<{ user: string; block?: ReviewerBlock }> {
+    const user = await this.track(() => service.whoami());
+    const open = this.openReview(workspaceId, review.id);
+    const timeline = open?.discussions.state === "ready"
+      ? open.discussions.value.timeline
+      : await this.track(() => service.timeline(review));
+    return { block: reviewerBlock(timeline, review, user), user };
+  }
+
+  /**
+   * Whether Set Review Status… adds the cm user to the reviewers first: only
+   * while experimental posting is on and can work in the workspace, and only
+   * for a user who can be added. Otherwise cm is asked nothing more. When cm
+   * cannot say, the status is set as it would be without posting, and the
+   * output channel says why.
+   */
+  private async joinPlan(workspaceId: string, review: IReview, service: ReviewService): Promise<JoinPlan> {
+    const reviewers = this.options.reviewers;
+    if (!reviewers) {
+      return { kind: "none" };
+    }
+    let access: ReviewerAccess;
+    let joining: { user: string; block?: ReviewerBlock };
+    try {
+      access = await reviewers.access(workspaceId);
+      if (access.state === "settingOff" || access.state === "blocked") {
+        return { kind: "none" };
+      }
+      joining = await this.joining(workspaceId, review, service);
+    } catch (error) {
+      this.log(`Couldn't tell whether you are a reviewer on review #${review.id}: ${errorText(error)}`);
+      return { kind: "none" };
+    }
+    if (joining.block) {
+      return { kind: "none" };
+    }
+    if (!isEmailAddress(joining.user)) {
+      return { kind: "unable", reason: notAnAddress(joining.user) };
+    }
+    return { kind: access.state === "ready" ? "add" : "ask", user: joining.user };
+  }
+
+  /**
+   * Adds the cm user under a notification that can cancel it; resolves why
+   * not, or undefined once added, and records the same in `claim`.
+   */
+  private async addUser(
+      claim: IAddClaim,
+      workspaceId: string,
+      reviewId: number,
+      user: string): Promise<IAddFailure | undefined> {
+    const reviewers = this.options.reviewers;
+    let token: CancellationToken | undefined;
+    claim.failure = undefined;
+    try {
+      if (!reviewers) {
+        throw new Error("Experimental posting is not available here.");
+      }
+      await this.track(() => this.ui.cancellable(`Adding you as a reviewer on review #${reviewId}…`, cancel => {
+        token = cancel;
+        return reviewers.add(workspaceId, reviewId, user, cancel);
+      }));
+    } catch (error) {
+      this.log(`Couldn't add you as a reviewer on review #${reviewId}: ${errorText(error)}`);
+      claim.failure = { cancelled: !!token?.isCancellationRequested, message: errorText(error) };
+    }
+    return claim.failure;
+  }
+
+  /**
+   * Claims the add of the cm user to a review until `releaseAdd`, which comes
+   * once the open review shows the result; `canAddMe` is false meanwhile.
+   * Undefined while another add holds the claim.
+   */
+  private claimAdd(workspaceId: string, reviewId: number): IAddClaim | undefined {
+    const key = addKey(workspaceId, reviewId);
+    if (this.adds.has(key)) {
+      return undefined;
+    }
+    let end!: (failure: IAddFailure | undefined) => void;
+    const ended = new Promise<IAddFailure | undefined>(resolve => {
+      end = resolve;
+    });
+    const claim: IAddClaim = {
+      end, ended, failure: { cancelled: false, message: "Add Me as Reviewer stopped before it sent anything." },
+    };
+    this.adds.set(key, claim);
+    this.addsChanged(workspaceId, reviewId);
+    return claim;
+  }
+
+  /** Ends a claim from `claimAdd`: a Set Review Status… waiting on it learns how the add went. */
+  private releaseAdd(workspaceId: string, reviewId: number, claim: IAddClaim): void {
+    this.adds.delete(addKey(workspaceId, reviewId));
+    claim.end(claim.failure);
+    this.addsChanged(workspaceId, reviewId);
+  }
+
+  /** An add started or ended: the open review's Add me link and button follow. */
+  private addsChanged(workspaceId: string, reviewId: number): void {
+    const open = this.openReview(workspaceId, reviewId);
+    if (open && !this.disposed) {
+      this.refreshOverview(open);
+      this.canAddMeChanged.fire();
+    }
+  }
+
+  /** Configure Experimental Posting…, from Set Review Status…; a failure is shown. Resolves true once saved. */
+  private async configureReviewers(): Promise<boolean> {
+    try {
+      return !!await this.options.reviewers?.configure();
+    } catch (error) {
+      this.ui.error(`Couldn't configure experimental posting: ${errorText(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Loads the open review's discussions again, timeline included, when it is
+   * this review; the other stages stay as they are. While the discussions are
+   * still loading, the whole review loads again instead, so that a load which
+   * started before the change cannot land last.
+   */
+  private async reloadDiscussions(workspaceId: string, reviewId: number): Promise<void> {
+    const active = this.openReview(workspaceId, reviewId);
+    const service = active && this.service(workspaceId);
+    if (!active || !service) {
+      return;
+    }
+    if (active.discussions.state === "loading") {
+      await this.reload();
+      return;
+    }
+    const generation = this.generation;
+    const files = active.files.state === "ready" ? active.files.value : undefined;
+    await this.track(() => this.ui.progress(reviewTreeViewId,
+      () => this.loadDiscussions(generation, service, files, true)));
+  }
+
+  /**
+   * Needs My Review after the cm user joined a review that now belongs in it:
+   * under review and not listed there yet. It loads again once the personal
+   * groups have loaded, as after a status write.
+   */
+  private refreshNeedsMyReview(review: IReview): void {
+    const personal = PERSONAL.map(key => this.group(key).stage.state);
+    const listed = this.group("needsMyReview").reviews.some(row => row.id === review.id);
+    if (sameStatus(review.status, "Under review") && !listed && personal.some(state => state !== "idle") &&
+      !personal.includes("loading")) {
+      void this.loadGroup("needsMyReview", false);
+    }
+  }
+
   private viewedKey(): string | undefined {
     const active = this.current;
     if (!active) {
@@ -1226,8 +1614,22 @@ function sameReviews(a: readonly IReview[], b: readonly IReview[]): boolean {
   return a.length === b.length && a.every((review, index) => JSON.stringify(review) === JSON.stringify(b[index]));
 }
 
+/** The non-empty parts, a line each. */
+function joinLines(...parts: Array<string | undefined>): string {
+  return parts.filter(Boolean).join("\n");
+}
+
+/** Why the hosted API cannot take the cm user as a reviewer. */
+function notAnAddress(user: string): string {
+  return `cm names you "${user}", which is not an e-mail address, and the review service names reviewers by ` +
+    "e-mail address.";
+}
+
 function defaultUi(): IReviewSessionUi {
   return {
+    cancellable: (title, task) => window.withProgress(
+      { cancellable: true, location: ProgressLocation.Notification, title }, (_progress, cancel) => task(cancel)),
+    choose: (message, detail, actions) => window.showWarningMessage(message, { detail, modal: true }, ...actions),
     confirm: async (message, detail, action) =>
       await window.showWarningMessage(message, { detail, modal: true }, action) === action,
     error: message => {
@@ -1236,6 +1638,9 @@ function defaultUi(): IReviewSessionUi {
           void commands.executeCommand("plastic-scm.showOutput");
         }
       });
+    },
+    info: message => {
+      void window.showInformationMessage(message);
     },
     progress: (viewId, task) => window.withProgress({ location: { viewId }}, task),
     status: message => {

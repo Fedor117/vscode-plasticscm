@@ -275,6 +275,31 @@ export function currentReviewers(timeline: readonly IReviewTimelineEvent[]): str
     .map(reviewer => reviewer.user);
 }
 
+/** Why someone cannot be added to a review's reviewers; see `reviewerBlock`. */
+export type ReviewerBlock = "author" | "assignee" | "requested";
+
+/**
+ * Why `user` cannot be added to a review's reviewers: they wrote it (authors
+ * do not review their own change), they are its assignee (already a
+ * reviewer), or someone's request for them is still active. Undefined when
+ * they can be added, which includes someone who gave a verdict nobody asked
+ * for, or whose request was removed.
+ */
+export function reviewerBlock(
+    timeline: readonly IReviewTimelineEvent[],
+    review: Pick<IReview, "owner" | "assignee">,
+    user: string): ReviewerBlock | undefined {
+  if (sameUser(user, review.owner)) {
+    return "author";
+  }
+  if (review.assignee.trim() && sameUser(user, review.assignee)) {
+    return "assignee";
+  }
+  return currentReviewers(timeline).some(reviewer => sameUser(reviewer, user))
+    ? "requested"
+    : undefined;
+}
+
 /**
  * Review ids where `user` is currently a requested reviewer, from timeline rows
  * of any number of reviews (the queue's `comment like` query).

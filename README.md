@@ -146,7 +146,8 @@ replies.
   requests are pending or files are not viewed asks first. So does marking one where either count
   is unknown: a review that is not the open one, or whose files or discussions have not loaded.
   The change runs `cm codereview -e <id> --status=…` and reads the review back. If it fails, the
-  status shown does not change.
+  status shown does not change. With experimental posting on, it can first add you as a reviewer:
+  see [Add Me as Reviewer](#experimental-add-me-as-reviewer).
 * While a review view or the open review's Overview is visible, the extension checks for changes
   every minute, unless one of your own actions is still running. The queue updates in place. For
   the open review, a **Review updated** row describes what changed (branch moved to a new head,
@@ -210,6 +211,34 @@ write retries are not followed.
 Validate actual writes in a separately designated test repository before relying on this feature.
 See [the investigation](docs/plastic-review-comment-research.md) for the unresolved API details.
 
+### Experimental: Add Me as Reviewer
+
+With `plastic-scm.reviews.experimentalPosting` on, you can add yourself to a review's reviewers
+through the same hosted API and connection as comment posting. It works with Unity Version
+Control cloud repositories only and needs a bearer token for that API, saved with **Configure
+Experimental Posting…**. `cm` has no way to add a reviewer, and changing the assignee would
+replace one, so the extension does neither.
+
+* **Add Me as Reviewer** (Review view title bar, a review's context menu in Reviews, the Command
+  Palette, or **Add me as reviewer** under the Overview's reviewer cards) sends your `cm whoami`
+  name, which must be an e-mail address, to the review's reviewers. It then reloads the
+  discussions and the timeline, so your reviewer card appears. You can be added when you are not
+  the review's author or its assignee and nobody's request for you is still active; someone who
+  only left a verdict can be added. The title bar and the Overview offer it only then, and hide it
+  while the add is in flight. From a review's context menu or the Command Palette it says why
+  when you can't be added.
+* **Set Review Status…** adds you first when you can be added. With a saved token it adds you and
+  then writes the status. If the add fails, it asks whether to set the status anyway. Without a
+  token it asks whether to configure one and add you, or to set the status without adding you.
+  When a Reviewed warning also applies, it is part of the same question. While Add Me as Reviewer
+  is still adding you, it waits for that add instead of sending another. With the setting off,
+  Set Review Status… works as before.
+* A token refused with 401 or 403 has expired or lacks permission: set a new one with
+  **Configure Experimental Posting…**.
+
+Unity does not document how a user gets a token for this API, and the reviewer endpoint has not
+been verified against a live write; see [the investigation](docs/plastic-review-comment-research.md).
+
 ## Install
 
 This fork is distributed as a `.vsix` rather than through the Marketplace.
@@ -242,7 +271,7 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted
 |`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 |`plastic-scm.reviews.fileLayout`                     |`string` |`tree`   |How Plastic Reviews lists changed files: `tree` (folders) or `list` (sorted by path)
-|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Experimental.** Allows posting review comments and replies through Unity's hosted API with a token you enter (cloud repositories only)
+|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Experimental.** Allows posting review comments and replies, and adding yourself as a reviewer, through Unity's hosted API with a token you enter (cloud repositories only)
 
 ## Commands
 

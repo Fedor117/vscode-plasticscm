@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Add Me as Reviewer** (experimental, behind `plastic-scm.reviews.experimentalPosting`, cloud
+  repositories only) adds the `cm whoami` user to a review's reviewers through Unity's hosted API,
+  with a bearer token saved by **Configure Experimental Posting…**. It is in the Review view's
+  title bar, a review's context menu, the Command Palette and the Overview. The title bar and the
+  Overview offer it only when you are not the review's author, its assignee or already requested;
+  the context menu and the Command Palette say why when you can't be added. Not yet verified
+  against the live service: Unity does not document how a user gets a token for this API.
+- With the setting on, **Set Review Status…** adds you as a reviewer first when you could be
+  added, or asks when no token is saved. With it off, nothing changes.
+
 ### Changed
 
 - The end-to-end review tests run on every test run, against a synthetic Plastic

@@ -1,4 +1,5 @@
 import {
+  CancellationToken,
   Comment,
   CommentMode,
   CommentReply,
@@ -58,13 +59,26 @@ export function isCloudRepository(repository: string): boolean {
 }
 
 /**
+ * Whether Add Me as Reviewer can work in a workspace: `settingOff` (the
+ * experimental setting is off), `blocked` (the workspace is untrusted or its
+ * repository is not a cloud one; `reason` says which), `unconfigured` (no
+ * saved connection) or `ready`.
+ */
+export type ReviewerAccess =
+  | { state: "settingOff" }
+  | { state: "blocked"; reason: string }
+  | { state: "unconfigured" }
+  | { state: "ready" };
+
+/**
  * Experimental posting through Unity's hosted API, from the native comment UI.
  * Every send is confirmed in a modal, and its result stays in the thread as a
  * local comment that keeps the text: posted, not sent (Send Again reuses the
  * draft key, so the writer refuses a duplicate of an accepted comment), or
  * unknown (a retry needs an explicit Allow Another Attempt, which takes a new
- * key). Credentials live in SecretStorage only and never reach a comment, the
- * output channel or an error message.
+ * key). The same connection adds the cm user to a review's reviewers (Add Me
+ * as Reviewer). Credentials live in SecretStorage only and never reach a
+ * comment, the output channel or an error message.
  */
 export class ReviewPosting implements Disposable {
   public readonly onDidChange: Event<void>;
@@ -130,6 +144,30 @@ export class ReviewPosting implements Disposable {
       await this.load(workspaceId);
     }
     this.changes.fire();
+  }
+
+  /** The experimental setting, read on every call. */
+  public settingOn(): boolean {
+    return (this.options.setting ?? settingOn)();
+  }
+
+  /** Whether Add Me as Reviewer can work in a workspace; reads its saved connection again. */
+  public async reviewerAccess(workspaceId: string): Promise<ReviewerAccess> {
+    if (!this.settingOn()) {
+      return { state: "settingOff" };
+    }
+    const blocked = this.gate(workspaceId);
+    if (blocked) {
+      return { reason: blocked, state: "blocked" };
+    }
+    return await this.load(workspaceId) ? { state: "ready" } : { state: "unconfigured" };
+  }
+
+  /** Adds `user`, the cm user, to a review's reviewers; rejects with a message safe to show. */
+  public async addReviewer(workspaceId: string, reviewId: number, user: string, cancel?: CancellationToken):
+      Promise<void> {
+    const connection = await this.connection(workspaceId);
+    await this.writer.addReviewer(connection, reviewId, user, cancel);
   }
 
   /** Post Comment: a new comment on the line of an empty thread started with the gutter "+". */
@@ -226,7 +264,8 @@ export class ReviewPosting implements Disposable {
     }
   }
 
-  public async configure(): Promise<void> {
+  /** Configure Experimental Posting…: resolves true once a connection is saved, false when cancelled. */
+  public async configure(): Promise<boolean> {
     const workspaceId = this.activeWorkspace;
     if (!workspaceId) {
       throw new Error("Open a review workspace first.");
@@ -246,7 +285,7 @@ export class ReviewPosting implements Disposable {
       value: previous?.organization,
     });
     if (!organization?.trim()) {
-      return;
+      return false;
     }
     const repository = await window.showInputBox({
       ignoreFocusOut: true,
@@ -255,7 +294,7 @@ export class ReviewPosting implements Disposable {
       value: previous?.repository,
     });
     if (!repository?.trim()) {
-      return;
+      return false;
     }
     const token = await window.showInputBox({
       ignoreFocusOut: true,
@@ -266,12 +305,13 @@ export class ReviewPosting implements Disposable {
         : undefined,
     });
     if (!token?.trim()) {
-      return;
+      return false;
     }
     const connection = { organization: organization.trim(), repository: repository.trim(), token: token.trim() };
     await this.secrets.store(key, JSON.stringify(connection));
     this.connections.set(key, connection);
     this.changes.fire();
+    return true;
   }
 
   public async forget(): Promise<void> {

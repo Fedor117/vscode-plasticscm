@@ -13,6 +13,9 @@ export const HANDLER = "vscode://plastic.test/open";
 export const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/;
 
 export function testLink(target: OverviewLinkTarget): string {
+  if (target.kind === "addMeAsReviewer") {
+    return `${HANDLER}?addMeAsReviewer`;
+  }
   return target.kind === "thread"
     ? `${HANDLER}?thread=${target.threadId}`
     : `${HANDLER}?scope=${scopeName(target.scope)}&file=${encodeURIComponent(target.fileKey)}`;
@@ -130,7 +133,8 @@ export function links(html: string): Array<{ href: string; text: string }> {
 
 /**
  * Every link is a URL someone wrote or a `testLink` that resolves to a thread
- * with a line or a file row of the review. Returns how many handler links there are.
+ * with a line or a file row of the review, or Add me as reviewer. Returns how
+ * many handler links there are.
  */
 export function expectLinksOpen(html: string, active: IActiveReview): number {
   const threads = active.discussions.state === "ready" ? active.discussions.value.threads : [];
@@ -141,6 +145,9 @@ export function expectLinksOpen(html: string, active: IActiveReview): number {
       continue;
     }
     handled++;
+    if (href === `${HANDLER}?addMeAsReviewer`) {
+      continue;
+    }
     const thread = /^vscode:\/\/plastic\.test\/open\?thread=(\d+)$/.exec(href);
     if (thread) {
       const named = threads.find(candidate => candidate.id === Number(thread[1]));
@@ -159,8 +166,8 @@ export function expectLinksOpen(html: string, active: IActiveReview): number {
 /**
  * Every link is a URL someone wrote or a link to the extension's URI handler
  * (`prefix` is its scheme and authority) that `parseReviewLink` reads as a
- * thread with a line, or a listed file row, of this very review: what the
- * handler opens. Returns the handler links.
+ * thread with a line, or a listed file row, of this very review, or as Add me
+ * as reviewer with a key: what the handler opens. Returns the handler links.
  */
 export function expectHandlerLinksOpen(html: string, active: IActiveReview, prefix: string): IReviewLink[] {
   const threads = active.discussions.state === "ready" ? active.discussions.value.threads : [];
@@ -179,10 +186,12 @@ export function expectHandlerLinksOpen(html: string, active: IActiveReview, pref
     if (target.kind === "thread") {
       const thread = threads.find(candidate => candidate.id === target.threadId);
       expect(!!thread && hasLocation(thread), `${href} names a thread with a line`).to.equal(true);
-    } else {
+    } else if (target.kind === "file") {
       expect(target.scope, href).to.be.oneOf([ "changes", "merged" ]);
       const rows = files ? viewableRows(scopeRows(files, target.scope as "changes" | "merged")) : [];
       expect(rows.some(row => fileKey(row) === target.fileKey), `${href} names a file row`).to.equal(true);
+    } else {
+      expect(link.key, `${href} carries the session's key`).to.match(/^[A-Za-z0-9_-]+$/);
     }
     found.push(link);
   }

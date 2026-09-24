@@ -93,7 +93,7 @@ function harness(options: {
   const shell = new ReviewShell();
   shell.answer = options.answer ?? scenarioAnswer;
   const log: IHarness["ui"] = { answer: false, confirms: [], errors: [], progress: [], statuses: [] };
-  const ui: IReviewSessionUi = {
+  const ui: Partial<IReviewSessionUi> = {
     confirm: (message, detail) => {
       log.confirms.push({ detail, message });
       return Promise.resolve(log.answer);
