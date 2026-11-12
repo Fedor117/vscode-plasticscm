@@ -1,11 +1,14 @@
 import * as fs from "fs";
+import { CmRunner, ICmOutput } from "../../../reviews/cmRunner";
 import { ICmParser, ICmResult, ICmShell } from "../../../cm/shell";
 import { ReviewStatus, reviewStatuses } from "../../../reviews/models";
+import { COMMENT_USAGE } from "./cmFixtures";
 
 /**
  * A Plastic server in memory: one synthetic repository (branches, changesets,
  * merges, items and their revisions, reviews and their comments) and cm
- * shells that answer from it with the text cm prints. `cm diff` is computed
+ * shells that answer from it with the text cm prints, plus a one-shot cm that
+ * takes the review writes (`oneShot`). `cm diff` is computed
  * from the changesets, not written out, and every query shape the review
  * feature does not issue fails, naming the command, so a new or changed query
  * fails its test instead of quietly finding nothing. Tests take their
@@ -170,6 +173,10 @@ export class SyntheticPlasticServer {
   public readonly revisions = new Map<number, ISyntheticRevision>();
   public readonly reviews: ISyntheticReview[] = [];
   public readonly comments: ISyntheticComment[] = [];
+  /** Every run of the one-shot cm (see `oneShot`), in order. */
+  public readonly writes: Array<{ args: string[]; cwd?: string; stdin?: string }> = [];
+  /** The date of the rows the one-shot cm writes. */
+  public writeDate = "2026-09-22T17:30:00+01:00";
   /** `REPNAME@REPSERVER`, as `cm diff` and `cm find revision` name the repository. */
   public readonly repository: string;
   private readonly trees = new Map<number, Map<number, ITreeEntry>>();
@@ -264,6 +271,41 @@ export class SyntheticPlasticServer {
 
   public addReview(review: ISyntheticReview): void {
     this.reviews.push(review);
+  }
+
+  /**
+   * cm run once for a review write, as `cm codereview comment`, `reviewer`
+   * and `review` do it from 11.0.16.10512 on: the writes land in the model,
+   * as the cm user's own rows. It answers only from the workspace's folder,
+   * and anything it does not know fails, naming the command. A comment on a
+   * file takes only a revision the diff it is filed under comments on, as cm
+   * does (see `commentable`). Text from a file, as the writer hands it over
+   * on Windows, is read and recorded as if it came on stdin, so that tests
+   * see the same writes on every platform.
+   */
+  public oneShot(): CmRunner {
+    return (_cmPath, run) => {
+      let args = run.args.slice();
+      let stdin = run.stdin;
+      const file = args.findIndex(arg => arg.startsWith("-commentsfile=") && arg !== "-commentsfile=-");
+      if (file >= 0) {
+        stdin = fs.readFileSync(args[file].substring("-commentsfile=".length), "utf8").replace(/^\ufeff/, "");
+        args = args.map((arg, index) => index === file ? "-commentsfile=-" : arg);
+      }
+      this.writes.push({ args, cwd: run.cwd, stdin });
+      let output: ICmOutput;
+      try {
+        output = { code: 0, started: true, stderr: "", stdout: this.write(args, run.cwd, stdin) };
+      } catch (error) {
+        output = { code: 1, started: true, stderr: `Error: ${(error as Error).message}\n`, stdout: "" };
+      }
+      return Promise.resolve(output);
+    };
+  }
+
+  /** The GUID `cm find changereviewcomment` prints for a comment row. */
+  public commentGuid(id: number): string {
+    return guid(id);
   }
 
   /** A comment row; returns its id. */
@@ -769,6 +811,106 @@ export class SyntheticPlasticServer {
     return "";
   }
 
+  /** What the one-shot cm prints for a review write; throws what cm would say when it refuses. */
+  private write(args: string[], cwd: string | undefined, stdin: string | undefined): string {
+    const [ command, area, action ] = args;
+    if (command !== "codereview") {
+      throw this.unknown("one-shot", args);
+    }
+    if (area === "comment" && action === "--usage" && args.length === 3) {
+      return COMMENT_USAGE;
+    }
+    if (cwd !== this.root) {
+      throw new Error(`${cwd ?? "(no folder)"} is not in a workspace.`);
+    }
+    const reviewOf = (id: string): ISyntheticReview => {
+      const review = this.reviews.find(known => String(known.id) === id);
+      if (!review) {
+        throw new Error(`The code review ${id} does not exist.`);
+      }
+      return review;
+    };
+    if (area === "reviewer" && action === "add" && args.length === 5 && args[4] === "--users=me") {
+      const review = reviewOf(args[3]);
+      this.addTimeline(review.id, this.user, this.writeDate, `[requested-review-from]${this.user}`);
+      return "";
+    }
+    if (area === "review" && args.length === 4 && VERDICT_MARKERS[args[3]]) {
+      const review = reviewOf(action);
+      this.addTimeline(review.id, this.user, this.writeDate, `[${VERDICT_MARKERS[args[3]]}]`);
+      return "";
+    }
+    if (area !== "comment" || args[4] !== "-commentsfile=-" || !stdin || !stdin.trim()) {
+      throw this.unknown("one-shot", args);
+    }
+    if (action === "reply" && args.length === 5) {
+      const parent = this.comments.find(known => guid(known.id) === args[3].toLowerCase());
+      if (!parent) {
+        throw new Error(`The comment ${args[3]} does not exist.`);
+      }
+      return `${guid(this.addComment(parent.review, this.user, this.writeDate, stdin, { parent: parent.id }))}\n`;
+    }
+    if (action !== "add") {
+      throw this.unknown("one-shot", args);
+    }
+    const review = reviewOf(args[3]);
+    const options: { [name: string]: string } = {};
+    for (const option of args.slice(5)) {
+      const match = /^--(revision|line|changeset|type)=(.+)$/.exec(option);
+      if (!match || options[match[1]] !== undefined) {
+        throw this.unknown("one-shot", args);
+      }
+      options[match[1]] = match[2];
+    }
+    if (options.revision === undefined) {
+      if (args.length !== 5) {
+        throw this.unknown("one-shot", args);
+      }
+      return `${guid(this.addComment(review.id, this.user, this.writeDate, stdin, { type: "conversation" }))}\n`;
+    }
+    const revision = /^revid:(\d+)$/.exec(options.revision);
+    const line = /^[1-9]\d*$/.test(options.line ?? "") ? Number(options.line) : undefined;
+    const changeset = options.changeset === undefined ? -1 : Number(/^cs:(\d+)$/.exec(options.changeset)?.[1] ?? NaN);
+    const type = [ "Change", "Question", "Comment" ].find(known => known === (options.type ?? "Change"));
+    if (!revision || line === undefined || isNaN(changeset) || !type) {
+      throw this.unknown("one-shot", args);
+    }
+    const known = this.revisions.get(Number(revision[1]));
+    if (!known || !known.lines || line > known.lines.length) {
+      throw new Error(`The revision ${options.revision} has no line ${options.line}.`);
+    }
+    if (!this.commentable(review, changeset).has(known.id)) {
+      throw new Error(`The revision ${options.revision} is not one the diff of the code review ${review.id}` +
+        `${changeset >= 0 ? ` in cs:${changeset}` : ""} comments on.`);
+    }
+    return `${guid(this.addComment(review.id, this.user, this.writeDate, stdin, {
+      changeset, location: line - 1, revision: known.id, type: type.toLowerCase(),
+    }))}\n`;
+  }
+
+  /**
+   * The revisions a comment filed under the review's diff, or under one
+   * changeset's (`changeset` >= 0, which must be the review's), can be on:
+   * as cm's help says, the new revision of an added or changed file, or the
+   * base revision of a deleted file. That is each diff row's `revid`.
+   */
+  private commentable(review: ISyntheticReview, changeset: number): Set<number> {
+    let rows: ISyntheticDiffRow[];
+    if (review.targetType === "Changeset") {
+      if (changeset >= 0 && changeset !== review.target) {
+        throw new Error(`The changeset cs:${changeset} is not in the code review ${review.id}.`);
+      }
+      rows = this.changesetDiff(review.target);
+    } else {
+      const branch = this.branchById(review.target).name;
+      if (changeset >= 0 && !this.branchChangesets(branch).some(known => known.id === changeset)) {
+        throw new Error(`The changeset cs:${changeset} is not in the code review ${review.id}.`);
+      }
+      rows = changeset >= 0 ? this.changesetDiff(changeset) : this.branchDiff(branch);
+    }
+    return new Set(rows.map(row => row.revid));
+  }
+
   /** `cm codereview -e <id> --status=<status>`: the one write; the calls record it. */
   private codereview(args: string[]): string {
     const status = /^--status=(.+)$/.exec(args[2] ?? "");
@@ -941,6 +1083,13 @@ function query(rows: string[]): string {
   const body = rows.length ? `${rows.join("\n")}\n` : "";
   return `<?xml version="1.0" encoding="utf-8" ?>\n<PLASTICQUERY>\n${body}</PLASTICQUERY>`;
 }
+
+/** The timeline marker `cm codereview review` writes for each of its flags. */
+const VERDICT_MARKERS: { [flag: string]: string } = {
+  "--reviewed": "status-reviewed",
+  "--rework-required": "status-rework-required",
+  "--under-review": "status-under-review",
+};
 
 function guid(id: number): string {
   return `5e1f0c2a-0000-4000-8000-${String(id).padStart(12, "0")}`;

@@ -582,6 +582,7 @@ describe("Review service", () => {
         return args[0] === "changereviewcomment" ? commentsXml(edited) : scenarioAnswer(command, args);
       };
       expect(await service.checkUpdates(review, files, discussions)).to.deep.equal({
+        comments: [{ id: 12907, owner: ME }, { id: 13001, owner: ME }],
         newComments: 2, newHead: 3733, removedComments: 1, status: "Rework required",
       });
       expect(discussions.threads.find(thread => thread.id === 12907)!.comments[0].text).not.to.equal("Edited");
@@ -660,7 +661,7 @@ describe("Review service", () => {
       shell.answer = (command, args) =>
         args[0] === "changereviewcomment" ? COMMENT_XML.replace("first", "edited") : defaultAnswer(command, args);
       expect(await service.checkUpdates(review, undefined, discussions)).to.deep.equal({
-        newComments: 1, removedComments: 0,
+        comments: [{ id: 1, owner: "" }], newComments: 1, removedComments: 0,
       });
       expect(discussions.threads[0].comments[0].text).to.contain("first");
     });

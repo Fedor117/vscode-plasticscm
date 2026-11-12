@@ -153,7 +153,8 @@ export function noDiffReason(file: IChangesetFileChange): string | undefined {
 export function fileDescription(
     file: IChangesetFileChange,
     layout: FileLayout,
-    discussions = 0,
+    /** The row's discussion marks (`discussionMarks`); empty for none. */
+    discussions = "",
     sameAsHead = false): string {
   const parts: string[] = [];
   if (layout === "list") {
@@ -162,8 +163,9 @@ export function fileDescription(
       parts.push(directory);
     }
   }
-  if (discussions > 0) {
-    parts.push(`${discussions} ${discussions === 1 ? "discussion" : "discussions"}`);
+  // First, before the path of a list row, so the marks line up where the eye looks for them.
+  if (discussions) {
+    parts.unshift(discussions);
   }
   if (sameAsHead) {
     parts.push("same revision as head");

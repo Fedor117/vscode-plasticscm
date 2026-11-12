@@ -11,6 +11,8 @@ import {
   changesetTooltip,
   cleanReviewTitle,
   contentKind,
+  discussionMarks,
+  discussionMarksText,
   errorSummary,
   fileTooltip,
   firstLine,
@@ -227,7 +229,7 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
     case "file":
       return this.fileItem(node, active);
     case "folder":
-      return this.folderItem(node);
+      return this.folderItem(node, active);
     case "changeset":
       return this.changesetItem(node, active);
     case "message": {
@@ -662,7 +664,7 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
     // The right side of the row's diff, so the row, its decoration and the diff tab share one URI.
     item.resourceUri = reviewFileUri(group.workspaceId, group.reviewId, group.comparison, file);
     item.iconPath = ThemeIcon.File;
-    item.description = fileDescription(file, this.session.fileLayout, threads.length, sameAsHead);
+    item.description = fileDescription(file, this.session.fileLayout, discussionMarks(threads), sameAsHead);
     item.tooltip = fileTooltip(file, threads, sameAsHead);
     item.checkboxState = {
       accessibilityInformation: { label: viewed ? `${node.label} viewed` : `Mark ${node.label} as viewed` },
@@ -674,14 +676,16 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
     return item;
   }
 
-  private folderItem(node: ReviewFolderNode): TreeItem {
+  private folderItem(node: ReviewFolderNode, active: IActiveReview | undefined): TreeItem {
     const collapsible = !node.children.length ? TreeItemCollapsibleState.None
       : node.expanded ? TreeItemCollapsibleState.Expanded : TreeItemCollapsibleState.Collapsed;
     const item = new TreeItem(node.label, collapsible);
     item.id = node.id;
     item.iconPath = ThemeIcon.Folder;
     item.resourceUri = Uri.from({ path: node.path, query: JSON.stringify({ kind: "folder" }), scheme: reviewScheme });
-    item.description = folderDescription(node, this.session.fileLayout) || undefined;
+    const threads = active ? this.folderThreads(active, node) : [];
+    item.description = [ discussionMarks(threads), folderDescription(node, this.session.fileLayout) ]
+      .filter(Boolean).join(" · ") || undefined;
     const viewedCount = node.files.filter(file => this.session.isViewed(file)).length;
     const viewed = node.files.length > 0 && viewedCount === node.files.length;
     if (node.files.length) {
@@ -692,7 +696,10 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
       };
     }
     const files = `${formatCount(node.files.length)} file${node.files.length === 1 ? "" : "s"}`;
-    item.tooltip = node.files.length ? `${node.path}\n${files} · ${formatCount(viewedCount)} viewed` : node.path;
+    const discussions = threads.length ? `\n${discussionMarksText(threads)}` : "";
+    item.tooltip = node.files.length
+      ? `${node.path}\n${files} · ${formatCount(viewedCount)} viewed${discussions}`
+      : node.path;
     item.contextValue = `folder;${viewed ? "viewed" : "unviewed"}`;
     return item;
   }
@@ -716,6 +723,15 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
       this.headRevisions = { files, keys };
     }
     return this.headRevisions.keys.has(revisionKey(file));
+  }
+
+  /** Every thread on the folder's files, each once: a thread on a moved file's old path is found from both rows. */
+  private folderThreads(active: IActiveReview, node: ReviewFolderNode): IReviewThread[] {
+    const threads = new Map<number, IReviewThread>();
+    for (const file of node.files) {
+      this.threadsFor(active, file).forEach(thread => threads.set(thread.id, thread));
+    }
+    return Array.from(threads.values());
   }
 
   /** Threads on this file's path, or on its path before a move (base-side comments). */

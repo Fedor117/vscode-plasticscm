@@ -1,458 +1,412 @@
+import { CmRunner, ICmOutput, spawnCm } from "./cmRunner";
+import { mkdtemp, rm, writeFile } from "fs/promises";
 import { CancellationToken } from "vscode";
-import { request } from "https";
-import { ReviewRequestError } from "./reviewRequestError";
+import { join } from "path";
 import { ReviewStatus } from "./models";
 import { ReviewWriteError } from "./reviewWriteError";
+import { tmpdir } from "os";
 
-export { ReviewRequestError, ReviewWriteError };
-
-/**
- * The regional servers of the Unity Version Control Server REST API, as its
- * documentation lists them (https://docs.unity.com/en-us/oas-unity-version-control-server/1.0.0),
- * all on port 7178. No other host is ever sent a request, or a token.
- */
-export const REST_HOSTS: readonly string[] = [
-  "prd-azure-eastus-01-cloud.plasticscm.com",
-  "prd-azure-westeu-01-cloud.plasticscm.com",
-  "prd-azure-eastjp-01-cloud.plasticscm.com",
-  "prd-azure-seasia-01-cloud.plasticscm.com",
-];
+export { ReviewWriteError };
 
 /**
- * Where review writes go and as whom: the documented REST origin, the server
- * and the user as cm names them, what the organization may be called in a
- * path, the repository, and the personal access token.
+ * A comment or a reply about to be sent. `key` identifies the draft, so that
+ * one draft is never sent twice. A reply has `parentGuid`; a new comment is
+ * pinned to `location` of `revisionId`, or applies to the whole review when
+ * it has no revision.
  */
-export interface IReviewConnection {
-  /** `https://<documented host>:7178`, from `restOrigin`. */
-  origin: string;
-  /** The repository's server spec, such as `acme-studio@unity`. */
-  server: string;
-  /** What the organization may be called in a path, in the order to try: cm's `{name}`, then its `{unityid}`. */
-  organizations: readonly string[];
-  /** The repository's name, as the workspace's spec writes it; `/` separates a sub-repository. */
-  repository: string;
-  /** The cm user: whose token this is, and whom Add Me as Reviewer adds. */
-  user: string;
-  /**
-   * The token. Given the one the server answered 401 to, it drops that one
-   * and reveals it again. Rejects with a message that is safe to show.
-   */
-  token(stale?: string): Promise<string>;
-}
 export interface IReviewDraft {
   key: string;
   workspaceId: string;
   reviewId: number;
+  /** The revision the comment is on; negative for a comment on the whole review. */
   revisionId: number;
-  changesetId: number;
+  /**
+   * The changeset whose diff the comment was written in, when that diff shows
+   * one changeset of the review; undefined when it shows the whole review.
+   */
+  changesetId?: number;
+  /** Zero-based line in the revision; cm counts lines from 1. */
   location: number;
   path: string;
-  parentId?: number;
+  /** The GUID of the comment a reply answers. */
+  parentGuid?: string;
 }
-/** One request to the REST API, complete but for its length; the transport sends it as it is. */
-export interface IWriteRequest {
-  method: "GET" | "POST" | "PUT";
-  url: URL;
-  headers: { readonly [name: string]: string };
-  /** JSON; POST and PUT only. */
-  body?: string;
-}
-export interface IWriteResponse {
-  status: number;
-  body: string;
-}
-/**
- * Sends one request and resolves the answer, whatever its status, or rejects
- * with a ReviewRequestError when no complete answer came. The only code here
- * that reaches the network, so tests replace it.
- */
-export type ReviewTransport = (call: IWriteRequest, cancel?: CancellationToken) => Promise<IWriteResponse>;
 
-/** A write, for its request and its messages: `effect` says what may have happened when the answer is unknown. */
+/** Whether a cm can write to reviews, and when it cannot, why, as a message safe to show. */
+export type ReviewWriteSupport = { supported: true } | { supported: false; reason: string };
+
+export interface IReviewWriterOptions {
+  /** The cm to run, read on every use: the configured path can change. */
+  cmPath: () => string;
+  /** Runs cm once; by default as a child process. Tests replace it. */
+  run?: CmRunner;
+  /** Where each command is noted, as its name and review or comment id; never a comment's text. */
+  log?: (message: string) => void;
+  /**
+   * The platform, which decides how a comment's text reaches cm (see
+   * `send`); `process.platform` by default. Tests set it.
+   */
+  platform?: NodeJS.Platform;
+  /** Where the folder for a comment's text file is made on Windows; the system's temporary folder by default. */
+  tempDir?: () => string;
+}
+
+/** The first Unity Version Control client whose cm has the review write commands. */
+export const MINIMUM_CLIENT = "11.0.16.10512";
+export const CM_MISSING = "cm wasn't found. Check the plastic-scm.cmConfiguration.cmPath setting.";
+const UNSUPPORTED = `Review writes need Unity Version Control client ${MINIMUM_CLIENT} or newer.`;
+const MAX_TEXT = 64000;
+const FROM_STDIN = "-commentsfile=-";
+const NO_TEXT_FILE = "The text could not be written to a temporary file for cm. Nothing was sent.";
+/**
+ * What cm says when the server could not be reached or did not answer in
+ * time. cm may have sent the write before it said so, so the result is not
+ * known: a retry could post a duplicate.
+ */
+const LOST = new RegExp("time[ds]? ?out|did ?n[o'\u2019]t (?:respond|answer)|not respond|connect|unreachable|network|" +
+  "socket|transport|unavailable", "i");
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const WHOLE_UUID = new RegExp(`^${UUID.source}$`, "i");
+/** cm's flag for each verdict of `cm codereview review`. */
+const VERDICTS: { readonly [status in ReviewStatus]: string } = {
+  "Reviewed": "--reviewed",
+  "Rework required": "--rework-required",
+  "Under review": "--under-review",
+};
+
+
+/** A write, for its command and its messages: `effect` says what may have happened when the result is unknown. */
 interface IWrite {
-  reviewId: number;
-  method: "POST" | "PUT";
-  /** After `…/codereview/{id}`. */
-  path: string;
-  payload: object;
+  /** What the log calls it, such as `cm codereview comment add 312`. */
+  name: string;
+  args: string[];
+  stdin?: string;
+  /** How the log says where the text went, when there is one. */
+  textIn?: string;
   effect: string;
-  /** Said after a 403. */
-  forbidden?: string;
-}
-
-const REST_PORT = "7178";
-const STATUSES: readonly ReviewStatus[] = [ "Under review", "Reviewed", "Rework required" ];
-const JWT = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
-/** A token that can go into a header as it is: printable ASCII without spaces. */
-const HEADER_TOKEN = /^[\x21-\x7e]+$/;
-/** Something@somewhere.tld without spaces or the characters an address list would split on. */
-const EMAIL = /^[^\s@<>()[\],;:"]+@[^\s@<>()[\],;:"]+\.[^\s@<>()[\],;:".]+$/;
-const SERVER = "The Unity Version Control server";
-
-/** Whether a cm user name is an e-mail address, which is how Unity Version Control names reviewers. */
-export function isEmailAddress(user: string): boolean {
-  return EMAIL.test(user.trim());
 }
 
 /**
- * The REST API's origin for an organization in `region`, which `cm getconfig
- * organization` prints as a host; undefined unless it is a documented one.
+ * cm's arguments for a comment or a reply, validated before anything runs;
+ * the text is not among them, it goes to cm on stdin (`-commentsfile=-`).
+ *
+ * A new comment names its revision and line (`--revision=revid:N --line=L`,
+ * the line counted from 1) and is a plain comment: cm's default type would be
+ * a change request. `--changeset=cs:N` is passed only for a draft written in
+ * the diff of one changeset of the review, which is where cm then shows the
+ * comment; without it cm files the comment under the diff of the whole
+ * review, which is what a comment written there needs. This mirrors what the
+ * server keeps: CHANGESET is -1 on comments of the whole diff and the
+ * revision's own changeset on comments of a changeset's diff. A draft without
+ * a revision is a comment on the whole review. A reply names only its
+ * parent's GUID: cm puts it on the parent's file, line and changeset.
  */
-export function restOrigin(region: string): string | undefined {
-  const host = region.trim();
-  return REST_HOSTS.includes(host) ? `https://${host}:${REST_PORT}` : undefined;
+export function commentArguments(draft: IReviewDraft): string[] {
+  if (draft.parentGuid !== undefined) {
+    if (!WHOLE_UUID.test(draft.parentGuid)) {
+      throw new ReviewWriteError("This discussion cannot be replied to yet. Refresh the review first.");
+    }
+    return [ "codereview", "comment", "reply", draft.parentGuid, "-commentsfile=-" ];
+  }
+  checkReviewId(draft.reviewId);
+  const args = [ "codereview", "comment", "add", String(draft.reviewId), "-commentsfile=-" ];
+  if (!Number.isSafeInteger(draft.revisionId)) {
+    throw new ReviewWriteError("This comment does not have a valid pinned revision and line.");
+  }
+  if (draft.revisionId < 0) {
+    return args;
+  }
+  if (!Number.isSafeInteger(draft.location) || draft.location < 0) {
+    throw new ReviewWriteError("This comment does not have a valid pinned revision and line.");
+  }
+  args.push(`--revision=revid:${draft.revisionId}`, `--line=${draft.location + 1}`);
+  if (draft.changesetId !== undefined) {
+    if (!Number.isSafeInteger(draft.changesetId) || draft.changesetId < 0) {
+      throw new ReviewWriteError("This comment does not have a valid changeset.");
+    }
+    args.push(`--changeset=cs:${draft.changesetId}`);
+  }
+  args.push("--type=Comment");
+  return args;
 }
 
 /**
- * A REST API URL: a documented origin and a path of percent-encoded segments.
- * Refuses any other origin, and an empty, `.` or `..` segment, which a URL
- * would resolve into another path.
+ * What cm said when it refused, on one line and at most 300 characters,
+ * without the "Error: " it starts its own diagnostics with; stderr first,
+ * then stdout. Undefined when it printed nothing.
  */
-export function restUrl(origin: string, path: string): URL {
-  let url: URL | undefined;
-  try {
-    url = new URL(path, origin);
-  } catch {
-    url = undefined;
-  }
-  if (!url || url.protocol !== "https:" || !REST_HOSTS.includes(url.hostname) || url.port !== REST_PORT ||
-    url.origin !== origin) {
-    throw new ReviewWriteError("Review writes only go to the documented Unity Version Control Server REST API.");
-  }
-  const segments = path.split("/").slice(1);
-  if (!path.startsWith("/") || segments.some(segment => !segment || /^(?:\.|%2e){1,2}$/i.test(segment)) ||
-    url.pathname !== path || url.search || url.hash) {
-    throw new ReviewWriteError("This review, organization or repository cannot be named in a request.");
-  }
-  return url;
+export function cmMessage(output: Pick<ICmOutput, "stdout" | "stderr">): string | undefined {
+  const text = [ output.stderr, output.stdout ].map(part => part.replace(/\s+/g, " ").trim()).find(Boolean);
+  return text?.replace(/^(?:Error:\s*)+/i, "").substring(0, 300).trim() || undefined;
 }
 
 /**
- * How a repository's name may go into a path, in the order to try: as one
- * segment (a `/` encoded as `%2F`), then a segment per `/`-separated part.
- * One form for a name without `/`.
- */
-export function repositoryForms(repository: string): string[] {
-  const whole = encodeURIComponent(repository);
-  const parts = repository.split("/").map(part => encodeURIComponent(part)).join("/");
-  return whole === parts ? [whole] : [ whole, parts ];
-}
-
-/**
- * What an ErrorResponse (`{ "error": { "message" } }`) or ProblemDetails
- * (`title`, `detail`) body says: its first message, title or detail, on one
- * line and at most 200 characters, without anything JWT-shaped or the token.
- * Undefined for any other body.
- */
-export function serverMessage(body: string, token?: string): string | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const nested = isRecord(value.error) ? value.error.message : undefined;
-  const text = [ value.message, nested, value.title, value.detail ]
-    .find((candidate): candidate is string => typeof candidate === "string" && !!candidate.trim());
-  if (text === undefined) {
-    return undefined;
-  }
-  let clean = text.replace(JWT, "[token]");
-  if (token) {
-    clean = clean.split(token).join("[token]");
-  }
-  return clean.replace(/\s+/g, " ").trim().substring(0, 200);
-}
-
-/** Over https, with a 30-second timeout; cancelling destroys the request. Redirects are not followed. */
-export const httpsTransport: ReviewTransport = (call, cancel) => new Promise((resolve, reject) => {
-  if (cancel?.isCancellationRequested) {
-    reject(new ReviewRequestError("cancelled", false));
-    return;
-  }
-  let cancelled = false;
-  const headers = call.body === undefined
-    ? { ...call.headers }
-    : { ...call.headers, "Content-Length": Buffer.byteLength(call.body) };
-  const req = request(call.url, { headers, method: call.method }, response => {
-    let data = "";
-    response.setEncoding("utf8");
-    response.on("data", (chunk: string) => {
-      if (data.length + chunk.length > 1024 * 1024) {
-        req.destroy(new Error("Response too large"));
-        return;
-      }
-      data += chunk;
-    });
-    response.on("error", () => reject(new ReviewRequestError(cancelled ? "cancelled" : "interrupted", true)));
-    response.on("end", () => resolve({ body: data, status: response.statusCode ?? 0 }));
-  });
-  const listener = cancel?.onCancellationRequested(() => {
-    cancelled = true;
-    req.destroy(new Error("Cancelled"));
-  });
-  req.on("close", () => {
-    listener?.dispose();
-  });
-  req.setTimeout(30000, () => req.destroy(new Error("Timeout")));
-  req.on("error", () => reject(new ReviewRequestError(cancelled ? "cancelled" : "failed", true)));
-  req.end(call.body);
-});
-
-/**
- * Review writes through the Unity Version Control Server REST API: Add Me as
- * Reviewer, the cm user's own verdict, comments and replies. How a path names
- * the organization and the repository is not documented for every kind of
- * organization, so before the first write each is settled with a read, and
- * the answer is kept. A 401 is answered once with a renewed token: the server
- * did not process the call. Nothing else is retried, and nothing a write may
- * have done is sent again without the caller asking.
+ * Review writes with the installed cm and its own sign-in: comments and
+ * replies, Add Me as Reviewer and the cm user's own verdict. Every write is
+ * one cm process, started in the workspace's folder so that cm finds the
+ * repository, with its arguments as an array and a comment's text on stdin.
+ * Nothing is retried, and nothing a write may have done is sent again without
+ * the caller asking.
+ *
+ * How a write ended decides what the caller may do next. cm exiting with an
+ * error it explains did not write: the error is `refused`, and its message is
+ * cm's own. cm killed at the timeout or by a cancel, once it had started, may
+ * have written, as may a cm that exited with an error about the connection or
+ * the server's answer, or with no message at all, and a comment whose cm
+ * exited cleanly without printing the new comment's GUID: those are
+ * `uncertain`, and a retry could post a duplicate.
  */
 export class ReviewWriter {
   private readonly sending = new Set<string>();
   private readonly completed = new Set<string>();
-  /** The organization name the REST API took, per origin, server and user; see `organization`. */
-  private readonly organizations = new Map<string, string>();
-  /** How a repository's name goes into a path, once a review read answered to it; see `repositoryPath`. */
-  private readonly repositories = new Map<string, string>();
-  public constructor(private readonly transport: ReviewTransport = httpsTransport) {}
+  /** The cm paths known to have the review write commands, and the probes in flight; see `support`. */
+  private readonly supports = new Map<string, Promise<ReviewWriteSupport>>();
+  private readonly run: CmRunner;
 
-  /** A comment, or a reply when the draft has a parent; a draft that is sending or was sent is refused. */
-  public async send(connection: IReviewConnection, draft: IReviewDraft, text: string, cancel?: CancellationToken):
-      Promise<void> {
+  public constructor(private readonly options: IReviewWriterOptions) {
+    this.run = options.run ?? spawnCm;
+  }
+
+  /**
+   * Whether the configured cm can write to reviews: `cm codereview comment
+   * --usage` exits cleanly and lists `reply`, as it does from
+   * 11.0.16.10512 on. Only a yes is kept, per cm path, until `forgetSupport`:
+   * a no is asked again next time, so a client upgraded in place, or a cm
+   * that was missing or slow, is found without a reload.
+   */
+  public async support(): Promise<ReviewWriteSupport> {
+    const cmPath = this.options.cmPath();
+    let probe = this.supports.get(cmPath);
+    if (!probe) {
+      probe = this.probe(cmPath);
+      this.supports.set(cmPath, probe);
+    }
+    const answer = await probe;
+    if (!answer.supported && this.supports.get(cmPath) === probe) {
+      this.supports.delete(cmPath);
+    }
+    return answer;
+  }
+
+  /** Forgets what every cm answered: the cm settings changed. */
+  public forgetSupport(): void {
+    this.supports.clear();
+  }
+
+  /**
+   * A comment, or a reply when the draft has a parent; resolves the new
+   * comment's GUID. A draft that is sending or was sent is refused.
+   *
+   * The text goes to cm on stdin, except on Windows: a .NET program there
+   * reads redirected stdin in the console's code page, which would store
+   * anything but ASCII garbled, for good. There it goes in a file of its own,
+   * UTF-8 with a byte order mark (which .NET reads as UTF-8 whatever the code
+   * page), in a new temporary folder that is deleted once cm has ended.
+   */
+  public async send(cwd: string, draft: IReviewDraft, text: string, cancel?: CancellationToken): Promise<string> {
     if (this.sending.has(draft.key) || this.completed.has(draft.key)) {
       throw new ReviewWriteError("This draft is already sending or has been sent.");
     }
-    const write = commentWrite(draft, text);
+    checkText(text);
+    const args = commentArguments(draft);
+    const reply = draft.parentGuid !== undefined;
     this.sending.add(draft.key);
     try {
-      await this.write(connection, write, cancel);
+      const effect = reply ? "The reply may have been posted" : "The comment may have been posted";
+      const name = `cm codereview comment ${reply ? `reply ${draft.parentGuid!}` : `add ${draft.reviewId}`}`;
+      const output = await this.writeText(cwd, { args, effect, name }, text, cancel);
+      const guid = UUID.exec(output.stdout)?.[0];
+      if (!guid) {
+        throw new ReviewWriteError(`cm did not name the new ${reply ? "reply" : "comment"}. ${effect}; refresh the ` +
+          "review before retrying.", true);
+      }
       this.completed.add(draft.key);
+      return guid;
     } finally {
       this.sending.delete(draft.key);
     }
   }
 
   /**
-   * Adds the cm user to a review's reviewers. Any 2xx is success, but an
-   * answer that names another reviewer is not. What the server answers for
-   * someone who is already a reviewer is not verified, so the caller must not
-   * send a second add while one is in flight: unlike `send`, this sends every
-   * call (ReviewSession keeps one add per review).
+   * Replaces the text of a comment, by its GUID (`cm codereview comment edit`).
+   * cm keeps the comment's type, file, line and changeset, and a review
+   * description's `[description]` prefix, so `text` is only what the reader
+   * sees. The text reaches cm as `send`'s does. Like `addReviewer`, every call
+   * runs: an edit sent twice leaves the same text.
    */
-  public async addReviewer(connection: IReviewConnection, reviewId: number, cancel?: CancellationToken):
+  public async editComment(cwd: string, guid: string, text: string, cancel?: CancellationToken): Promise<void> {
+    checkGuid(guid);
+    checkText(text);
+    await this.writeText(cwd, {
+      args: [ "codereview", "comment", "edit", guid, FROM_STDIN ],
+      effect: "The comment may have been changed",
+      name: `cm codereview comment edit ${guid}`,
+    }, text, cancel);
+  }
+
+  /**
+   * Deletes one comment, by its GUID (`cm codereview comment delete`). cm
+   * reports a comment it could not delete and goes on with the others, and
+   * its help does not say how it exits then; with one GUID, anything it
+   * printed on stderr after a clean exit leaves the result unknown.
+   */
+  public async deleteComment(cwd: string, guid: string, cancel?: CancellationToken): Promise<void> {
+    checkGuid(guid);
+    const effect = "The comment may have been deleted";
+    const output = await this.write(cwd, {
+      args: [ "codereview", "comment", "delete", guid ],
+      effect,
+      name: `cm codereview comment delete ${guid}`,
+    }, cancel);
+    const said = cmMessage({ stderr: output.stderr, stdout: "" });
+    if (said) {
+      throw new ReviewWriteError(`cm said: ${sentence(said)} ${effect}; refresh the review to check.`, true);
+    }
+  }
+
+  /**
+   * Adds the cm user to a review's reviewers (`--users=me`). Unlike `send`,
+   * this sends every call: the caller keeps one add per review in flight
+   * (ReviewSession does).
+   */
+  public async addReviewer(cwd: string, reviewId: number, cancel?: CancellationToken): Promise<void> {
+    checkReviewId(reviewId);
+    await this.write(cwd, {
+      args: [ "codereview", "reviewer", "add", String(reviewId), "--users=me" ],
+      effect: "You may have been added",
+      name: `cm codereview reviewer add ${reviewId}`,
+    }, cancel);
+  }
+
+  /** The cm user's own verdict on a review, which cm takes from a reviewer or a server administrator. */
+  public async setStatus(cwd: string, reviewId: number, status: ReviewStatus, cancel?: CancellationToken):
       Promise<void> {
     checkReviewId(reviewId);
-    const user = connection.user.trim();
-    if (!isEmailAddress(user)) {
-      throw new ReviewWriteError(`"${user}" is not an e-mail address, and Unity Version Control names reviewers ` +
-        "by e-mail address.");
-    }
-    const response = await this.write(connection, {
-      effect: "You may have been added",
-      method: "POST",
-      path: "/reviewers",
-      payload: { reviewers: [user] },
-      reviewId,
-    }, cancel);
-    const reviewer = answeredReviewer(response.body);
-    if (reviewer !== undefined && !sameAddress(reviewer, user)) {
-      throw new ReviewWriteError(`${SERVER} answered with another reviewer. Refresh the review to check whether ` +
-        "you were added.", true);
-    }
-  }
-
-  /** The cm user's own verdict on a review, which only a reviewer can give. */
-  public async setStatus(
-      connection: IReviewConnection,
-      reviewId: number,
-      status: ReviewStatus,
-      cancel?: CancellationToken): Promise<void> {
-    checkReviewId(reviewId);
-    if (!STATUSES.includes(status)) {
+    const verdict = Object.prototype.hasOwnProperty.call(VERDICTS, status) ? VERDICTS[status] : undefined;
+    if (!verdict) {
       throw new ReviewWriteError(`Invalid review status: ${String(status)}`);
     }
-    await this.write(connection, {
+    await this.write(cwd, {
+      args: [ "codereview", "review", String(reviewId), verdict ],
       effect: "Your status may have been set",
-      forbidden: "Only reviewers can set their own status.",
-      method: "PUT",
-      path: `/reviewers/${encodeURIComponent(connection.user.trim())}/status`,
-      payload: { status },
-      reviewId,
+      name: `cm codereview review ${reviewId} ${verdict}`,
     }, cancel);
   }
 
-  /** Settles the organization and the repository's path with reads, then sends the write; resolves a 2xx answer. */
-  private async write(connection: IReviewConnection, write: IWrite, cancel?: CancellationToken):
-      Promise<IWriteResponse> {
-    const organization = await this.organization(connection, cancel);
-    const repository = await this.repositoryPath(connection, organization, write.reviewId, cancel);
-    const url = restUrl(connection.origin, `/api/v1/organizations/${encodeURIComponent(organization)}` +
-      `/repos/${repository}/codereview/${write.reviewId}${write.path}`);
-    let answer: { response: IWriteResponse; token: string };
-    try {
-      answer = await this.exchange(connection, { body: JSON.stringify(write.payload), method: write.method, url },
-        cancel);
-    } catch (error) {
-      throw exchangeError(error, write.effect);
+  private async probe(cmPath: string): Promise<ReviewWriteSupport> {
+    const output = await this.run(cmPath, { args: [ "codereview", "comment", "--usage" ], timeout: 30 * 1000 });
+    if (output.missing) {
+      return { reason: CM_MISSING, supported: false };
     }
-    const { response, token } = answer;
-    if (response.status >= 200 && response.status < 300) {
-      return response;
+    if (output.code === undefined) {
+      return { reason: "cm did not say whether it can write to reviews. Try again.", supported: false };
     }
-    throw writeFailure(response.status, serverMessage(response.body, token), write, connection.repository);
+    return output.code === 0 && /\breply\b/i.test(output.stdout)
+      ? { supported: true }
+      : { reason: UNSUPPORTED, supported: false };
   }
 
   /**
-   * The organization's name in a path: each of cm's names in turn, until
-   * `GET …/organizations/{orgName}/user` answers 200 to one. Kept per origin,
-   * server and user once one has.
+   * Runs a write that takes a comment's text: on stdin, or on Windows in a
+   * temporary UTF-8 file with a byte order mark (see `send`), which is
+   * deleted once cm has ended. `write.args` names stdin (`-commentsfile=-`).
    */
-  private async organization(connection: IReviewConnection, cancel?: CancellationToken): Promise<string> {
-    const key = JSON.stringify([ connection.origin, connection.server, connection.user.trim().toLowerCase() ]);
-    const known = this.organizations.get(key);
-    if (known !== undefined) {
-      return known;
+  private async writeText(cwd: string, write: Omit<IWrite, "stdin" | "textIn">, text: string,
+      cancel?: CancellationToken): Promise<ICmOutput> {
+    if ((this.options.platform ?? process.platform) !== "win32") {
+      return this.write(cwd, { ...write, stdin: text, textIn: "text on stdin" }, cancel);
     }
-    const names = connection.organizations.filter((name, index, all) => !!name.trim() && all.indexOf(name) === index);
-    for (const name of names) {
-      const url = tryUrl(connection.origin, `/api/v1/organizations/${encodeURIComponent(name)}/user`);
-      if (!url) {
-        continue;
-      }
-      const { response } = await this.read(connection, url, cancel);
-      if (response.status === 200) {
-        this.organizations.set(key, name);
-        return name;
-      }
-      if (isUncertain(response.status)) {
-        throw new ReviewWriteError(`${SERVER} returned HTTP ${response.status}. Nothing was changed; try again.`);
-      }
-    }
-    throw new ReviewWriteError("The Unity Version Control REST API did not accept the token for this organization.");
-  }
-
-  /**
-   * The repository's name in a path: `GET …/repos/{repoName}/codereview/{id}`
-   * with each of `repositoryForms` in turn, the next only after a 404. The
-   * form that answered 200 is kept for the repository.
-   */
-  private async repositoryPath(
-      connection: IReviewConnection,
-      organization: string,
-      reviewId: number,
-      cancel?: CancellationToken): Promise<string> {
-    const key = JSON.stringify([ connection.origin, organization, connection.repository ]);
-    const known = this.repositories.get(key);
-    if (known !== undefined) {
-      return known;
-    }
-    for (const form of repositoryForms(connection.repository)) {
-      const url = tryUrl(connection.origin,
-        `/api/v1/organizations/${encodeURIComponent(organization)}/repos/${form}/codereview/${reviewId}`);
-      if (!url) {
-        continue;
-      }
-      const { response, token } = await this.read(connection, url, cancel);
-      if (response.status === 200) {
-        this.repositories.set(key, form);
-        return form;
-      }
-      if (response.status !== 404) {
-        throw readFailure(response.status, serverMessage(response.body, token));
-      }
-    }
-    throw new ReviewWriteError(`The Unity Version Control REST API has no review #${reviewId} in ` +
-      `${connection.repository}, with the repository's name as one path segment or as a path.`);
-  }
-
-  /** A read before a write: it changes nothing whatever happens, so its failure is certain. */
-  private async read(connection: IReviewConnection, url: URL, cancel?: CancellationToken):
-      Promise<{ response: IWriteResponse; token: string }> {
+    const folder = await this.textFolder();
     try {
-      return await this.exchange(connection, { method: "GET", url }, cancel);
-    } catch (error) {
-      if (error instanceof ReviewWriteError) {
-        throw error;
-      }
-      throw new ReviewWriteError(error instanceof ReviewRequestError && error.reason === "cancelled"
-        ? "Cancelled before anything was changed."
-        : `${SERVER} did not answer. Nothing was changed; try again.`);
+      const file = join(folder, "comment.txt");
+      await writeFile(file, `﻿${text}`, { encoding: "utf8", mode: 0o600 }).catch(() => {
+        throw new ReviewWriteError(NO_TEXT_FILE);
+      });
+      return await this.write(cwd, {
+        ...write,
+        args: write.args.map(arg => arg === FROM_STDIN ? `-commentsfile=${file}` : arg),
+        textIn: "text in a temporary file",
+      }, cancel);
+    } finally {
+      await rm(folder, { force: true, recursive: true }).catch(() => undefined);
     }
   }
 
-  /**
-   * Sends a call with the token, and once more with a renewed one when the
-   * answer is 401, which means the server did not process it. Resolves the
-   * last answer and the token it went with.
-   */
-  private async exchange(
-      connection: IReviewConnection,
-      call: Pick<IWriteRequest, "method" | "url" | "body">,
-      cancel?: CancellationToken): Promise<{ response: IWriteResponse; token: string }> {
-    let token = await this.token(connection);
-    let response = await this.transport(authorized(call, token), cancel);
-    if (response.status === 401) {
-      token = await this.token(connection, token);
-      response = await this.transport(authorized(call, token), cancel);
-    }
-    return { response, token };
-  }
-
-  private async token(connection: IReviewConnection, stale?: string): Promise<string> {
-    let token: string;
+  /** A new folder for a comment's text file; see `send`. */
+  private async textFolder(): Promise<string> {
     try {
-      token = await connection.token(stale);
-    } catch (error) {
-      throw new ReviewWriteError(error instanceof Error ? error.message : String(error));
+      return await mkdtemp(join((this.options.tempDir ?? tmpdir)(), "plastic-review-"));
+    } catch {
+      throw new ReviewWriteError(NO_TEXT_FILE);
     }
-    if (!HEADER_TOKEN.test(token)) {
-      throw new ReviewWriteError("cm revealed a token that cannot be sent in a request.");
+  }
+
+  /** Runs one write and resolves what cm printed when it exited cleanly; rejects with a ReviewWriteError otherwise. */
+  private async write(cwd: string, write: IWrite, cancel?: CancellationToken): Promise<ICmOutput> {
+    if (!cwd) {
+      throw new ReviewWriteError("The review workspace is no longer available.");
     }
-    return token;
+    const support = await this.support();
+    if (!support.supported) {
+      throw new ReviewWriteError(support.reason);
+    }
+    this.log(`${write.name}${write.textIn === undefined ? "" : ` (${write.textIn})`}`);
+    const output = await this.run(this.options.cmPath(), { args: write.args, cancel, cwd, stdin: write.stdin });
+    this.log(`${write.name}: ${outcome(output)}`);
+    if (output.code === 0) {
+      return output;
+    }
+    if (output.cwdMissing) {
+      throw new ReviewWriteError("The review workspace's folder no longer exists.");
+    }
+    if (output.missing) {
+      throw new ReviewWriteError(CM_MISSING);
+    }
+    if (output.code !== undefined) {
+      const said = cmMessage(output);
+      if (said && !LOST.test(said)) {
+        throw new ReviewWriteError(sentence(said), false, true);
+      }
+      throw new ReviewWriteError(`${sentence(said ?? `cm exited with code ${output.code}`)} ${write.effect}; refresh ` +
+        "the review before retrying.", true);
+    }
+    if (!output.started) {
+      throw new ReviewWriteError(output.killed === "cancelled"
+        ? "Cancelled before anything was sent."
+        : "cm could not be started. Check the plastic-scm.cmConfiguration.cmPath setting.");
+    }
+    const what = output.killed === "cancelled" ? "Cancelled before cm finished."
+      : output.killed === "timeout" ? "cm did not finish in time."
+        : "cm ended without a result.";
+    throw new ReviewWriteError(`${what} ${write.effect}; refresh the review before retrying.`, true);
+  }
+
+  private log(message: string): void {
+    this.options.log?.(message);
   }
 }
 
-/** A comment's or a reply's write; validated before anything is sent. */
-function commentWrite(draft: IReviewDraft, text: string): IWrite {
-  if (!text.trim() || text.length > 64000) {
+/** How a run ended, for the log; nothing cm printed. */
+function outcome(output: ICmOutput): string {
+  if (output.code !== undefined) {
+    return `exit code ${output.code}`;
+  }
+  return output.missing ? "cm not found" : output.killed ?? (output.started ? "ended without an exit code"
+    : "not started");
+}
+
+/** A comment's text as cm takes it: not blank, at most 64,000 characters. */
+function checkText(text: string): void {
+  if (!text.trim() || text.length > MAX_TEXT) {
     throw new ReviewWriteError("Enter a comment of at most 64,000 characters.");
   }
-  checkReviewId(draft.reviewId);
-  if (draft.parentId !== undefined) {
-    if (!Number.isSafeInteger(draft.parentId) || draft.parentId < 0) {
-      throw new ReviewWriteError("Invalid reply target.");
-    }
-    return {
-      effect: "The reply may have been posted",
-      method: "POST",
-      path: `/comment/${draft.parentId}/reply`,
-      payload: { commentText: text },
-      reviewId: draft.reviewId,
-    };
+}
+
+/** A comment's GUID, whole: it is one argument of cm, and nothing else may ride along. */
+function checkGuid(guid: string): void {
+  if (!WHOLE_UUID.test(guid)) {
+    throw new ReviewWriteError("This comment cannot be changed from here yet. Refresh the review first.");
   }
-  const anchors = [ draft.revisionId, draft.changesetId, draft.location ];
-  if (anchors.some(value => !Number.isSafeInteger(value) || value < 0)) {
-    throw new ReviewWriteError("This comment does not have a valid pinned revision and line.");
-  }
-  // Experimental: cm uses zero-based locations; the REST API's string encoding of a line is unverified.
-  return {
-    effect: "The comment may have been posted",
-    method: "POST",
-    path: "/comment",
-    payload: {
-      changesetId: draft.changesetId,
-      commentText: text,
-      locationSpec: String(draft.location),
-      revisionId: draft.revisionId,
-      type: "Comment",
-    },
-    reviewId: draft.reviewId,
-  };
 }
 
 function checkReviewId(reviewId: number): void {
@@ -461,103 +415,7 @@ function checkReviewId(reviewId: number): void {
   }
 }
 
-function tryUrl(origin: string, path: string): URL | undefined {
-  try {
-    return restUrl(origin, path);
-  } catch {
-    return undefined;
-  }
-}
-
-function authorized(call: Pick<IWriteRequest, "method" | "url" | "body">, token: string): IWriteRequest {
-  const headers: { [name: string]: string } = { Accept: "application/json", Authorization: `Bearer ${token}` };
-  if (call.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  return { ...call, headers };
-}
-
-/** A status after which the request may or may not have taken effect. */
-function isUncertain(status: number): boolean {
-  return status >= 500 || status === 0 || status === 408;
-}
-
-/** A write's answer that is not a 2xx, as a message safe to show. */
-function writeFailure(status: number, message: string | undefined, write: IWrite, repository: string):
-    ReviewWriteError {
-  if (status === 401 || status === 403) {
-    return new ReviewWriteError([ refused(message), status === 403 ? write.forbidden : undefined ]
-      .filter(Boolean).join(" "));
-  }
-  if (status === 404) {
-    return new ReviewWriteError(`${SERVER} has no review #${write.reviewId} in ${repository}.`);
-  }
-  if (status === 400) {
-    return new ReviewWriteError(message
-      ? `${SERVER} rejected the request: ${sentence(message)}`
-      : `${SERVER} rejected the request (HTTP 400).`);
-  }
-  if (isUncertain(status)) {
-    return new ReviewWriteError(
-      `${SERVER} returned HTTP ${status}. ${write.effect}; refresh the review before retrying.`, true);
-  }
-  return new ReviewWriteError(`${SERVER} refused the request (HTTP ${status})` +
-    (message ? `: ${sentence(message)}` : "."));
-}
-
-/** A read's answer that is neither 200 nor 404: nothing was written. */
-function readFailure(status: number, message: string | undefined): ReviewWriteError {
-  if (status === 401 || status === 403) {
-    return new ReviewWriteError(refused(message));
-  }
-  return new ReviewWriteError(isUncertain(status)
-    ? `${SERVER} returned HTTP ${status}. Nothing was changed; try again.`
-    : `${SERVER} refused the request (HTTP ${status})${message ? `: ${sentence(message)}` : "."}`);
-}
-
-function refused(message: string | undefined): string {
-  return message ? `${SERVER} refused the request: ${sentence(message)}` : `${SERVER} refused the request.`;
-}
-
 /** The text with a full stop, unless it ends a sentence already. */
 function sentence(text: string): string {
   return /[.!?]$/.test(text) ? text : `${text}.`;
-}
-
-/** An exchange that ended without an answer, as a message safe to show; `effect` says what may have happened. */
-function exchangeError(error: unknown, effect: string): ReviewWriteError {
-  if (error instanceof ReviewWriteError) {
-    return error;
-  }
-  if (error instanceof ReviewRequestError) {
-    if (!error.sent) {
-      return new ReviewWriteError("Cancelled before anything was sent.");
-    }
-    const what = error.reason === "interrupted" ? "The response was interrupted."
-      : error.reason === "cancelled" ? "Cancelled before the Unity Version Control server answered."
-        : "No complete response was received.";
-    return new ReviewWriteError(`${what} ${effect}; refresh the review before retrying.`, true);
-  }
-  return new ReviewWriteError(
-    `The request ended without a confirmed result. ${effect}; refresh the review before retrying.`, true);
-}
-
-/** The reviewer a CodeReviewerModel answer names, `{ "reviewer": "<name>", … }`; undefined for any other body. */
-function answeredReviewer(body: string): string | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-  return isRecord(value) && typeof value.reviewer === "string" ? value.reviewer : undefined;
-}
-
-function isRecord(value: unknown): value is { [key: string]: unknown } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** E-mail addresses compare without case: cm and the server may spell one differently. */
-function sameAddress(a: string, b: string): boolean {
-  return !!a.trim() && a.trim().toLowerCase() === b.trim().toLowerCase();
 }

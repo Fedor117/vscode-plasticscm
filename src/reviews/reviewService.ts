@@ -403,7 +403,7 @@ export class ReviewService implements Disposable {
     if (!fresh) {
       throw new Error("This review no longer exists or is not accessible.");
     }
-    const updates: IReviewUpdates = { newComments: 0, removedComments: 0 };
+    const updates: IReviewUpdates = { comments: [], newComments: 0, removedComments: 0 };
     if (fresh.status !== review.status) {
       updates.status = fresh.status;
     }
@@ -416,16 +416,18 @@ export class ReviewService implements Disposable {
     if (discussions) {
       const known = commentVersions(discussions.threads);
       const current = commentVersions(groupReviewThreads((await this.readComments(review.id)).comments));
-      current.forEach((version, id) => {
-        if (known.get(id) !== version) {
+      current.forEach((comment, id) => {
+        if (known.get(id)?.version !== comment.version) {
           updates.newComments++;
+          updates.comments.push({ id, owner: comment.owner });
         }
       });
-      known.forEach((_version, id) => {
+      known.forEach((_comment, id) => {
         if (!current.has(id)) {
           updates.removedComments++;
         }
       });
+      updates.comments.sort((a, b) => a.id - b.id);
     }
     const changed = updates.status !== undefined || updates.newHead !== undefined ||
       updates.newComments > 0 || updates.removedComments > 0;
@@ -699,13 +701,14 @@ function flagMerge(changeset: IHistoryChangeset, files: IReviewFiles): IReviewCh
   return { ...changeset, isMerge: !!merge, mergeSourceBranch: merge?.sourceBranch };
 }
 
-/** What a comment looked like, for telling an edit (or an applied change) from no change. */
-function commentVersions(threads: readonly IReviewThread[]): Map<number, string> {
-  const versions = new Map<number, string>();
+/** What a comment looked like, for telling an edit (or an applied change) from no change, and who wrote it. */
+function commentVersions(threads: readonly IReviewThread[]): Map<number, { version: string; owner: string }> {
+  const versions = new Map<number, { version: string; owner: string }>();
   for (const thread of threads) {
     for (const comment of thread.comments) {
-      const { appliedInChangesetId, location, parentId, revisionId, text, type } = comment;
-      versions.set(comment.id, JSON.stringify([ text, type, appliedInChangesetId, revisionId, location, parentId ]));
+      const { appliedInChangesetId, location, owner, parentId, revisionId, text, type } = comment;
+      const version = JSON.stringify([ text, type, appliedInChangesetId, revisionId, location, parentId ]);
+      versions.set(comment.id, { owner, version });
     }
   }
   return versions;

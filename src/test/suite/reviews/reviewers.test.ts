@@ -11,54 +11,47 @@ import {
   scenarioAnswer,
   WORKSPACE_ROOT,
 } from "./fixtures";
-import { CancellationToken, CancellationTokenSource, OutputChannel } from "vscode";
-import { cmFailure, FakeTokenCm } from "./tokenFixtures";
-import { CONSENT_MESSAGE, consentDetail, ReviewTokens } from "../../../reviews/reviewTokens";
-import { fakePostingEditors, memorySecrets, until } from "./editorFixtures";
-import { FakeRest, IRestCall, json } from "./restFixtures";
+import { CancellationTokenSource, OutputChannel } from "vscode";
+import { exited, FakeCm, IFakeCmCall, OLD_USAGE } from "./cmFixtures";
+import { fakePostingEditors, until } from "./editorFixtures";
 import { IReviewComment, IReviewDiscussions, ReviewStatus } from "../../../reviews/models";
 import { IReviewSessionUi, IReviewWorkspace, ReviewSession } from "../../../reviews/reviewSession";
-import { IWriteRequest, IWriteResponse, ReviewRequestError, ReviewWriter } from "../../../reviews/reviewWriter";
 import { expect } from "chai";
+import { ICmOutput } from "../../../reviews/cmRunner";
 import { IReviewLink } from "../../../reviews/reviewLinks";
 import { reviewerStates } from "../../../reviews/timeline";
 import { ReviewPosting } from "../../../reviews/reviewPosting";
 import { ReviewService } from "../../../reviews/reviewService";
+import { ReviewWriter } from "../../../reviews/reviewWriter";
 
 /**
  * Add Me as Reviewer and Set Review Status…, on the fixture shell with
- * experimental posting on a fake cm for tokens and a fake Server REST API:
- * nothing runs cm or reaches the network, and cm `codereview` calls are
- * counted. Every name, id and token here is made up.
+ * review writes on a fake one-shot cm: nothing runs cm or reaches a
+ * server, and the shell's `codereview` calls are counted. Every name and id
+ * here is made up.
  */
 
 const CONFIG = { cmPath: "cm", millisCommandTimeout: 1000, millisToStop: 1000, millisToWaitUntilUp: 1000 };
 const WORKSPACE: IReviewWorkspace = { id: "wk", name: "Nimbus", path: WORKSPACE_ROOT, repository: REPOSITORY };
 const OTHER = "sam.rivera@example.com";
-const SERVER = "acme-studio@unity";
-const API = "/api/v1/organizations/acme-studio/repos/Nimbus%2FNimbus/codereview/12831";
 const LINK = "plastic://acme-studio@unity/repos/Nimbus/Nimbus/code-reviews/12831";
-const ADMIN = "Your organization hasn't enabled personal access tokens for you. An organization admin can allow " +
-  `them with: cm accesstoken admin allowlist add --users=${ME} ${SERVER}`;
-const DISABLED = "Personal access tokens aren't enabled for acme-studio@unity. Ask an organization admin to enable " +
-  "them.";
-/** A region `cm getconfig organization` could print that is none of the REST API's documented servers. */
-const UNDOCUMENTED = "acme-studio|unity|-1|plastic.example.test";
-const SET_ANYWAY = "Set Status Anyway";
-const CREATE_AND_ADD = "Create Token and Add";
-const CREATE_AND_SET = "Create Token and Set";
 const WITHOUT_ADDING = "Set Status Without Adding";
-const WITH_CM = "Set Review Status with cm";
-const OPEN_IN_DESKTOP = "Open in Unity Version Control";
-const COPY_COMMAND = "Copy Command";
+const REVIEW_STATUS = "Set the Review's Status";
+const UNSUPPORTED = "Review writes need Unity Version Control client 11.0.16.10512 or newer.";
+const NO_REVIEW = "The code review 12831 does not exist.";
+const NOT_REVIEWER = "You are not a reviewer of the code review 12831.";
+/** cm's flag for each verdict, and the status it stands for. */
+const VERDICTS: { [flag: string]: ReviewStatus } = {
+  "--reviewed": "Reviewed",
+  "--rework-required": "Rework required",
+  "--under-review": "Under review",
+};
 const MARKERS: { [status in ReviewStatus]: string } = {
   "Reviewed": "status-reviewed",
   "Rework required": "status-rework-required",
   "Under review": "status-under-review",
 };
-const DRAFT = {
-  changesetId: 1, key: "draft", location: 0, path: "/A.cs", reviewId: 1, revisionId: 1, workspaceId: "wk",
-};
+const DRAFT = { key: "draft", location: 0, path: "/A.cs", reviewId: 1, revisionId: 1, workspaceId: "wk" };
 
 function timeline(id: number, date: string, text: string, owner = OTHER): IReviewComment {
   return comment({
@@ -78,8 +71,8 @@ interface IWorld {
   user: string;
   comments: IReviewComment[];
   /**
-   * `add` for every add the REST API was sent, `verdict <status>` for every verdict, `codereview <args>` for every
-   * status write through cm, in order.
+   * `add` for every add the one-shot cm was run for, `verdict <status>` for every verdict, `codereview <args>` for
+   * every status write through the cm shell, in order.
    */
   events: string[];
 }
@@ -118,40 +111,36 @@ interface IHarness {
   posting: ReviewPosting;
   shell: ReviewShell;
   state: IWorld;
-  cm: FakeTokenCm;
-  rest: FakeRest;
+  cm: FakeCm;
   lines: string[];
   links: IReviewLink[];
   ui: {
     confirms: Array<{ message: string; detail: string }>;
     choices: Array<{ message: string; detail: string; actions: readonly string[] }>;
-    alerts: Array<{ message: string; actions: readonly string[] }>;
     errors: string[];
     infos: string[];
     statuses: string[];
     notifications: string[];
     opened: string[];
-    copied: string[];
     answer: boolean;
     choice?: string;
-    alertChoice?: string;
     cancel?: CancellationTokenSource;
   };
   setting: boolean;
 }
 
-type Respond = (call: IWriteRequest, cancel?: CancellationToken) => Promise<IWriteResponse>;
+/** What the fake cm answers a write instead of doing it; undefined to do it. */
+type Respond = (call: IFakeCmCall, cancel?: { onCancellationRequested(listener: () => void): unknown }) =>
+  ICmOutput | Promise<ICmOutput> | undefined;
 
 function harness(options: {
   setting?: boolean;
-  /** Whether the user agreed to a token before; by default they did. */
-  consent?: boolean;
   state?: Partial<IWorld>;
-  /** What `cm getconfig organization` prints; by default a documented region. */
-  organization?: string;
-  /** What the fake REST API answers a write; by default it does what it is asked, as the real one would. */
+  /** What `cm codereview comment --usage` prints; by default what a cm with the review write commands does. */
+  usage?: ICmOutput;
+  /** What the fake cm answers a write; by default it does what it is asked, as the real one would. */
   respond?: Respond;
-  /** The fake REST API answers writes only once this resolves; by default it answers at once. */
+  /** The fake cm answers writes only once this resolves; by default it answers at once. */
   hold?: Promise<void>;
 } = {}): IHarness {
   const state = world(options.state);
@@ -159,56 +148,35 @@ function harness(options: {
   shell.answer = answer(state);
   const lines: string[] = [];
   const channel = { appendLine: (line: string) => lines.push(line) } as unknown as OutputChannel;
-  const cm = new FakeTokenCm();
-  if (options.organization) {
-    cm.organization = options.organization;
+  const cm = new FakeCm();
+  if (options.usage) {
+    cm.usage = options.usage;
   }
-  const rest = new FakeRest();
-  // As the service would: an add writes the request row, and a verdict its status row, both as the cm user's own.
-  rest.onWrite = call => {
-    if (call.path.endsWith("/reviewers")) {
-      state.comments = state.comments.concat(
-        timeline(13001, "2026-09-22T17:55:00+01:00", `[requested-review-from]${ME}`, ME));
-    } else if (call.path.endsWith("/status")) {
-      const status = (call.body as { status: ReviewStatus }).status;
-      state.comments = state.comments.concat(timeline(13005, "2026-09-22T17:56:00+01:00", `[${MARKERS[status]}]`, ME));
-    }
-  };
-  const writer = new ReviewWriter(async (call, cancel) => {
-    if (call.method === "GET") {
-      return rest.transport(call, cancel);
-    }
-    state.events.push(call.method === "POST" ? "add"
-      : `verdict ${(JSON.parse(call.body!) as { status: string }).status}`);
+  cm.answer = async (call, run) => {
+    const verdict = call.args[1] === "review" ? VERDICTS[call.args[3]] : undefined;
+    state.events.push(verdict ? `verdict ${verdict}` : "add");
     await options.hold;
-    return options.respond ? options.respond(call, cancel) : rest.transport(call, cancel);
-  });
-  const consent = new Map<string, unknown>();
-  const tokens = new ReviewTokens(memorySecrets(), {
-    get: <T>(key: string) => consent.get(key) as T | undefined,
-    update: (key: string, value: unknown) => {
-      consent.set(key, value);
-      return Promise.resolve();
-    },
-  }, cm);
-  const test = { cm, lines, links: [] as IReviewLink[], rest, setting: options.setting ?? true, shell, state } as
-    IHarness;
-  test.posting = new ReviewPosting(tokens, {
+    const refused = await options.respond?.(call, run.cancel);
+    if (refused) {
+      return refused;
+    }
+    // As the server would: an add writes the request row, and a verdict its status row, both as the cm user's own.
+    state.comments = state.comments.concat(verdict
+      ? timeline(13005, "2026-09-22T17:56:00+01:00", `[${MARKERS[verdict]}]`, ME)
+      : timeline(13001, "2026-09-22T17:55:00+01:00", `[requested-review-from]${ME}`, ME));
+    return undefined;
+  };
+  const writer = new ReviewWriter({ cmPath: () => CONFIG.cmPath, log: line => lines.push(line), run: cm.run });
+  const test = { cm, lines, links: [] as IReviewLink[], setting: options.setting ?? true, shell, state } as IHarness;
+  test.posting = new ReviewPosting(writer, {
+    reloadDiscussions: (workspaceId, reviewId) => test.session.reloadDiscussions(workspaceId, reviewId),
     repository: id => (id === "wk" ? REPOSITORY : undefined),
-    user: id => test.session.service(id)?.whoami() ?? Promise.reject(new Error("No such workspace.")),
-  }, fakePostingEditors(DRAFT), { setting: () => test.setting, trusted: () => true, writer });
-  if (options.consent !== false) {
-    void tokens.consent(SERVER, ME);
-  }
+    root: id => (id === "wk" ? WORKSPACE_ROOT : undefined),
+  }, fakePostingEditors(DRAFT), { setting: () => test.setting, trusted: () => true });
   test.ui = {
-    alerts: [], answer: false, choices: [], confirms: [], copied: [], errors: [], infos: [], notifications: [],
-    opened: [], statuses: [],
+    answer: false, choices: [], confirms: [], errors: [], infos: [], notifications: [], opened: [], statuses: [],
   };
   const ui: IReviewSessionUi = {
-    alert: (message, actions) => {
-      test.ui.alerts.push({ actions, message });
-      return Promise.resolve(test.ui.alertChoice);
-    },
     cancellable: (title, task) => {
       test.ui.notifications.push(title);
       test.ui.cancel = new CancellationTokenSource();
@@ -222,21 +190,20 @@ function harness(options: {
       test.ui.confirms.push({ detail, message });
       return Promise.resolve(test.ui.answer);
     },
-    copy: text => {
-      test.ui.copied.push(text);
-      return Promise.resolve();
-    },
     error: message => {
       test.ui.errors.push(message);
     },
     info: message => {
       test.ui.infos.push(message);
     },
+    loadUpdates: () => undefined,
+    notify: () => Promise.resolve(undefined),
     openExternal: link => {
       test.ui.opened.push(link);
       return Promise.resolve(true);
     },
     progress: (_viewId, task) => task(),
+    showDiscussions: () => undefined,
     status: message => {
       test.ui.statuses.push(message);
     },
@@ -255,7 +222,6 @@ function harness(options: {
     reviewers: {
       access: workspaceId => posting.access(workspaceId),
       add: (workspaceId, reviewId, cancel) => posting.addReviewer(workspaceId, reviewId, cancel),
-      consent: workspaceId => posting.consent(workspaceId),
       setStatus: (workspaceId, reviewId, status) => posting.setMyStatus(workspaceId, reviewId, status),
       settingOn: () => posting.settingOn(),
     },
@@ -288,20 +254,20 @@ function statusWrites(test: IHarness): string[] {
   return test.shell.calls.filter(call => call.command === "codereview").map(call => call.args[2]);
 }
 
-/** What the token cm was asked: `accesstoken` subcommands only. */
-function tokenWork(test: IHarness): string[] {
-  return test.cm.calls.filter(call => call[0] === "accesstoken").map(call => call[1]);
+/** The arguments of each write the one-shot cm was run for, in the workspace's folder. */
+function cmWrites(test: IHarness): string[][] {
+  const writes = test.cm.writes();
+  expect(writes.every(call => call.cwd === WORKSPACE_ROOT && call.stdin === undefined)).to.equal(true);
+  return writes.map(call => call.args);
 }
 
-/** From now on cm refuses to create a token, and says `why`. */
-function refuseTokens(test: IHarness, why: string): void {
-  test.cm.answer = args => (args[1] === "create" ? cmFailure(why) : undefined);
+/** cm refuses with `message`, as it prints its own errors. */
+function refuse(message: string): Respond {
+  return () => exited(1, "", `Error: ${message}\n`);
 }
 
-/** Each write the REST API received, as `METHOD path-after-the-review`. */
-function restWrites(test: IHarness): string[] {
-  return test.rest.writes().map((call: IRestCall) => `${call.method} ${call.path.substring(API.length)}`);
-}
+/** cm is killed at its timeout: what it did is not known. */
+const TIMED_OUT: Respond = () => ({ code: undefined, killed: "timeout", started: true, stderr: "", stdout: "" });
 
 async function activated(options: Parameters<typeof harness>[0] = {}): Promise<IHarness> {
   const test = harness(options);
@@ -310,7 +276,7 @@ async function activated(options: Parameters<typeof harness>[0] = {}): Promise<I
   return test;
 }
 
-describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no network)", () => {
+describe("Add Me as Reviewer and Set Review Status… (fake cm, no server)", () => {
   const tests: IHarness[] = [];
   const track = (test: IHarness): IHarness => {
     tests.push(test);
@@ -322,24 +288,24 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
   }));
 
   describe("Set Review Status…", () => {
-    it("adds a user who can be added, then gives their own verdict through the REST API and reads the review back",
+    it("adds a user who can be added, then gives their own verdict with cm and reads the review back",
       async () => {
         const test = track(await activated());
         expect(test.session.canAddMe()).to.equal(true);
-        // As the service might: the verdict changes the review's status, which only cm's read-back shows here.
-        const write = test.rest.onWrite;
-        test.rest.onWrite = call => {
-          write?.(call);
-          test.state.status = call.path.endsWith("/status") ? "Rework required" : test.state.status;
+        // As the server might: the verdict changes the review's status, which only the read-back shows here.
+        const write = test.cm.answer!;
+        test.cm.answer = async (call, run) => {
+          const answered = await write(call, run);
+          test.state.status = call.args[1] === "review" ? "Rework required" : test.state.status;
+          return answered;
         };
         const fresh = await test.session.setStatus("wk", test.session.active!.review, "Rework required");
         expect([ fresh?.id, fresh?.status ]).to.deep.equal([ BRANCH_REVIEW_ID, "Rework required" ]);
         expect(test.session.active!.review.status).to.equal("Rework required");
         expect(test.state.events).to.deep.equal([ "add", "verdict Rework required" ]);
-        expect(restWrites(test))
-          .to.deep.equal([ "POST /reviewers", `PUT /reviewers/${encodeURIComponent(ME)}/status` ]);
-        expect(test.rest.writes().map(call => call.body)).to.deep.equal([
-          { reviewers: [ME] }, { status: "Rework required" },
+        expect(cmWrites(test)).to.deep.equal([
+          [ "codereview", "reviewer", "add", "12831", "--users=me" ],
+          [ "codereview", "review", "12831", "--rework-required" ],
         ]);
         expect(statusWrites(test)).to.deep.equal([]);
         expect(test.ui.notifications).to.deep.equal(["Adding you as a reviewer on review #12831…"]);
@@ -349,13 +315,15 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
         const me = reviewerStates(discussions(test).timeline, test.session.active!.review).find(row => row.user === ME);
         expect([ me?.request?.id, me?.verdict?.id, me?.state ]).to.deep.equal([ 13001, 13005, "reworkRequired" ]);
         expect(test.session.canAddMe()).to.equal(false);
-        expect(tokenWork(test)).to.deep.equal([ "create", "reveal" ]);
-        for (const token of test.cm.revealed) {
-          expect(test.lines.join("\n")).not.to.contain(token);
-        }
+        expect(test.lines.filter(line => line.startsWith("cm "))).to.deep.equal([
+          "cm codereview reviewer add 12831",
+          "cm codereview reviewer add 12831: exit code 0",
+          "cm codereview review 12831 --rework-required",
+          "cm codereview review 12831 --rework-required: exit code 0",
+        ]);
       });
 
-    it("gives a requested reviewer's verdict through the REST API without a question, and adds no one", async () => {
+    it("gives a requested reviewer's verdict with cm without a question, and adds no one", async () => {
       const test = track(await activated({ state: { comments: world().comments.concat(REQUESTED) }}));
       const review = test.session.active!.review;
       expect(await test.session.statusPlan("wk", review))
@@ -369,9 +337,18 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       test.ui.answer = true;
       await test.session.setStatus("wk", review, "Reviewed");
       expect(test.state.events).to.deep.equal(["verdict Reviewed"]);
+      expect(cmWrites(test)).to.deep.equal([[ "codereview", "review", "12831", "--reviewed" ]]);
       expect(test.ui.choices).to.deep.equal([]);
       expect(test.ui.notifications).to.deep.equal([]);
       expect(test.ui.statuses).to.deep.equal(["Your status on review #12831: Reviewed"]);
+    });
+
+    it("adds a cm user whose name is not an e-mail address: cm knows who it is signed in as", async () => {
+      const test = track(await activated({ state: { user: "dana" }}));
+      expect(await test.session.statusPlan("wk", test.session.active!.review))
+        .to.deep.equal({ add: true, current: "Under review", kind: "personal", user: "dana" });
+      expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(true);
+      expect(cmWrites(test)).to.deep.equal([[ "codereview", "reviewer", "add", "12831", "--users=me" ]]);
     });
 
     it("starts the picker from the user's own verdict on the personal route, and the review's on cm's", async () => {
@@ -394,19 +371,18 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
         .to.deep.equal({ current: "Under review", kind: "cm" });
     });
 
-    it("sets the status with cm for the author and the assignee, with no token work", async () => {
+    it("sets the review's status through the cm shell for the author and the assignee", async () => {
       for (const people of [{ owner: ME }, { assignee: ME }]) {
         const test = track(await activated({ state: people }));
         expect(test.session.canAddMe()).to.equal(false);
         await test.session.setStatus("wk", test.session.active!.review, "Rework required");
         expect(test.state.events, JSON.stringify(people)).to.deep.equal(["codereview --status=Rework required"]);
         expect(test.ui.choices).to.deep.equal([]);
-        expect(tokenWork(test)).to.deep.equal([]);
-        expect(test.rest.calls).to.deep.equal([]);
+        expect(test.cm.writes()).to.deep.equal([]);
       }
     });
 
-    it("with the setting off, sets the status as before: no question, no add, no token and no extra cm query",
+    it("with the setting off, sets the status as before: no question, no add, and no cm run but the shell's",
       async () => {
         const test = track(await activated({ setting: false }));
         const before = test.shell.calls.length;
@@ -419,154 +395,29 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
         expect(test.cm.calls).to.deep.equal([]);
       });
 
-    it("without a token asks once to create one and add, or to set the status with cm, which needs no token",
+    it("sets the review's status through the cm shell, unasked, where cm is older than the review write commands",
       async () => {
-        const test = track(await activated({ consent: false }));
-        const review = () => test.session.active!.review;
-        expect(await test.session.setStatus("wk", review(), "Rework required")).to.equal(undefined);
-        expect(test.ui.choices).to.deep.equal([{
-          actions: [ CREATE_AND_ADD, WITHOUT_ADDING ],
-          detail: `Adding yourself needs a personal access token. ${consentDetail(SERVER)}`,
-          message: "You're not a reviewer on #12831. Add yourself first?",
-        }]);
-        expect(test.state.events).to.deep.equal([]);
-
-        test.ui.choice = WITHOUT_ADDING;
-        await test.session.setStatus("wk", review(), "Rework required");
-        expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
-        expect(tokenWork(test)).to.deep.equal([]);
-        expect(test.rest.calls).to.deep.equal([]);
-
-        test.ui.choice = CREATE_AND_ADD;
-        expect((await test.session.setStatus("wk", review(), "Rework required"))?.id).to.equal(BRANCH_REVIEW_ID);
-        expect(test.state.events.slice(1)).to.deep.equal([ "add", "verdict Rework required" ]);
-        expect(tokenWork(test)).to.deep.equal([ "create", "reveal" ]);
-        expect(test.ui.choices).to.have.length(3);
-        expect(test.ui.confirms).to.deep.equal([]);
-        expect(test.session.canAddMe()).to.equal(false);
-      });
-
-    it("puts the Reviewed warning in the one question when there is no token", async () => {
-      const test = track(await activated({ consent: false }));
-      expect(await test.session.setStatus("wk", test.session.active!.review, "Reviewed")).to.equal(undefined);
-      expect(test.ui.confirms).to.deep.equal([]);
-      expect(test.ui.choices.map(choice => choice.detail)).to.deep.equal([
-        "Marking it Reviewed: 1 change request is still pending. 5 of 5 files are not viewed.\n" +
-        `Adding yourself needs a personal access token. ${consentDetail(SERVER)}`,
-      ]);
-      expect(statusWrites(test)).to.deep.equal([]);
-    });
-
-    it("asks a requested reviewer without a token whether to create one, or to set the review's status with cm",
-      async () => {
-        const test = track(await activated({ consent: false, state: { comments: world().comments.concat(REQUESTED) }}));
-        const review = () => test.session.active!.review;
-        test.ui.choice = WITH_CM;
-        await test.session.setStatus("wk", review(), "Rework required");
-        expect(test.ui.choices).to.deep.equal([{
-          actions: [ CREATE_AND_SET, WITH_CM ],
-          detail: `Your own status needs a personal access token. ${consentDetail(SERVER)}`,
-          message: "Set your own status on #12831?",
-        }]);
-        expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
-        expect(tokenWork(test)).to.deep.equal([]);
-
-        test.ui.choice = CREATE_AND_SET;
-        await test.session.setStatus("wk", review(), "Rework required");
-        expect(test.state.events.slice(1)).to.deep.equal(["verdict Rework required"]);
-        expect(tokenWork(test)).to.deep.equal([ "create", "reveal" ]);
-      });
-
-    it("where cm may not create a token, offers the status with cm or the desktop app, from the first try on",
-      async () => {
-        const test = track(await activated());
-        refuseTokens(test, "You don't have permission to create personal access tokens.");
-        const review = () => test.session.active!.review;
-        const refused = {
-          actions: [ WITHOUT_ADDING, OPEN_IN_DESKTOP ], detail: ADMIN,
-          message: "Couldn't add you as a reviewer on review #12831.",
-        };
-        // The first try learns it from cm, when the add asks for the token, and asks as later tries do.
-        expect(await test.session.setStatus("wk", review(), "Rework required")).to.equal(undefined);
-        expect(test.ui.choices).to.deep.equal([refused]);
-        expect(test.state.events).to.deep.equal([]);
-        expect(test.ui.errors).to.deep.equal([]);
-        test.ui.choice = OPEN_IN_DESKTOP;
-        expect(await test.session.setStatus("wk", review(), "Rework required")).to.equal(undefined);
-        expect(test.ui.choices).to.deep.equal([ refused, refused ]);
-        expect(test.ui.opened).to.deep.equal([LINK]);
-        expect(test.state.events).to.deep.equal([]);
-        test.ui.choice = WITHOUT_ADDING;
-        await test.session.setStatus("wk", review(), "Rework required");
-        expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
-        expect(tokenWork(test)).to.deep.equal(["create"]);
-        expect(test.rest.calls).to.deep.equal([]);
-      });
-
-    it("offers the first time Set Status Without Adding when cm refuses the token for the add", async () => {
-      const test = track(await activated());
-      refuseTokens(test, "Personal access tokens are not enabled.");
-      test.ui.choice = WITHOUT_ADDING;
-      expect((await test.session.setStatus("wk", test.session.active!.review, "Rework required"))?.status)
-        .to.equal("Rework required");
-      expect(test.ui.choices.map(choice => [ choice.detail, choice.actions ])).to.deep.equal([
-        [ DISABLED, [ WITHOUT_ADDING, OPEN_IN_DESKTOP ]],
-      ]);
-      expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
-    });
-
-    it("offers a requested reviewer the status with cm when cm refuses the token, then uses cm unasked", async () => {
-      const test = track(await activated({ state: { comments: world().comments.concat(REQUESTED) }}));
-      refuseTokens(test, "Personal access tokens are not enabled.");
-      const review = () => test.session.active!.review;
-      const message = "Couldn't set your own status on review #12831.";
-      const refused = { actions: [ WITH_CM, OPEN_IN_DESKTOP ], detail: DISABLED, message };
-      // The first try learns it from cm: nothing is written unless the user picks cm.
-      expect(await test.session.setStatus("wk", review(), "Rework required")).to.equal(undefined);
-      expect(test.ui.choices).to.deep.equal([refused]);
-      expect(test.state.events).to.deep.equal([]);
-      // Picked before cm refused, the personal route still offers cm.
-      test.ui.choice = WITH_CM;
-      expect((await test.session.setStatus("wk", review(), "Rework required", {
-        add: false, current: "Under review", kind: "personal", user: ME,
-      }))?.status).to.equal("Rework required");
-      expect(test.ui.choices).to.deep.equal([ refused, refused ]);
-      expect(test.ui.errors).to.deep.equal([]);
-      expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
-      // Known now: the review's status with cm, unasked.
-      expect(await test.session.statusPlan("wk", review())).to.deep.equal({ current: "Rework required", kind: "cm" });
-      await test.session.setStatus("wk", review(), "Under review");
-      expect(test.state.events.slice(1)).to.deep.equal(["codereview --status=Under review"]);
-      expect(test.ui.choices).to.have.length(2);
-      expect(tokenWork(test)).to.deep.equal(["create"]);
-    });
-
-    it("sets the status with cm, unasked and with no token work, where the region is not a documented server",
-      async () => {
-        const test = track(await activated({ organization: UNDOCUMENTED }));
+        const test = track(await activated({ usage: exited(0, OLD_USAGE) }));
         const review = () => test.session.active!.review;
         expect(await test.session.statusPlan("wk", review())).to.deep.equal({ current: "Under review", kind: "cm" });
         await test.session.setStatus("wk", review(), "Rework required");
         expect(test.state.events).to.deep.equal(["codereview --status=Rework required"]);
         expect([ ...test.ui.choices, ...test.ui.confirms ]).to.deep.equal([]);
-        expect(tokenWork(test)).to.deep.equal([]);
-        expect(test.rest.calls).to.deep.equal([]);
+        expect(test.cm.writes()).to.deep.equal([]);
       });
 
-    it("asks before setting the status with cm when the add fails for sure, and writes nothing on Cancel",
+    it("asks before setting the status without adding when cm refuses the add, and writes nothing on Cancel",
       async () => {
-        const test = track(await activated({ respond: () => Promise.resolve(json(404, {})) }));
+        const test = track(await activated({ respond: refuse(NO_REVIEW) }));
         const review = test.session.active!.review;
         expect(await test.session.setStatus("wk", review, "Rework required")).to.equal(undefined);
         expect(test.ui.choices).to.deep.equal([{
-          actions: [SET_ANYWAY],
-          detail: "The Unity Version Control server has no review #12831 in Nimbus/Nimbus.",
-          message: "Couldn't add you as a reviewer on review #12831.",
+          actions: [WITHOUT_ADDING], detail: NO_REVIEW, message: "Couldn't add you as a reviewer on review #12831.",
         }]);
         expect(statusWrites(test)).to.deep.equal([]);
         expect(test.session.active!.review.status).to.equal("Under review");
 
-        test.ui.choice = SET_ANYWAY;
+        test.ui.choice = WITHOUT_ADDING;
         expect((await test.session.setStatus("wk", review, "Rework required"))?.status).to.equal("Rework required");
         expect(test.state.events).to.deep.equal([ "add", "add", "codereview --status=Rework required" ]);
         expect(test.ui.errors).to.deep.equal([]);
@@ -574,15 +425,60 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       });
 
     it("stops with an error, and writes no status, when the add's result is unknown", async () => {
-      const test = track(await activated({ respond: () => Promise.resolve(json(503, {})) }));
+      const test = track(await activated({ respond: TIMED_OUT }));
       expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required")).to.equal(undefined);
-      expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: The Unity Version " +
-        "Control server returned HTTP 503. You may have been added; refresh the review before retrying."]);
+      expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: cm did not finish in " +
+        "time. You may have been added; refresh the review before retrying."]);
       expect(test.ui.choices).to.deep.equal([]);
       expect(test.state.events).to.deep.equal(["add"]);
     });
 
-    it("with a token, adds after the one Reviewed warning, which says so; Cancel writes nothing", async () => {
+    it("offers the review's status when cm refuses a requested reviewer's own, and writes nothing on Cancel",
+      async () => {
+        const test = track(await activated({
+          respond: refuse(NOT_REVIEWER), state: { comments: world().comments.concat(REQUESTED) },
+        }));
+        const review = () => test.session.active!.review;
+        const refused = {
+          actions: [REVIEW_STATUS], detail: NOT_REVIEWER, message: "Couldn't set your own status on review #12831.",
+        };
+        expect(await test.session.setStatus("wk", review(), "Rework required")).to.equal(undefined);
+        expect(test.ui.choices).to.deep.equal([refused]);
+        expect(test.state.events).to.deep.equal(["verdict Rework required"]);
+        expect(test.ui.errors).to.deep.equal([]);
+        test.ui.choice = REVIEW_STATUS;
+        expect((await test.session.setStatus("wk", review(), "Rework required"))?.status).to.equal("Rework required");
+        expect(test.state.events.slice(1)).to.deep.equal([
+          "verdict Rework required", "codereview --status=Rework required",
+        ]);
+        expect(test.lines.join("\n")).to.contain("Couldn't set your status on review #12831 to Rework required: " +
+          NOT_REVIEWER);
+      });
+
+    it("shows an error, and offers nothing, when the verdict's result is unknown", async () => {
+      const test = track(await activated({
+        respond: TIMED_OUT, state: { comments: world().comments.concat(REQUESTED) },
+      }));
+      expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required")).to.equal(undefined);
+      expect(test.ui.errors).to.deep.equal(["Couldn't set your status on review #12831 to Rework required: cm did " +
+        "not finish in time. Your status may have been set; refresh the review before retrying."]);
+      expect(test.ui.choices).to.deep.equal([]);
+      expect(statusWrites(test)).to.deep.equal([]);
+    });
+
+    it("keeps the add when the verdict after it is refused, and shows it", async () => {
+      const test = track(await activated({
+        respond: call => (call.args[1] === "review" ? exited(1, "", `Error: ${NOT_REVIEWER}`) : undefined),
+      }));
+      expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required")).to.equal(undefined);
+      expect(test.state.events).to.deep.equal([ "add", "verdict Rework required" ]);
+      expect(test.ui.choices.map(choice => choice.actions)).to.deep.equal([[REVIEW_STATUS]]);
+      // The discussions loaded again: the request row is there, and the user cannot be added a second time.
+      expect(discussions(test).reviewers).to.include(ME);
+      expect(test.session.canAddMe()).to.equal(false);
+    });
+
+    it("adds after the one Reviewed warning, which says so; Cancel writes nothing", async () => {
       const test = track(await activated());
       const review = test.session.active!.review;
       expect(await test.session.setStatus("wk", review, "Reviewed")).to.equal(undefined);
@@ -598,33 +494,66 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       expect(test.ui.choices).to.deep.equal([]);
     });
 
-    it("stops without a word when the add is cancelled, and writes nothing", async () => {
+    it("says the add's result is unknown when it is cancelled once cm has started, and shows what the server has",
+      async () => {
+        const test = track(await activated({
+          respond: (_call, cancel) => new Promise<ICmOutput>(resolve => {
+            // As the server might have: the add arrived before cm was killed.
+            cancel!.onCancellationRequested(() => {
+              test.state.comments = test.state.comments.concat(
+                timeline(13001, "2026-09-22T17:55:00+01:00", `[requested-review-from]${ME}`, ME));
+              resolve({ code: undefined, killed: "cancelled", started: true, stderr: "", stdout: "" });
+            });
+          }),
+        }));
+        const comments = () => test.shell.queries("changereviewcomment").length;
+        const before = comments();
+        const setting = test.session.setStatus("wk", test.session.active!.review, "Rework required");
+        await until(() => test.state.events.includes("add"));
+        test.ui.cancel!.cancel();
+        expect(await setting).to.equal(undefined);
+        expect(test.state.events).to.deep.equal(["add"]);
+        expect([ ...test.ui.choices, ...test.ui.confirms ]).to.deep.equal([]);
+        expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: Cancelled before cm " +
+          "finished. You may have been added; refresh the review before retrying."]);
+        // The discussions loaded again: the add did arrive, and the user cannot be added a second time.
+        expect(comments()).to.equal(before + 1);
+        expect(discussions(test).reviewers).to.include(ME);
+        expect(test.session.canAddMe()).to.equal(false);
+      });
+
+    it("stops without a word when the add is cancelled before cm starts, and writes nothing", async () => {
       const test = track(await activated({
-        respond: (_call, cancel) => new Promise((_resolve, reject) => {
-          cancel!.onCancellationRequested(() => reject(new ReviewRequestError("cancelled", true)));
-        }),
+        respond: () => {
+          test.ui.cancel!.cancel();
+          return { code: undefined, killed: "cancelled", started: false, stderr: "", stdout: "" };
+        },
       }));
-      const setting = test.session.setStatus("wk", test.session.active!.review, "Rework required");
-      await until(() => test.state.events.includes("add"));
-      test.ui.cancel!.cancel();
-      expect(await setting).to.equal(undefined);
-      expect(test.state.events).to.deep.equal(["add"]);
+      expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required")).to.equal(undefined);
       expect([ ...test.ui.choices, ...test.ui.confirms ]).to.deep.equal([]);
       expect(test.ui.errors).to.deep.equal([]);
+      expect(statusWrites(test)).to.deep.equal([]);
     });
 
-    it("does not guess an address for a cm user that is not an e-mail address", async () => {
-      const test = track(await activated({ state: { user: "dana" }}));
-      const why = "cm names you \"dana\", which is not an e-mail address, and Unity Version Control names reviewers " +
-        "by e-mail address.";
-      expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required")).to.equal(undefined);
-      expect(test.ui.choices).to.deep.equal([{
-        actions: [SET_ANYWAY], detail: why, message: "Couldn't add you as a reviewer on review #12831.",
-      }]);
-      expect(test.state.events).to.deep.equal([]);
-      expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(false);
-      expect(test.ui.errors).to.deep.equal([`Couldn't add you as a reviewer on review #12831: ${why}`]);
-      expect(test.rest.calls).to.deep.equal([]);
+    it("offers the review's status only when cm refused the verdict, not when cm could not answer", async () => {
+      const cases: Array<[string, Respond, string]> = [
+        [ "cm missing", () => ({ code: undefined, missing: true, started: false, stderr: "", stdout: "" }),
+          "cm wasn't found. Check the plastic-scm.cmConfiguration.cmPath setting." ],
+        [ "cm not started", () => ({ code: undefined, started: false, stderr: "", stdout: "" }),
+          "cm could not be started. Check the plastic-scm.cmConfiguration.cmPath setting." ],
+        [ "the server lost", refuse("Unable to connect to the remote server"), "Unable to connect to the remote " +
+          "server. Your status may have been set; refresh the review before retrying." ],
+      ];
+      for (const [ what, respond, message ] of cases) {
+        const test = track(await activated({ respond, state: { comments: world().comments.concat(REQUESTED) }}));
+        test.ui.choice = REVIEW_STATUS;
+        expect(await test.session.setStatus("wk", test.session.active!.review, "Rework required"), what)
+          .to.equal(undefined);
+        expect(test.ui.choices, what).to.deep.equal([]);
+        expect(test.ui.errors, what)
+          .to.deep.equal([`Couldn't set your status on review #12831 to Rework required: ${message}`]);
+        expect(statusWrites(test), what).to.deep.equal([]);
+      }
     });
   });
 
@@ -639,70 +568,17 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       expect(discussions(test).reviewers).to.include(ME);
       expect(test.session.canAddMe()).to.equal(false);
       expect(statusWrites(test)).to.deep.equal([]);
-      expect(restWrites(test)).to.deep.equal(["POST /reviewers"]);
+      expect(cmWrites(test)).to.deep.equal([[ "codereview", "reviewer", "add", "12831", "--users=me" ]]);
     });
 
-    it("asks to create a token first when there is none, and sends nothing when declined", async () => {
-      const test = track(await activated({ consent: false }));
-      const review = test.session.active!.review;
-      expect(await test.session.addMe("wk", review)).to.equal(false);
-      expect(test.ui.choices).to.deep.equal([{
-        actions: [CREATE_AND_ADD], detail: consentDetail(SERVER), message: CONSENT_MESSAGE,
-      }]);
-      expect(tokenWork(test)).to.deep.equal([]);
-      expect(test.rest.calls).to.deep.equal([]);
-      expect(test.session.canAddMe()).to.equal(true);
-
-      test.ui.choice = CREATE_AND_ADD;
-      expect(await test.session.addMe("wk", review)).to.equal(true);
-      expect(tokenWork(test)).to.deep.equal([ "create", "reveal" ]);
-      expect(restWrites(test)).to.deep.equal(["POST /reviewers"]);
-    });
-
-    it("says what an admin can do where cm may not create a token, with the command and the desktop app at hand",
+    it("says which client is needed, and runs no write, where cm is older than the review write commands",
       async () => {
-        const test = track(await activated());
-        refuseTokens(test, "You don't have permission to create personal access tokens.");
-        const review = test.session.active!.review;
-        const message = `Couldn't add you as a reviewer on review #12831: ${ADMIN}`;
-        const refused = { actions: [ COPY_COMMAND, OPEN_IN_DESKTOP ], message };
-        // The first add learns it from cm, and says so as the later ones do.
-        test.ui.alertChoice = COPY_COMMAND;
-        expect(await test.session.addMe("wk", review)).to.equal(false);
-        await until(() => test.ui.copied.length > 0);
-        expect(test.ui.errors).to.deep.equal([]);
-        expect(test.ui.alerts).to.deep.equal([refused]);
-        expect(test.ui.copied).to.deep.equal([`cm accesstoken admin allowlist add --users=${ME} ${SERVER}`]);
-        test.ui.alertChoice = OPEN_IN_DESKTOP;
-        expect(await test.session.addMe("wk", review)).to.equal(false);
-        await until(() => test.ui.opened.length > 0);
-        expect(test.ui.alerts).to.deep.equal([ refused, refused ]);
-        expect(test.ui.opened).to.deep.equal([LINK]);
-        expect(tokenWork(test)).to.deep.equal(["create"]);
-        expect(test.rest.calls).to.deep.equal([]);
+        const test = track(await activated({ usage: exited(0, OLD_USAGE) }));
+        expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(false);
+        expect(test.ui.errors).to.deep.equal([`Couldn't add you as a reviewer on review #12831: ${UNSUPPORTED}`]);
+        expect(test.ui.choices).to.deep.equal([]);
+        expect(test.cm.writes()).to.deep.equal([]);
       });
-
-    it("offers only the desktop app where personal access tokens are not enabled", async () => {
-      const test = track(await activated());
-      refuseTokens(test, "Personal access tokens are not enabled.");
-      const review = test.session.active!.review;
-      await test.session.addMe("wk", review);
-      await test.session.addMe("wk", review);
-      expect(test.ui.alerts.map(alert => alert.actions)).to.deep.equal([[OPEN_IN_DESKTOP], [OPEN_IN_DESKTOP]]);
-      expect(test.ui.alerts[0].message).to.equal(`Couldn't add you as a reviewer on review #12831: ${DISABLED}`);
-      expect(test.ui.errors).to.deep.equal([]);
-    });
-
-    it("says why, and sends nothing, where the region is not a documented server", async () => {
-      const test = track(await activated({ organization: UNDOCUMENTED }));
-      expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(false);
-      expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: The Unity Version " +
-        "Control Server REST API documents no server for acme-studio@unity, whose region is " +
-        "\"plastic.example.test\"."]);
-      expect([ ...test.ui.choices, ...test.ui.alerts ]).to.deep.equal([]);
-      expect(tokenWork(test)).to.deep.equal([]);
-      expect(test.rest.calls).to.deep.equal([]);
-    });
 
     it("tells the author, the assignee and a requested reviewer why it does nothing", async () => {
       const infos: string[] = [];
@@ -710,7 +586,7 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
         const test = track(await activated({ state }));
         expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(false);
         infos.push(...test.ui.infos);
-        expect(test.rest.calls).to.deep.equal([]);
+        expect(test.cm.writes()).to.deep.equal([]);
       }
       expect(infos).to.deep.equal([
         "You opened review #12831, and authors don't review their own change.",
@@ -720,15 +596,34 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
     });
 
     it("shows a failed add and changes nothing", async () => {
-      const test = track(await activated({ respond: () => Promise.resolve(json(404, {})) }));
+      const test = track(await activated({ respond: refuse(NO_REVIEW) }));
       const before = test.shell.calls.length;
       expect(await test.session.addMe("wk", test.session.active!.review)).to.equal(false);
-      expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: The Unity Version " +
-        "Control server has no review #12831 in Nimbus/Nimbus."]);
+      expect(test.ui.errors).to.deep.equal([`Couldn't add you as a reviewer on review #12831: ${NO_REVIEW}`]);
       expect(test.ui.statuses).to.deep.equal([]);
       expect(test.shell.calls.slice(before)).to.deep.equal([]);
       expect(test.session.canAddMe()).to.equal(true);
     });
+
+    it("says the result is unknown, and shows what the server has, when the add is cancelled once cm has started",
+      async () => {
+        const test = track(await activated({
+          respond: (_call, cancel) => new Promise<ICmOutput>(resolve => {
+            cancel!.onCancellationRequested(
+              () => resolve({ code: undefined, killed: "cancelled", started: true, stderr: "", stdout: "" }));
+          }),
+        }));
+        const comments = () => test.shell.queries("changereviewcomment").length;
+        const before = comments();
+        const adding = test.session.addMe("wk", test.session.active!.review);
+        await until(() => test.state.events.includes("add"));
+        test.ui.cancel!.cancel();
+        expect(await adding).to.equal(false);
+        expect(test.ui.errors).to.deep.equal(["Couldn't add you as a reviewer on review #12831: Cancelled before cm " +
+          "finished. You may have been added; refresh the review before retrying."]);
+        expect(comments()).to.equal(before + 1);
+        expect(test.ui.statuses).to.deep.equal([]);
+      });
 
     it("adds from a Reviews row of a review that is not open, and Needs My Review follows", async () => {
       const test = track(harness());
@@ -752,7 +647,7 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
   });
 
   describe("one add per review in flight", () => {
-    /** A gate the fake REST API waits behind until `release`. */
+    /** A gate the fake cm waits behind until `release`. */
     function gate(): { hold: Promise<void>; release: () => void } {
       let release!: () => void;
       const hold = new Promise<void>(resolve => {
@@ -805,9 +700,9 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       expect(test.session.canAddMe()).to.equal(false);
     });
 
-    it("asks before setting the status with cm anyway when the Add Me add it waited for fails", async () => {
+    it("asks before setting the status without adding when the Add Me add it waited for fails", async () => {
       const { hold, release } = gate();
-      const test = track(await activated({ hold, respond: () => Promise.resolve(json(404, {})) }));
+      const test = track(await activated({ hold, respond: refuse(NO_REVIEW) }));
       const review = test.session.active!.review;
       const adding = test.session.addMe("wk", review);
       await until(() => test.state.events.length === 1);
@@ -817,9 +712,9 @@ describe("Add Me as Reviewer and Set Review Status… (fake cm and REST API, no 
       expect(await adding).to.equal(false);
       expect(await setting).to.equal(undefined);
       expect(test.ui.choices.map(choice => [ choice.message, choice.actions ])).to.deep.equal([
-        [ "Couldn't add you as a reviewer on review #12831.", [SET_ANYWAY]],
+        [ "Couldn't add you as a reviewer on review #12831.", [WITHOUT_ADDING]],
       ]);
-      expect(test.ui.choices[0].detail).to.contain("has no review #12831");
+      expect(test.ui.choices[0].detail).to.equal(NO_REVIEW);
       expect(test.state.events).to.deep.equal(["add"]);
       expect(test.session.canAddMe()).to.equal(true);
     });

@@ -70,11 +70,16 @@ menu as **Show Plastic Reviews**. The container has three views.
   badge counts pending change requests.
 
 **Overview** opens a read-only page in the Markdown preview, drawn in the colours of the current
-theme: status, author and assignee, the branch and both sides of the comparison, where the review
-stands (whom it waits on, files viewed, change requests, questions and sign-off), a card per
-reviewer with their latest verdict and its replies, the open change requests and questions, the
-conversation and the other threads without a file location (each with its replies), the
-changesets (for a changeset review, its comment and files instead), and the review's history.
+theme and laid out like a GitHub pull request's Conversation tab. At the top: status, author and
+assignee, the branch and both sides of the comparison, where the review stands (whom it waits on,
+files viewed, change requests, questions and sign-off), a compact card per reviewer and a one-line
+list of the open change requests and questions. Then one **Conversation**, oldest first, on a
+timeline: the description as its opening comment, the review's creation, the branch's changesets
+(a person's changesets within 30 minutes of each other are one entry, merges marked, with the
+change requests each one applied), every discussion in full with its replies, whether on the whole
+review or on a file's line (headed by its kind, state and file), and every review event: verdicts
+and their text, review requests and removals, renames and description edits. A changeset review
+shows its changeset comment above the Conversation and its files below it.
 
 The Overview opens in VS Code's Markdown preview editor, so opening another Markdown file does not
 replace it, and it is redrawn when you mark files viewed or the review reloads. Its title bar has
@@ -146,17 +151,28 @@ replies.
   requests are pending or files are not viewed asks first. So does marking one where either count
   is unknown: a review that is not the open one, or whose files or discussions have not loaded.
   The change runs `cm codereview -e <id> --status=…` and reads the review back. If it fails, the
-  status shown does not change. With experimental review writes on, it can set your own status as
+  status shown does not change. With review writes on, it can set your own status as
   a reviewer instead, adding you as a reviewer first: see
-  [Experimental: review writes](#experimental-review-writes).
-* While a review view or the open review's Overview is visible, the extension checks for changes
-  every minute, unless one of your own actions is still running. The queue updates in place. For
-  the open review, a **Review updated** row describes what changed (branch moved to a new head,
-  new comments, counting edited ones and applied change requests, and status), and the review
-  stays as loaded until you select that row or **Load Updates**. Open diffs keep their revisions.
+  [Review writes](#review-writes).
+* The extension checks for changes every minute (`plastic-scm.reviews.updateCheckInterval`, in
+  seconds, at least 15; `0` turns the checks off), unless one of your own actions is still
+  running. A changed interval applies at once. The open review is checked for as long as it is
+  open, whether or not its views are on screen; the queue is checked while the Reviews view is
+  visible, and updates in place. For the open review, a **Review updated** row describes what
+  changed (branch moved to a new head, new comments, counting edited ones and applied change
+  requests, and status), and the review stays as loaded until you select that row or **Load
+  Updates**. Open diffs keep their revisions.
   When the active diff was opened from Changes or Merged from other branches and a file with the
   same path is still in the review, Load Updates reopens it against the new head. **Refresh
   Review** reloads at any time.
+* When a check finds something new in the open review, a notification says what, for example
+  `Review #312: 2 new comments from ana@example.com; new changesets on the branch; status is now
+  Reviewed`. **Load Updates** in it loads the changes, and **Show Discussions** brings the
+  Discussions view to the front when comments changed. Each change is announced once: updates you
+  have not loaded yet do not notify again until something further changes. Comments written by
+  the user `cm` is signed in as, from this extension or anywhere else, do not notify, though they
+  still show as updates until loaded. Turn the notifications off with
+  `plastic-scm.reviews.notifyUpdates`; the **Review updated** row stays.
 * After a window reload, the last review you opened in each workspace comes back, without
   opening any editor. **Close Review** forgets it and closes its Overview.
 
@@ -181,46 +197,72 @@ this to your `keybindings.json`:
 
 **Open in Unity Version Control** (a review's context menu in Reviews, and the Review view's `…`
 menu) opens the review in the Unity Version Control desktop app through a `plastic://` code-review
-link. It works without the experimental setting. The desktop app must be installed.
+link. It works whatever the review writes setting says. The desktop app must be installed.
 
-### Experimental: review writes
+### Review writes
 
-`cm` has no command to add a reviewer, to set one reviewer's own status, or to post a comment. With
-`plastic-scm.reviews.experimentalPosting` on, the extension does these through the
-[Unity Version Control Server REST API](https://docs.unity.com/en-us/oas-unity-version-control-server/1.0.0),
-with a personal access token it creates with `cm accesstoken`. The writes need a trusted workspace
-and a cloud repository (`@cloud` or `@unity`). The setting is off by default.
+With `plastic-scm.reviews.commentWrites` on, the extension can add you as a reviewer, set
+your own status as a reviewer, post comments and replies, and edit or delete your own comments. It
+does all of them with the
+installed `cm` and its existing sign-in (`cm codereview comment`, `cm codereview reviewer` and
+`cm codereview review`): there is no token and nothing else to sign in to, and it works with any
+server `cm` works with. The writes need Unity Version Control client 11.0.16.10512 or newer and a
+trusted workspace; with an older `cm` the extension says so and writes nothing, and it asks `cm`
+again on the next action or when `plastic-scm.cmConfiguration` changes, so a client upgraded in
+place is found without a reload. The setting is on by default. It replaces the deprecated
+`plastic-scm.reviews.experimentalPosting`, which still counts where `commentWrites` is not set: a
+user who turned the old setting off keeps writes off until they set `commentWrites`.
 
-Personal access tokens are opt-in per organization. An organization admin allows you once:
-
-```bash
-cm accesstoken admin allowlist add --users=<you> <org>@unity
-```
-
-Until then, the extension shows that command and offers
-[**Open in Unity Version Control**](#open-in-unity-version-control) instead.
-
-* **The token.** The first write asks before creating one (`cm accesstoken create`, 180 days). It
-  is kept in VS Code's secret storage, revealed again with `cm accesstoken reveal` when it expires,
-  and never shown or written to the output channel. **Revoke Review Access Token** revokes it with
-  `cm accesstoken revoke`.
 * **Add Me as Reviewer** (Review view title bar, a review's context menu, the Command Palette, or
-  **Add me as reviewer** under the Overview's reviewer cards) adds your `cm whoami` name, which must
-  be an e-mail address. It is not offered to the review's author or assignee, or when you are
-  already a reviewer.
+  **Add me as reviewer** under the Overview's reviewer cards) adds the user `cm` is signed in as.
+  It is not offered to the review's author or assignee, or when you are already a reviewer.
 * **Set Review Status…** sets your own status as a reviewer, adding you first when you are not one
-  yet. The author, the assignee, anyone without a token, and **Set Status Without Adding** set the
-  review's status with `cm` as before, so a missing token never blocks a change `cm` can make. If
-  the add fails, no status is written.
-* **Comments and replies.** In a review diff, the gutter `+` offers **Post Comment
-  (Experimental)**, and review threads offer **Post Reply (Experimental)**. Every send asks for
-  confirmation first. The result stays in the thread: **Posted · refresh to verify**, **Not sent**
-  with **Send Again** (which never posts twice), or **Result unknown** with **Allow Another
-  Attempt**.
+  yet. The author and the assignee set the review's status with `cm codereview -e --status` as
+  before, and so does everyone while the setting is off or review writes are not available. If the
+  add fails, no status is written unless you choose **Set Status Without Adding**, which sets the
+  review's status instead; if `cm` refuses your own status, **Set the Review's Status** does the
+  same. When `cm` is missing, cannot start or loses the server, the error is shown and nothing else
+  is offered.
+* **Comments and replies.** In a review diff, the gutter `+` offers **Post Comment**,
+  and review threads offer **Post Reply**. Every send asks for
+  confirmation first. A new comment is a plain comment on the line's revision; written in the diff
+  of one changeset of a branch review, it is filed under that changeset. The `+` is on the sides
+  `cm` takes comments on: the right side, and the left side only for a deleted file. It is not
+  offered in outdated or previous-revision diffs, on files from xlinked repositories, or in a diff
+  tab restored after a reload until it is opened again from Plastic Reviews. After a comment is
+  posted, the review's discussions reload and show it as the server has it. Until then, and when
+  it was not posted, the result stays in the thread: **Posted**, **Not sent** with `cm`'s message
+  and **Send Again**, or **Result unknown** with **Allow Another Attempt**.
+* **Edit and delete your own comments.** In a review diff, each comment written by the user `cm`
+  is signed in as (`cm whoami`, compared without case) has **Edit** and **Delete**. **Edit** turns
+  the comment into an editor with **Save** and **Cancel**; **Save** sends the new text with
+  `cm codereview comment edit` (its type, file, line and changeset stay) and reloads the
+  discussions. **Delete** always asks first, says it can't be undone and, for a comment with
+  replies, that `cm`'s help does not say whether they are deleted with it; it then runs
+  `cm codereview comment delete`. Timeline rows (verdicts, review requests, renames) offer neither.
+* **Comments on the whole review.** In the Discussions view, General threads offer **Reply…**,
+  and **Edit…** and **Delete** when a comment in them is yours (with several, you pick which);
+  **Add Comment to Review…** in the view's title bar and the Command Palette adds a comment that
+  is on no file. The Overview links the same, for threads on files too, as the desktop app's
+  overview does: **Reply** under each thread (a reply to a file thread lands on its line), **Edit**
+  and **Delete** under your own comments and replies, **Add comment** at the end
+  of its Conversation and **Edit description** under your own review description (the
+  description is never deleted from here; `cm` keeps its `[description]` marker). These write
+  from a one-line input box: accepting it is the confirmation, and **Delete** asks in a dialog.
+  The box cannot hold line breaks, so write longer text with line breaks in the Unity Version
+  Control desktop app; editing a comment that has them shows them as spaces and saves the text as
+  typed. The Overview's comment links work only from the Overview in the same window. After every
+  write the discussions reload; a result `cm` could not confirm says **Result unknown** and asks
+  you to refresh the review before trying again.
 
-A write whose result is unknown is never retried automatically. These writes have been tested
-against fakes only: the organization name and repository encoding in request paths, and the line
-encoding of inline comments, have not been verified against the live service.
+**Not sent** means `cm` answered with an error of its own, such as a missing review or permission,
+so **Send Again** sends the same draft and cannot add a second copy of one the server took. A
+write whose result is unknown is never retried automatically: `cm` was cancelled or did not finish
+in time, exited with an error about the connection or the server's answer, or with no message, or
+did not name the new comment. A delete after which `cm` reported an error is also of unknown
+result: `cm` reports a comment it could not delete and goes on. The comment's text goes to `cm` on its standard input (on Windows,
+in a temporary UTF-8 file that is deleted once `cm` has ended, so that non-ASCII text arrives
+intact) and is never written to the output channel; the channel names the command and the review.
 
 ## Install
 
@@ -254,7 +296,10 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted
 |`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 |`plastic-scm.reviews.fileLayout`                     |`string` |`tree`   |How Plastic Reviews lists changed files: `tree` (folders) or `list` (sorted by path)
-|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Experimental.** Allows adding yourself as a reviewer, setting your own review status, and posting review comments and replies (cloud repositories only). Writes use a personal access token that the extension creates with `cm` (it asks first) and the Unity Version Control Server REST API. An organization admin has to allow tokens. Request details are unverified against the live service
+|`plastic-scm.reviews.updateCheckInterval`            |`number` |`60`     |Seconds between two checks for changes in Plastic Reviews: the open review, whatever is on screen, and the review queue while the Reviews view is visible. The shortest interval is 15 seconds; `0` turns the checks off
+|`plastic-scm.reviews.notifyUpdates`                  |`boolean`|`true`   |Show a notification when a check finds new comments from someone else, new changesets or a new status in the open review. With this off, the **Review updated** row and **Load Updates** still show them
+|`plastic-scm.reviews.commentWrites`                  |`boolean`|`true`   |Allows posting comments and replies, editing and deleting your own comments, adding yourself as a reviewer and setting your own review status, through `cm` as the user `cm` is signed in as. Needs Unity Version Control client 11.0.16.10512 or newer and a trusted workspace
+|`plastic-scm.reviews.experimentalPosting`            |`boolean`|`false`  |**Deprecated**, use `plastic-scm.reviews.commentWrites`. Counts only where `commentWrites` is not set
 
 ## Commands
 
@@ -328,9 +373,9 @@ a *New changesets* row instead of reloading under you.
 ### Show Output
 
 Reveals the `Plastic SCM` output channel, which carries every `cm` command and
-its output, except those for review access tokens (`cm getconfig organization`
-and `cm accesstoken`): they are never logged, because `cm accesstoken reveal`
-prints the token. Failure notifications link to it directly.
+its output. Review writes are the exception: the channel names
+their command and review, never a comment's text or what `cm` printed. Failure
+notifications link to it directly.
 
 ## Contribute
 

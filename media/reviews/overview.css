@@ -371,14 +371,8 @@
   background: var(--pr-track);
 }
 
-.plastic-review .empty,
-.plastic-review .hint {
+.plastic-review .empty {
   font-size: 0.93em;
-}
-
-.plastic-review .hint {
-  margin-top: 8px;
-  font-size: 0.86em;
 }
 
 /* Reviewers, open items and comments */
@@ -396,23 +390,20 @@
   font-size: 0.93em;
 }
 
-.plastic-review .items,
-.plastic-review .comments {
+.plastic-review .items {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .plastic-review .person,
-.plastic-review .item,
-.plastic-review .comment {
+.plastic-review .item {
   padding: 12px 14px;
   border: 1px solid var(--pr-border);
   border-radius: 8px;
 }
 
-.plastic-review .person,
-.plastic-review .comment {
+.plastic-review .person {
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -585,45 +576,217 @@
   color: var(--pr-emphasis);
 }
 
-/* History */
+/*
+ * Conversation: one column of entries on a vertical line, oldest first, as on a GitHub pull request. Each entry's
+ * kind is marked on the line; who did it has a small avatar beside their name.
+ */
 
-.plastic-review .tl {
+.plastic-review .timeline {
+  position: relative;
   display: flex;
   flex-direction: column;
-  padding-left: 4px;
+  gap: 14px;
 }
 
-.plastic-review .tl li {
-  display: grid;
-  grid-template-columns: 16px 7.5em minmax(0, 1fr);
-  align-items: baseline;
-  gap: 10px;
-  padding: 5px 0;
+/* The line runs through the middle of the 32px marks. */
+.plastic-review .timeline::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 15px;
+  width: 2px;
+  background: var(--pr-track);
+}
+
+.plastic-review .tl-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* Every entry's kind, as GitHub marks a pull request's: an icon in a circle on the line, in the entry's tone. */
+.plastic-review .tl-mark {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, var(--vscode-editor-background));
+  box-shadow: 0 0 0 3px var(--vscode-editor-background);
+}
+
+.plastic-review .tl-mark.grey {
+  color: var(--pr-grey-text);
+}
+
+.plastic-review .tl-mark .icon {
+  width: 16px;
+  height: 16px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.plastic-review .tl-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plastic-review .tl-line {
+  margin-top: 6px;
   font-size: 0.93em;
 }
 
-.plastic-review .tl .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: currentColor;
-  transform: translateY(1px);
+/* A small avatar before a name in a line or a comment's head. */
+.plastic-review .av.sm {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  font-size: 9px;
+  vertical-align: middle;
 }
 
-.plastic-review .tl .date {
+.plastic-review .tl-line .when,
+.plastic-review .head .when {
   white-space: nowrap;
-  color: var(--vscode-descriptionForeground);
 }
 
-.plastic-review .earlier {
-  margin-top: 4px;
+/* A note in place of entries that are loading or failed: indented past the line. */
+.plastic-review .tl-note {
+  padding-left: 44px;
 }
 
-.plastic-review .earlier summary {
-  padding: 4px 0;
-  cursor: pointer;
-  font-size: 0.86em;
-  color: var(--vscode-descriptionForeground);
+.plastic-review .tl-note .stage,
+.plastic-review .tl-note .notice {
+  margin-top: 0;
+}
+
+.plastic-review .card {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--pr-border);
+  border-radius: 8px;
+  background: var(--vscode-editor-background);
+}
+
+.plastic-review .card > .body {
+  padding: 10px 14px;
+}
+
+/* A file thread's kind, state and line, as the card's header bar. */
+.plastic-review .card-top {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--pr-border);
+  background: var(--pr-card);
+  font-size: 0.93em;
+}
+
+/* The description opens the Conversation. */
+.plastic-review .opening .card {
+  border-color: color-mix(in srgb, var(--vscode-charts-blue) 45%, var(--pr-border));
+}
+
+.plastic-review .opening .lead {
+  margin-top: 2px;
+}
+
+/* Applied and discarded change requests: done with, so they step back. */
+.plastic-review .resolved .card {
+  opacity: 0.75;
+}
+
+.plastic-review .resolved .card > .body {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.vscode-high-contrast .plastic-review .resolved .card,
+.vscode-high-contrast-light .plastic-review .resolved .card {
+  opacity: 1;
+  border-style: dashed;
+}
+
+/* A run of changesets: one line each, under the entry's line. */
+.plastic-review .cs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.93em;
+}
+
+.plastic-review .cs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.plastic-review .cs .pill {
+  height: 18px;
+  padding: 0 7px;
+}
+
+/* The timeline ends on a rule, as a pull request's does; the comment box comes after it. */
+.plastic-review .timeline {
+  padding-bottom: 18px;
+  border-bottom: 2px solid var(--pr-track);
+}
+
+.plastic-review .timeline::before {
+  bottom: 0;
+}
+
+.plastic-review .composer {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.plastic-review .av.anon {
+  background: var(--pr-soft);
+}
+
+.plastic-review .composer .card {
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 60%, var(--pr-border));
+}
+
+/* No text field in a preview: a line saying where the text is typed, and the button that opens it. */
+.plastic-review .compose {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.plastic-review .button {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.plastic-review .button.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.plastic-review .button.primary:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+  color: var(--vscode-button-foreground);
+  text-decoration: none;
 }
 
 /* Split editors: the tiles two by two. */
@@ -641,16 +804,18 @@
     gap: 2px;
   }
 
-  .plastic-review .tl li {
-    grid-template-columns: 16px minmax(0, 1fr);
-  }
-
-  .plastic-review .tl .date,
-  .plastic-review .tl .what {
-    grid-column: 2;
+  .plastic-review .card > .body,
+  .plastic-review .card-top {
+    padding-right: 10px;
+    padding-left: 10px;
   }
 
   .plastic-review .item .when {
     margin-left: 0;
   }
+}
+
+.plastic-review .comment-actions {
+  margin: 4px 0 0;
+  font-size: 0.93em;
 }

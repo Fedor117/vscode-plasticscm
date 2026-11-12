@@ -1,22 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import {
-  commands,
-  Comment,
-  CommentReply,
-  CommentThread,
-  ConfigurationTarget,
-  Disposable,
-  env,
-  OutputChannel,
-  QuickPickItem,
-  QuickPickItemKind,
-  Tab,
-  Uri,
-  window,
-  workspace,
-} from "vscode";
-import {
+  canReplyToThread,
   commentTypeLabel,
   exactReviewPick,
   formatCount,
@@ -33,17 +18,37 @@ import {
   sameStatus,
   threadTypeLabel,
 } from "./reviewPresentation";
+import {
+  commands,
+  Comment,
+  CommentReply,
+  CommentThread,
+  ConfigurationTarget,
+  Disposable,
+  env,
+  OutputChannel,
+  ProgressLocation,
+  QuickPickItem,
+  QuickPickItemKind,
+  Tab,
+  Uri,
+  window,
+  workspace,
+} from "vscode";
 import { errorText, FILE_LAYOUT_SETTING, ReviewSession } from "./reviewSession";
 import {
   fileKey,
   IFoundReviews,
   IReview,
+  IReviewComment,
   IReviewComparison,
   IReviewThread,
+  IReviewTimelineEvent,
   ReviewStatus,
   reviewStatuses,
   sameRepository,
 } from "./models";
+import { ICommentTarget, ReviewPosting, WRITES_SETTING } from "./reviewPosting";
 import {
   IReviewEditorContext,
   IReviewFileAt,
@@ -53,19 +58,22 @@ import {
   overviewTabReview,
   reviewOverviewUri,
 } from "./reviewEditors";
-import { POSTING_SETTING, ReviewPosting } from "./reviewPosting";
+import { ReviewTreeProvider, reviewTreeViewId } from "./reviewTreeProvider";
+import { CommentLinkAction } from "./reviewOverview";
+import { discussionsViewId } from "./discussionsProvider";
 import { FileScope } from "./sessionTypes";
 import { FIND_LIMIT } from "./commands";
 import { IChangesetFileChange } from "../models";
 import { isDiffable } from "./reviewFileTree";
 import { parseReviewLink } from "./reviewLinks";
-import { ReviewTreeProvider } from "./reviewTreeProvider";
 
 /** Every command of Plastic Reviews, without its `plastic-scm.reviews.` prefix. */
 export const REVIEW_COMMANDS = [
   "addMeAsReviewer",
+  "addReviewComment",
   "allowRetry",
   "cancelComment",
+  "cancelEdit",
   "close",
   "copyChangesetComment",
   "copyChangesetId",
@@ -73,7 +81,10 @@ export const REVIEW_COMMANDS = [
   "copyPath",
   "copyReviewId",
   "copyTitle",
+  "deleteComment",
   "discardLocal",
+  "editComment",
+  "editDiscussionComment",
   "find",
   "loadMore",
   "loadMoreChangesets",
@@ -96,8 +107,9 @@ export const REVIEW_COMMANDS = [
   "previousFile",
   "refresh",
   "refreshReview",
+  "replyToDiscussion",
   "retry",
-  "revokeAccessToken",
+  "saveComment",
   "sendAgain",
   "setStatus",
   "show",
@@ -134,6 +146,8 @@ export interface IReviewActionEditors {
   fileAt(uri: Uri | undefined): IReviewFileAt | undefined;
   activeFile(): IReviewFileAt | undefined;
   refreshOverview(serviceId: string, reviewId: number): void;
+  /** The server comment a comment in a review diff shows; Delete there acts on it. */
+  serverComment?(comment: Comment): ICommentTarget | undefined;
 }
 
 /** A Set Review Status row; the "Current" separator has no status. */
@@ -232,8 +246,10 @@ export class ReviewActions implements Disposable {
   public constructor(private readonly options: IReviewActionsOptions) {
     const handlers: { [name in ReviewCommandName]: (...args: unknown[]) => unknown } = {
       addMeAsReviewer: arg => this.addMeAsReviewer(arg),
+      addReviewComment: () => this.addReviewComment(),
       allowRetry: arg => this.withComment(arg, comment => this.options.posting.allowRetry(comment)),
       cancelComment: arg => this.cancelComment(arg),
+      cancelEdit: arg => this.withComment(arg, comment => this.options.posting.cancelEdit(comment)),
       close: () => this.closeReview(),
       copyChangesetComment: arg => this.copyChangeset(arg, "comment"),
       copyChangesetId: arg => this.copyChangeset(arg, "id"),
@@ -241,7 +257,10 @@ export class ReviewActions implements Disposable {
       copyPath: arg => this.copyPath(arg),
       copyReviewId: arg => this.copyReview(arg, "id"),
       copyTitle: arg => this.copyReview(arg, "title"),
+      deleteComment: arg => this.deleteComment(arg),
       discardLocal: arg => this.withComment(arg, comment => this.options.posting.discardLocal(comment)),
+      editComment: arg => this.withComment(arg, comment => this.options.posting.startEdit(comment)),
+      editDiscussionComment: arg => this.editDiscussionComment(arg),
       find: () => this.find(),
       loadMore: arg => this.loadMore(arg),
       loadMoreChangesets: () => this.options.session.loadMoreChangesets(),
@@ -264,8 +283,9 @@ export class ReviewActions implements Disposable {
       previousFile: arg => this.step(arg, -1, false),
       refresh: () => this.options.session.refreshList(),
       refreshReview: () => this.options.session.reload(),
+      replyToDiscussion: arg => this.replyToDiscussion(arg),
       retry: arg => this.retry(arg),
-      revokeAccessToken: () => this.revokeAccessToken(),
+      saveComment: arg => this.withComment(arg, comment => this.options.posting.saveEdit(comment)),
       sendAgain: arg => this.withComment(arg, comment => this.options.posting.sendAgain(comment)),
       setStatus: arg => this.setStatus(arg),
       show: () => commands.executeCommand("workbench.view.extension.plastic-scm-reviews"),
@@ -302,8 +322,9 @@ export class ReviewActions implements Disposable {
    * Opens what an Overview link names, as a click on its row in Discussions or
    * the Review view does. Anything can send such a URI (a browser passes
    * vscode:// links on), so it is read strictly and acts only on the active
-   * review of a known workspace. The one link that writes, Add me as
-   * reviewer, asks first unless it carries this window's key. A link that
+   * review of a known workspace. Add me as reviewer asks first unless it
+   * carries this window's key; a comment link (Reply, Edit, Delete, Add
+   * comment) without that key is not followed at all. A link that
    * cannot open says why; a path that is not one of ours is logged and
    * ignored.
    */
@@ -512,8 +533,8 @@ export class ReviewActions implements Disposable {
   /**
    * Set Review Status…, on a Reviews row or the active review. The picker
    * starts from the status the write would change (see `statusPlan`): the cm
-   * user's own when they give their verdict through the REST API, the
-   * review's otherwise.
+   * user's own when they give their verdict as a reviewer, the review's
+   * otherwise.
    */
   private async setStatus(arg: unknown): Promise<void> {
     const session = this.options.session;
@@ -531,9 +552,9 @@ export class ReviewActions implements Disposable {
   }
 
   /**
-   * Add Me as Reviewer, on a Reviews row or the active review. Experimental:
-   * with the setting off it offers the setting, and where posting is blocked
-   * it says why; the session asks for a token when there is none.
+   * Add Me as Reviewer, on a Reviews row or the active review. With the setting off it
+   * offers the setting, and where posting is blocked
+   * it says why.
    */
   private async addMeAsReviewer(arg: unknown): Promise<void> {
     const target = this.reviewTarget(arg);
@@ -546,14 +567,14 @@ export class ReviewActions implements Disposable {
     }
   }
 
-  /** Whether experimental posting is on and not blocked in the workspace; says what is missing when it is not. */
+  /** Whether review writes are on and not blocked in the workspace; says what is missing when it is not. */
   private async readyToAddReviewer(workspaceId: string): Promise<boolean> {
     const access = await this.options.posting.access(workspaceId);
     if (access.state === "settingOff") {
       const choice = await window.showInformationMessage(
-        `Add Me as Reviewer is experimental. Turn on the ${POSTING_SETTING} setting to use it.`, OPEN_SETTING);
+        `Review writes are off. Turn on the ${WRITES_SETTING} setting to use Add Me as Reviewer.`, OPEN_SETTING);
       if (choice === OPEN_SETTING) {
-        await commands.executeCommand("workbench.action.openSettings", POSTING_SETTING);
+        await commands.executeCommand("workbench.action.openSettings", WRITES_SETTING);
       }
       return false;
     }
@@ -564,7 +585,7 @@ export class ReviewActions implements Disposable {
     return true;
   }
 
-  /** Open in Unity Version Control, for a Reviews row or the active review, whatever the experimental setting. */
+  /** Open in Unity Version Control, for a Reviews row or the active review, whatever the writes setting. */
   private async openInDesktop(arg: unknown): Promise<void> {
     const target = this.reviewTarget(arg);
     if (!target) {
@@ -572,11 +593,6 @@ export class ReviewActions implements Disposable {
       return;
     }
     await this.options.session.openInDesktop(target.workspaceId, target.review.id);
-  }
-
-  /** Revoke Review Access Token, for the selected workspace's server and cm user. */
-  private async revokeAccessToken(): Promise<void> {
-    void window.showInformationMessage(await this.options.posting.revoke());
   }
 
   /** The review a row command acts on: the row's, or else the active review. */
@@ -808,9 +824,12 @@ export class ReviewActions implements Disposable {
       return;
     }
     const context = this.options.session.editorContext()!;
+    const thread = arg.thread;
+    const name = thread.path ? path.posix.basename(thread.path) || thread.path : "the discussion";
+    const line = hasLocation(thread) ? `:${thread.anchor.location + 1}` : "";
     // A tree click: the diff opens beside the tree, which keeps the keyboard.
-    await this.options.session.track(() =>
-      this.options.editors.openComment(context, arg.thread, { preserveFocus: true }));
+    await this.options.session.track(() => opening(discussionsViewId, `Opening ${name}${line}…`, () =>
+      this.options.editors.openComment(context, thread, { preserveFocus: true })));
     this.options.afterOpen?.();
   }
 
@@ -840,9 +859,134 @@ export class ReviewActions implements Disposable {
       await this.openThreadLink(workspaceId, reviewId, target.threadId);
     } else if (target.kind === "file") {
       await this.openFileLink(reviewId, target.scope, target.fileKey);
-    } else {
+    } else if (target.kind === "addMeAsReviewer") {
       await this.addMeFromLink(reviewId, parsed.link.key);
+    } else if (parsed.link.key !== this.options.session.linkKey) {
+      // Unlike Add me as reviewer, nothing here asks first for every write (the input box is the confirmation).
+      void window.showInformationMessage("This comment link did not come from the review's Overview in this " +
+        "window, so it was not followed. Use the Discussions view instead.");
+    } else if (target.kind === "addComment") {
+      await this.options.posting.addReviewComment(workspaceId, reviewId);
+    } else {
+      await this.commentFromLink(workspaceId, reviewId, target.action, target.commentId);
     }
+  }
+
+  /**
+   * Reply, Edit or Delete on the Overview, for the comment with that id in
+   * the active review's loaded discussions; Edit of the description names
+   * its timeline row. Posting checks again that the comment is the user's.
+   */
+  private async commentFromLink(
+      workspaceId: string, reviewId: number, action: CommentLinkAction, commentId: number): Promise<void> {
+    const stage = this.options.session.active!.discussions;
+    if (stage.state !== "ready") {
+      void window.showInformationMessage(`The discussions of review #${reviewId} are not loaded. ` +
+        "Follow the link again once they are.");
+      return;
+    }
+    const posting = this.options.posting;
+    const event = stage.value.timeline.find(row => row.id === commentId && row.kind === "description");
+    if (event && action === "edit") {
+      await posting.editWithInput(descriptionTarget(workspaceId, reviewId, event));
+      return;
+    }
+    const thread = stage.value.threads.find(candidate => candidate.comments.some(comment => comment.id === commentId));
+    const comment = thread?.comments.find(candidate => candidate.id === commentId);
+    if (!thread || !comment) {
+      void window.showInformationMessage(`That comment is no longer in review #${reviewId}.`);
+      return;
+    }
+    const target = commentTarget(workspaceId, reviewId, thread, comment);
+    if (action === "reply") {
+      if (comment !== thread.comments[0] || !canReplyToThread(thread)) {
+        void window.showInformationMessage("This discussion can't be replied to from here.");
+        return;
+      }
+      await posting.replyTo(target);
+    } else if (action === "edit") {
+      await posting.editWithInput(target);
+    } else {
+      await posting.deleteComment(target);
+    }
+  }
+
+  /** Add Comment…: a new comment on the whole active review. */
+  private async addReviewComment(): Promise<void> {
+    const active = this.options.session.active;
+    if (!active) {
+      void window.showInformationMessage("Open a review in Plastic Reviews first.");
+      return;
+    }
+    await this.options.posting.addReviewComment(active.workspaceId, active.review.id);
+  }
+
+  /** Reply…, on a General thread's row in Discussions: a reply to its root. */
+  private async replyToDiscussion(arg: unknown): Promise<void> {
+    const node = this.activeThread("replyToDiscussion", arg);
+    if (!node) {
+      return;
+    }
+    if (!canReplyToThread(node.thread)) {
+      void window.showInformationMessage("This discussion can't be replied to from here.");
+      return;
+    }
+    await this.options.posting.replyTo(commentTarget(node.workspaceId, node.reviewId, node.thread,
+      node.thread.comments[0]));
+  }
+
+  /** Edit…, on a Discussions row: one of the user's comments in the thread, picked when there are several. */
+  private async editDiscussionComment(arg: unknown): Promise<void> {
+    const target = await this.ownInThread("editDiscussionComment", arg, "edit");
+    if (target) {
+      await this.options.posting.editWithInput(target);
+    }
+  }
+
+  /** Delete, on a comment in a review diff or on a Discussions row (one of the user's comments in the thread). */
+  private async deleteComment(arg: unknown): Promise<void> {
+    if (isComment(arg)) {
+      const target = this.options.editors.serverComment?.(arg);
+      if (target) {
+        await this.options.posting.deleteComment(target);
+      } else {
+        this.ignore("deleteComment", arg);
+      }
+      return;
+    }
+    const target = await this.ownInThread("deleteComment", arg, "delete");
+    if (target) {
+      await this.options.posting.deleteComment(target);
+    }
+  }
+
+  /** The user's comment in a Discussions row's thread that a command acts on; undefined when there is none. */
+  private async ownInThread(name: ReviewCommandName, arg: unknown, verb: string): Promise<ICommentTarget | undefined> {
+    const node = this.activeThread(name, arg);
+    if (!node) {
+      return undefined;
+    }
+    const comment = await this.options.posting.chooseOwn(node.workspaceId, node.thread.comments, verb);
+    if (!comment) {
+      if (!node.thread.comments.some(candidate => this.options.posting.owns(node.workspaceId, candidate))) {
+        void window.showInformationMessage(`None of this discussion's comments are yours to ${verb}.`);
+      }
+      return undefined;
+    }
+    return commentTarget(node.workspaceId, node.reviewId, node.thread, comment);
+  }
+
+  /** A Discussions row of the active review; anything else is ignored or explained. */
+  private activeThread(name: ReviewCommandName, arg: unknown): IThreadArg | undefined {
+    if (!isThread(arg)) {
+      this.ignore(name, arg);
+      return undefined;
+    }
+    if (!this.isActive(arg.workspaceId, arg.reviewId)) {
+      void window.showInformationMessage("This discussion belongs to a review that is no longer open.");
+      return undefined;
+    }
+    return arg;
   }
 
   /**
@@ -981,8 +1125,9 @@ export class ReviewActions implements Disposable {
     if (scope === "changes") {
       this.lastOpened.set(identity(active.workspaceId, active.review.id), fileKey(file));
     }
-    await session.track(() => this.options.editors.open(
-      context, comparison, file, { preserveFocus, preview: true, scope }));
+    const name = path.posix.basename(file.path) || file.path;
+    await session.track(() => opening(reviewTreeViewId, `Opening ${name}…`, () =>
+      this.options.editors.open(context, comparison, file, { preserveFocus, preview: true, scope })));
     this.options.afterOpen?.();
   }
 
@@ -1136,6 +1281,57 @@ function pickReview(
       picker.hide();
     });
   });
+}
+
+/** How long an open may run before a notification says what it is waiting for. */
+export const OPENING_NOTICE_DELAY = 500;
+
+/**
+ * Runs an open of a diff, which reads both sides and the threads' revisions
+ * with cm and can take seconds. The view the click came from shows its
+ * progress bar and the status bar names what is opening at once; past
+ * `OPENING_NOTICE_DELAY` a notification says it too, since those two are easy
+ * to miss and a click that seems to do nothing gets clicked again.
+ */
+export function opening<T>(viewId: string, title: string, task: () => Thenable<T>, delay = OPENING_NOTICE_DELAY):
+    Thenable<T> {
+  const run = Promise.resolve(task());
+  const done = run.then(() => undefined, () => undefined);
+  const timer = setTimeout(() => {
+    void window.withProgress({ location: ProgressLocation.Notification, title }, () => done);
+  }, delay);
+  void done.then(() => clearTimeout(timer));
+  void window.withProgress({ location: { viewId }}, () => done);
+  return window.withProgress({ location: ProgressLocation.Window, title }, () => run);
+}
+
+/** A comment of a thread as posting writes to it; a root carries its reply count, for Delete's confirmation. */
+function commentTarget(workspaceId: string, reviewId: number, thread: IReviewThread, comment: IReviewComment):
+    ICommentTarget {
+  return { comment, replies: comment === thread.comments[0] ? thread.comments.length - 1 : 0, reviewId, workspaceId };
+}
+
+/** The review's description as a comment posting can edit: its row, with the text without its marker. */
+function descriptionTarget(workspaceId: string, reviewId: number, event: IReviewTimelineEvent): ICommentTarget {
+  return {
+    comment: {
+      appliedInChangesetId: -1,
+      changesetId: -1,
+      date: event.date,
+      guid: event.guid ?? "",
+      id: event.id,
+      location: -1,
+      owner: event.owner,
+      parentId: -1,
+      reviewId,
+      revisionId: -1,
+      text: event.text,
+      type: "timeline",
+    },
+    description: true,
+    reviewId,
+    workspaceId,
+  };
 }
 
 function allTabs(): Tab[] {

@@ -4,7 +4,7 @@
   "description": "Plastic SCM integration",
   "publisher": "plastic-scm",
   "license": "MIT",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "icon": "images/logo.png",
   "homepage": "https://github.com/PlasticSCM/vscode-plasticscm/blob/master/README.md",
   "bugs": {
@@ -136,10 +136,30 @@
           "markdownDescription": "How Plastic Reviews lists changed files.",
           "scope": "window"
         },
+        "plastic-scm.reviews.updateCheckInterval": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "markdownDescription": "Seconds between two checks for changes in Plastic Reviews: the open review, whatever is on screen, and the review queue while the Reviews view is visible. The shortest interval is 15 seconds; `0` turns the checks off.",
+          "scope": "window"
+        },
+        "plastic-scm.reviews.notifyUpdates": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification when a check finds new comments from someone else, new changesets or a new status in the open review. With this off, the **Review updated** row and **Load Updates** still show them.",
+          "scope": "window"
+        },
+        "plastic-scm.reviews.commentWrites": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Allows posting comments and replies, editing and deleting your own comments, adding yourself as a reviewer and setting your own review status, through `cm` as the user `cm` is signed in as. Needs Unity Version Control client 11.0.16.10512 or newer and a trusted workspace.",
+          "scope": "application"
+        },
         "plastic-scm.reviews.experimentalPosting": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Experimental.** Allows posting review comments and replies, adding yourself as a reviewer and setting your own review status through the Unity Version Control Server REST API. The extension creates a personal access token for this with cm, and asks first; an organization admin has to allow personal access tokens for you. Request details are unverified against the live service. Only Unity Version Control cloud repositories are supported.",
+          "markdownDeprecationMessage": "**Deprecated:** use `#plastic-scm.reviews.commentWrites#` instead. This setting only counts where `commentWrites` is not set.",
+          "deprecationMessage": "Deprecated: use plastic-scm.reviews.commentWrites instead.",
           "scope": "application"
         }
       }
@@ -412,19 +432,14 @@
         "icon": "$(link-external)"
       },
       {
-        "command": "plastic-scm.reviews.revokeAccessToken",
-        "category": "Plastic Reviews",
-        "title": "Revoke Review Access Token"
-      },
-      {
         "command": "plastic-scm.reviews.postComment",
         "category": "Plastic Reviews",
-        "title": "Post Comment (Experimental)"
+        "title": "Post Comment"
       },
       {
         "command": "plastic-scm.reviews.postReply",
         "category": "Plastic Reviews",
-        "title": "Post Reply (Experimental)"
+        "title": "Post Reply"
       },
       {
         "command": "plastic-scm.reviews.cancelComment",
@@ -434,7 +449,7 @@
       {
         "command": "plastic-scm.reviews.sendAgain",
         "category": "Plastic Reviews",
-        "title": "Send Again (Experimental)",
+        "title": "Send Again",
         "icon": "$(debug-restart)"
       },
       {
@@ -447,6 +462,46 @@
         "command": "plastic-scm.reviews.allowRetry",
         "category": "Plastic Reviews",
         "title": "Allow Another Attempt"
+      },
+      {
+        "command": "plastic-scm.reviews.addReviewComment",
+        "category": "Plastic Reviews",
+        "title": "Add Comment to Review…",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "plastic-scm.reviews.replyToDiscussion",
+        "category": "Plastic Reviews",
+        "title": "Reply…",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "plastic-scm.reviews.editDiscussionComment",
+        "category": "Plastic Reviews",
+        "title": "Edit…",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "plastic-scm.reviews.editComment",
+        "category": "Plastic Reviews",
+        "title": "Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "plastic-scm.reviews.deleteComment",
+        "category": "Plastic Reviews",
+        "title": "Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "plastic-scm.reviews.saveComment",
+        "category": "Plastic Reviews",
+        "title": "Save"
+      },
+      {
+        "command": "plastic-scm.reviews.cancelEdit",
+        "category": "Plastic Reviews",
+        "title": "Cancel"
       }
     ],
     "views": {
@@ -594,11 +649,6 @@
           "group": "1_workspace@1"
         },
         {
-          "command": "plastic-scm.reviews.revokeAccessToken",
-          "when": "view == plastic-scm.reviews.list && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.hasAccessToken",
-          "group": "8_experimental@1"
-        },
-        {
           "command": "plastic-scm.showOutput",
           "when": "view == plastic-scm.reviews.list",
           "group": "9_output@1"
@@ -615,7 +665,7 @@
         },
         {
           "command": "plastic-scm.reviews.addMeAsReviewer",
-          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.canAddMeAsReviewer",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && plastic-scm.reviews.writesOn && plastic-scm.reviews.canAddMeAsReviewer",
           "group": "navigation@2"
         },
         {
@@ -657,6 +707,11 @@
           "command": "plastic-scm.reviews.close",
           "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
           "group": "1_review@9"
+        },
+        {
+          "command": "plastic-scm.reviews.addReviewComment",
+          "when": "view == plastic-scm.reviews.discussions && plastic-scm.reviews.hasActiveReview && plastic-scm.reviews.postingEnabled",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -677,7 +732,7 @@
         },
         {
           "command": "plastic-scm.reviews.addMeAsReviewer",
-          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/ && config.plastic-scm.reviews.experimentalPosting",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/ && plastic-scm.reviews.writesOn",
           "group": "2_status@2"
         },
         {
@@ -749,6 +804,26 @@
           "command": "plastic-scm.reviews.copyDiscussionText",
           "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;/",
           "group": "3_copy@1"
+        },
+        {
+          "command": "plastic-scm.reviews.replyToDiscussion",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;reply(;|$)/ && plastic-scm.reviews.postingEnabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.replyToDiscussion",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;reply(;|$)/ && plastic-scm.reviews.postingEnabled",
+          "group": "2_write@1"
+        },
+        {
+          "command": "plastic-scm.reviews.editDiscussionComment",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;edit(;|$)/ && plastic-scm.reviews.postingEnabled",
+          "group": "2_write@2"
+        },
+        {
+          "command": "plastic-scm.reviews.deleteComment",
+          "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;delete(;|$)/ && plastic-scm.reviews.postingEnabled",
+          "group": "2_write@3"
         }
       ],
       "editor/title": [
@@ -858,7 +933,7 @@
         },
         {
           "command": "plastic-scm.reviews.addMeAsReviewer",
-          "when": "plastic-scm.reviews.hasActiveReview && config.plastic-scm.reviews.experimentalPosting"
+          "when": "plastic-scm.reviews.hasActiveReview && plastic-scm.reviews.writesOn"
         },
         {
           "command": "plastic-scm.reviews.openNextUnviewed",
@@ -907,10 +982,6 @@
         {
           "command": "plastic-scm.reviews.openInDesktop",
           "when": "plastic-scm.reviews.hasActiveReview"
-        },
-        {
-          "command": "plastic-scm.reviews.revokeAccessToken",
-          "when": "config.plastic-scm.reviews.experimentalPosting && plastic-scm.reviews.hasAccessToken"
         },
         {
           "command": "plastic-scm.reviews.open",
@@ -995,6 +1066,34 @@
         {
           "command": "plastic-scm.reviews.allowRetry",
           "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.addReviewComment",
+          "when": "plastic-scm.reviews.hasActiveReview && plastic-scm.reviews.postingEnabled"
+        },
+        {
+          "command": "plastic-scm.reviews.replyToDiscussion",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.editDiscussionComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.editComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.deleteComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.saveComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.reviews.cancelEdit",
+          "when": "false"
         }
       ],
       "comments/commentThread/context": [
@@ -1028,6 +1127,28 @@
         {
           "command": "plastic-scm.reviews.discardLocal",
           "when": "commentController == plastic-scm.reviews && comment =~ /^reviewLocal-(failed|uncertain)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "plastic-scm.reviews.editComment",
+          "when": "commentController == plastic-scm.reviews && comment == reviewComment-own && plastic-scm.reviews.postingEnabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.deleteComment",
+          "when": "commentController == plastic-scm.reviews && comment == reviewComment-own && plastic-scm.reviews.postingEnabled",
+          "group": "inline@2"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "plastic-scm.reviews.saveComment",
+          "when": "commentController == plastic-scm.reviews && comment == reviewComment-own",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.reviews.cancelEdit",
+          "when": "commentController == plastic-scm.reviews && comment == reviewComment-own",
           "group": "inline@2"
         }
       ]

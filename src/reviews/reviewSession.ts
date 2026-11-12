@@ -11,9 +11,16 @@ import {
   window,
   workspace,
 } from "vscode";
-import { CONSENT_MESSAGE, consentDetail } from "./reviewTokens";
-import { desktopReviewLink, IReviewLink } from "./reviewLinks";
-import { formatCount, sameStatus, threadCounts, unnamedBranchId } from "./reviewPresentation";
+import { desktopReviewLink, IReviewLink, isWriteTarget } from "./reviewLinks";
+import {
+  formatCount,
+  hasNews,
+  IUpdateNotice,
+  sameStatus,
+  threadCounts,
+  unnamedBranchId,
+  updateNotice,
+} from "./reviewPresentation";
 import { IActiveReview, IReviewGroup, IReviewSessionView, ReviewGroupKey, Stage } from "./sessionTypes";
 import {
   IFoundReviews,
@@ -24,24 +31,25 @@ import {
   IReviewFiles,
   IReviewQueue,
   IReviewThread,
+  IReviewUpdates,
   ReviewStatus,
   scopeRows,
   viewableRows,
 } from "./models";
-import { IReviewEditorContext, overviewViewId } from "./reviewEditors";
-import { isEmailAddress, ReviewWriteError } from "./reviewWriter";
 import { isReviewLoadCancelled, ReviewService } from "./reviewService";
 import { IViewedMemento, reviewKey, ViewedStore } from "./viewedStore";
+import { REVIEW_TREE_COMMANDS, reviewTreeViewId } from "./reviewTreeProvider";
 import { ReviewerBlock, reviewerBlock, reviewerStatus } from "./timeline";
 import { discussionsViewId } from "./discussionsProvider";
 import { IChangesetFileChange } from "../models";
+import { IReviewEditorContext } from "./reviewEditors";
 import { IShellConfig } from "../config";
 import { PAGE_SIZE } from "./commands";
 import { randomBytes } from "crypto";
 import { renderOverview } from "./reviewOverview";
 import { ReviewAccess } from "./reviewPosting";
 import { reviewListViewId } from "./reviewListProvider";
-import { reviewTreeViewId } from "./reviewTreeProvider";
+import { ReviewWriteError } from "./reviewWriteError";
 
 /** A Plastic workspace the reviews can be read through. */
 export interface IReviewWorkspace {
@@ -74,31 +82,32 @@ export interface IReviewSessionUi {
   info(message: string): void;
   /** A notification with a Cancel button while `task` runs; `cancel` fires when it is pressed. */
   cancellable<T>(title: string, task: (cancel: CancellationToken) => Thenable<T>): Thenable<T>;
-  /** An error with buttons of its own; resolves the one picked, undefined when it is dismissed. */
-  alert(message: string, actions: readonly string[]): Thenable<string | undefined>;
-  /** Puts text on the clipboard. */
-  copy(text: string): Thenable<void>;
   /** Opens a link outside VS Code, such as a `plastic://` one; resolves whether it was opened. */
   openExternal(link: string): Thenable<boolean>;
+  /** A notification that blocks nothing, with action buttons; resolves the one picked, undefined when dismissed. */
+  notify(message: string, actions: readonly string[]): Thenable<string | undefined>;
+  /** Runs Load Updates, as the Review view's button does. */
+  loadUpdates(): void;
+  /** Brings the Discussions view to the front. */
+  showDiscussions(): void;
 }
 
 /**
- * Experimental review writes through the Unity Version Control Server REST
- * API, with the personal access token of experimental posting: adding the cm
- * user to a review's reviewers, and the user's own verdict. ReviewPosting
- * provides them.
+ * Review writes with cm, as the user cm is signed in as: adding
+ * that user to a review's reviewers, and the user's own verdict.
+ * ReviewPosting provides them.
  */
 export interface IReviewSessionReviewers {
   /** The experimental setting; the Overview offers Add me as reviewer only while it is on. */
   settingOn(): boolean;
-  /** Whether writes can work in a workspace, and if not, why; creates no token. */
+  /** Whether writes can work in a workspace, and if not, why; writes nothing. */
   access(workspaceId: string): Promise<ReviewAccess>;
-  /** Remembers that the user agreed to a token for the workspace's server. */
-  consent(workspaceId: string): Promise<void>;
   /** Adds the cm user to a review's reviewers. Rejects with a message that is safe to show. */
   add(workspaceId: string, reviewId: number, cancel?: CancellationToken): Promise<void>;
   /** Sets the cm user's own verdict on a review. Rejects with a message that is safe to show. */
   setStatus(workspaceId: string, reviewId: number, status: ReviewStatus): Promise<void>;
+  /** Writes work in the active workspace now; the Overview then links comment actions. */
+  enabled?(): boolean;
 }
 
 export interface IReviewSessionOptions {
@@ -112,38 +121,49 @@ export interface IReviewSessionOptions {
   editors?: IReviewSessionEditors;
   /** The URI that opens a thread or a file row from the Overview; without it the Overview links nothing of its own. */
   overviewLink?: (link: IReviewLink) => string;
-  /** Experimental: review writes through the REST API. Without it, Set Review Status… always uses cm. */
+  /** Add Me as Reviewer and the user's own verdict. Without it, Set Review Status… sets the review's. */
   reviewers?: IReviewSessionReviewers;
   /** Test injection; by default every workspace gets a service with its own cm shell. */
   createService?: (workspace: IReviewWorkspace) => ReviewService;
   ui?: Partial<IReviewSessionUi>;
   now?: () => number;
-  pollInterval?: number;
+  /**
+   * Test injection: milliseconds between two checks for changes, 0 for none;
+   * a function is asked again by `applySettings`. By default the
+   * `plastic-scm.reviews.updateCheckInterval` setting decides.
+   */
+  pollInterval?: number | (() => number);
+  /** Test injection; by default the `plastic-scm.reviews.notifyUpdates` setting. */
+  notifyUpdates?: () => boolean;
   fileLayout?: () => "tree" | "list";
 }
 
 export const LAST_REVIEW_KEY = "plastic-scm.reviews.lastReview";
 export const SELECTED_WORKSPACE_KEY = "plastic-scm.reviews.workspace";
 export const FILE_LAYOUT_SETTING = "plastic-scm.reviews.fileLayout";
+export const UPDATE_INTERVAL_SETTING = "plastic-scm.reviews.updateCheckInterval";
+export const NOTIFY_UPDATES_SETTING = "plastic-scm.reviews.notifyUpdates";
+/** The actions of the notification about the open review's updates. */
+export const LOAD_UPDATES = "Load Updates";
+export const SHOW_DISCUSSIONS = "Show Discussions";
 
 const PERSONAL: readonly ReviewGroupKey[] = [ "needsMyReview", "reworkRequested", "waitingForReviewers" ];
 /** The groups that page: each Load More reads the next `PAGE_SIZE` reviews. */
 const PAGED: readonly ReviewGroupKey[] = [ "allOpen", "allReviews" ];
 const ALL_GROUPS: readonly ReviewGroupKey[] = PERSONAL.concat(PAGED);
 const POLL_INTERVAL = 60 * 1000;
+/** Three cm queries per check: a shorter interval would keep the server busy for nothing. */
+const MIN_POLL_INTERVAL = 15 * 1000;
+/** Well inside what a timer can count. */
+const MAX_POLL_INTERVAL = 24 * 60 * 60 * 1000;
 /** Find Review…'s reviews are read again once they are this old, as the polled queue would be. */
 const FIND_MAX_AGE = POLL_INTERVAL;
 const IDLE: Stage<never> = { state: "idle" };
 const LOADING: Stage<never> = { state: "loading" };
 const NOT_FOUND = "ReviewNotFound";
 /** The choices of Set Review Status…'s and Add Me as Reviewer's dialogs; a modal adds Cancel. */
-const SET_ANYWAY = "Set Status Anyway";
-const CREATE_AND_ADD = "Create Token and Add";
-const CREATE_AND_SET = "Create Token and Set";
 const WITHOUT_ADDING = "Set Status Without Adding";
-const WITH_CM = "Set Review Status with cm";
-const OPEN_IN_DESKTOP = "Open in Unity Version Control";
-const COPY_COMMAND = "Copy Command";
+const REVIEW_STATUS = "Set the Review's Status";
 /** Why the cm user cannot be added to a review's reviewers, as Add Me as Reviewer says it. */
 const BLOCKED: { [block in ReviewerBlock]: (reviewId: number) => string } = {
   assignee: id => `You're the assignee of review #${id}, which already makes you a reviewer.`,
@@ -157,20 +177,14 @@ interface ILastReviews {
 
 /**
  * How Set Review Status… sets a review's status (see `statusPlan`), and the
- * status its picker marks current. `cm`: the review's status with cm, as
- * without experimental posting. `personal`: the cm user's own verdict through
- * the REST API, after adding them when `add`, and after asking to create a
- * token for the server `consent` when there is none. `notAnAddress` and
- * `noAccess`: the user is not a reviewer and cannot be added, for `reason`;
- * the review's status can still be set with cm.
+ * status its picker marks current. `cm`: the review's own status, with
+ * `cm codereview -e --status`, as without review writes. `personal`:
+ * the cm user's own verdict as a reviewer, with `cm codereview review`, after
+ * adding them to the reviewers when `add`.
  */
 export type StatusPlan =
   | { kind: "cm"; current: string }
-  | { kind: "personal"; current: ReviewStatus; user: string; add: boolean; consent?: string }
-  | { kind: "notAnAddress" | "noAccess"; current: string; reason: string };
-
-/** cm's refusal to create a personal access token, as the access of experimental posting says it. */
-type TokenRefusal = Extract<ReviewAccess, { message: string }>;
+  | { kind: "personal"; current: ReviewStatus; user: string; add: boolean };
 
 /** The cm user, why they cannot be added to a review's reviewers, and the status they gave it; see `joining`. */
 interface IJoining {
@@ -207,6 +221,19 @@ function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
 /** The key of an add in flight: a review of a workspace. */
 function addKey(workspaceId: string, reviewId: number): string {
   return JSON.stringify([ workspaceId, reviewId ]);
+}
+
+/**
+ * The milliseconds between two checks for changes, from the value of the
+ * `plastic-scm.reviews.updateCheckInterval` setting, which is in seconds: 0
+ * (or less) turns the checks off, anything else is kept between 15 seconds and
+ * a day, and a value that is not a number means the default minute.
+ */
+export function updateCheckInterval(seconds: unknown): number {
+  if (typeof seconds !== "number" || !isFinite(seconds)) {
+    return POLL_INTERVAL;
+  }
+  return seconds <= 0 ? 0 : Math.min(MAX_POLL_INTERVAL, Math.max(MIN_POLL_INTERVAL, Math.round(seconds * 1000)));
 }
 
 /** cm prefixes its own diagnostics with "Error: "; the message after it is what the user needs. */
@@ -254,7 +281,6 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   private readonly adds = new Map<string, IAddClaim>();
   private readonly viewed: ViewedStore;
   private readonly ui: IReviewSessionUi;
-  private readonly pollInterval: number;
   private selected?: string;
   private current?: IActiveReview;
   /** Bumped by every activation, reload and close; a load whose number is stale drops its results. */
@@ -266,6 +292,15 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   private busyCount = 0;
   private polling = false;
   private timer?: ReturnType<typeof setInterval>;
+  /** The interval `timer` runs at, to start it again when the setting changes. */
+  private timerInterval = 0;
+  /**
+   * What the last check for changes told the user about the active review, or
+   * would have with notifications on; the next check notifies only about what
+   * this does not cover. Forgotten with the review, and when a reload shows
+   * what it reported.
+   */
+  private reported?: IUpdateNotice;
   private disposed = false;
   /** The Changesets page a Load More Changesets is extending; its row shows the load. */
   private moreChangesetsFrom?: IReviewChangesets;
@@ -280,7 +315,6 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     this.onDidChangeWorkspace = this.workspaceChanged.event;
     this.onDidChangeCanAddMe = this.canAddMeChanged.event;
     this.now = options.now ?? Date.now;
-    this.pollInterval = options.pollInterval ?? POLL_INTERVAL;
     this.viewed = new ViewedStore(options.globalState, this.now);
     this.ui = { ...defaultUi(), ...options.ui };
     const saved = options.workspaceState.get<string>(SELECTED_WORKSPACE_KEY);
@@ -314,6 +348,11 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   /** A user operation is running; polls wait for it. */
   public get busy(): boolean {
     return this.busyCount > 0;
+  }
+
+  /** The milliseconds between two checks for changes while they run; undefined while they do not. */
+  public get checkingEvery(): number | undefined {
+    return this.timer ? this.timerInterval : undefined;
   }
 
   public get loadingMoreChangesets(): boolean {
@@ -358,6 +397,11 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       this.services.set(workspaceId, service);
     }
     return service;
+  }
+
+  /** The workspace's root folder; undefined once the workspace is closed. */
+  public root(workspaceId: string): string | undefined {
+    return this.workspace(workspaceId)?.path;
   }
 
   /** The workspace's repository spec, as `cm status` reports it. */
@@ -681,17 +725,50 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       if (generation !== this.generation) {
         return;
       }
+      // What a check reported is about to be on screen; the next one starts from what loads here.
+      this.reported = undefined;
       this.update({ review, updates: undefined });
       await this.loadStages(generation, service, true);
     }));
   }
 
   /**
+   * Loads the open review's discussions again, timeline included, when it is
+   * this review; the other stages stay as they are. While the discussions are
+   * still loading, the whole review loads again instead, so that a load which
+   * started before the change cannot land last. A posted comment asks for
+   * this too, so that the server's row replaces the local one. Once they have
+   * loaded, the comments a check for changes counted are on screen: they stop
+   * being pending updates, and the next check compares with what loaded here,
+   * so it never reports the comment that was just posted.
+   */
+  public async reloadDiscussions(workspaceId: string, reviewId: number): Promise<void> {
+    const active = this.openReview(workspaceId, reviewId);
+    const service = active && this.service(workspaceId);
+    if (!active || !service) {
+      return;
+    }
+    if (active.discussions.state === "loading") {
+      await this.reload();
+      return;
+    }
+    const generation = this.generation;
+    const files = active.files.state === "ready" ? active.files.value : undefined;
+    await this.track(() => this.ui.progress(reviewTreeViewId,
+      () => this.loadDiscussions(generation, service, files, true)));
+    const loaded = this.current;
+    if (generation === this.generation && loaded && loaded.discussions.state === "ready" &&
+      loaded.discussions !== active.discussions) {
+      this.dropCommentUpdates(loaded);
+    }
+  }
+
+  /**
    * How Set Review Status… would set a review's status, and the status its
    * picker starts from; asks the user nothing and writes nothing. With
-   * experimental posting on and able to work, a cm user who is a reviewer, or
-   * can be added as one (see `reviewerBlock`), gives their own verdict through
-   * the REST API, and the current status is theirs (`reviewerStatus`). The
+   * review writes on and able to work, a cm user who is a reviewer, or
+   * can be added as one (see `reviewerBlock`), gives their own verdict as a
+   * reviewer, and the current status is theirs (`reviewerStatus`). The
    * review's author and assignee, and everyone while posting is off or
    * blocked, set the review's status with cm. When cm cannot say who the user
    * is or where they stand, so does the user, and the output channel says why.
@@ -707,7 +784,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     let joining: IJoining;
     try {
       access = await reviewers.access(workspaceId);
-      if (access.state === "settingOff" || access.state === "blocked") {
+      if (access.state !== "ready") {
         return cm;
       }
       joining = await this.joining(workspaceId, review, service);
@@ -719,32 +796,23 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     if (block === "author" || block === "assignee") {
       return cm;
     }
-    const add = block !== "requested";
-    if (access.state === "notAllowed" || access.state === "disabled") {
-      return add ? { current: review.status, kind: "noAccess", reason: access.message } : cm;
-    }
-    if (add && !isEmailAddress(user)) {
-      return { current: review.status, kind: "notAnAddress", reason: notAnAddress(user) };
-    }
-    const consent = access.state === "needsConsent" ? { consent: access.server } : {};
-    return { add, current: own, kind: "personal", user, ...consent };
+    return { add: block !== "requested", current: own, kind: "personal", user };
   }
 
   /**
    * Changes a review's status as `plan` says, or as `statusPlan` says when
    * the caller has no plan. Marking a review Reviewed while change requests
    * are pending or files are unviewed asks first, as does marking one whose
-   * counts cannot be known, in one dialog with anything else there is to ask:
-   * whether to create a token, or to set the status with cm instead. Nothing
-   * is written unless the user confirms.
+   * counts cannot be known. Nothing is written unless the user confirms.
    *
    * A cm user who is not a reviewer is added before their verdict. An add of
    * the user to the review already in flight, from Add Me as Reviewer, stands
    * in for that one: its end is awaited and no second request goes out. A
-   * failed add asks before the status is set with cm anyway; an add whose
-   * result is unknown stops. When cm refuses to create the token only then,
-   * the choices are those of a refusal known beforehand. The review is read
-   * back afterwards, and a failed write leaves every displayed status as it was.
+   * failed add asks before the review's status is set without adding; an add
+   * whose result is unknown stops. When cm refuses the verdict itself, as it
+   * does to someone who is not a reviewer after all, the review's status can
+   * be set instead. The review is read back afterwards, and a failed write
+   * leaves every displayed status as it was.
    */
   public async setStatus(workspaceId: string, review: IReview, status: ReviewStatus, plan?: StatusPlan):
       Promise<IReview | undefined> {
@@ -757,34 +825,6 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       return undefined;
     }
     const warning = status === "Reviewed" ? await this.reviewedWarning(workspaceId, review, service) : undefined;
-    // The Reviewed warning, in a dialog that asks about something else first.
-    const also = warning && `Marking it Reviewed: ${warning}`;
-    const withCm = () => this.statusWithCm(workspaceId, review, status, service);
-    if (route.kind === "notAnAddress" || route.kind === "noAccess") {
-      const actions = route.kind === "noAccess" ? [ WITHOUT_ADDING, OPEN_IN_DESKTOP ] : [SET_ANYWAY];
-      const choice = await this.ui.choose(`Couldn't add you as a reviewer on review #${review.id}.`,
-        joinLines(route.reason, also), actions);
-      if (choice === OPEN_IN_DESKTOP) {
-        await this.openInDesktop(workspaceId, review.id);
-      }
-      return choice === WITHOUT_ADDING || choice === SET_ANYWAY ? withCm() : undefined;
-    }
-    if (route.kind === "personal" && route.consent !== undefined) {
-      const needs = `${route.add ? "Adding yourself" : "Your own status"} needs a personal access token. ` +
-        consentDetail(route.consent);
-      const title = route.add
-        ? `You're not a reviewer on #${review.id}. Add yourself first?`
-        : `Set your own status on #${review.id}?`;
-      const actions = route.add ? [ CREATE_AND_ADD, WITHOUT_ADDING ] : [ CREATE_AND_SET, WITH_CM ];
-      const choice = await this.ui.choose(title, joinLines(also, needs), actions);
-      if (choice === WITHOUT_ADDING || choice === WITH_CM) {
-        return withCm();
-      }
-      if ((choice !== CREATE_AND_ADD && choice !== CREATE_AND_SET) || !await this.consentTo(workspaceId)) {
-        return undefined;
-      }
-      return this.ownStatus(workspaceId, review, status, route.add, service);
-    }
     const adding = route.kind === "personal" && route.add;
     const detail = warning && (adding ? `${warning} You will be added as a reviewer first.` : warning);
     if (detail && !await this.ui.confirm(`Mark review #${review.id} as Reviewed?`, detail, "Mark Reviewed")) {
@@ -796,14 +836,13 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   }
 
   /**
-   * Add Me as Reviewer, once the caller has made sure experimental posting is
+   * Add Me as Reviewer, once the caller has made sure review writes is
    * on and not blocked in this workspace. The review's author, its assignee
    * and anyone already requested are told why not instead, as is a second
-   * click while the first add is in flight. Without a token yet it asks to
-   * create one; when cm refuses to, it says what an admin can do. Afterwards
-   * the open review's discussions load again, which draws the new reviewer
-   * card, and Needs My Review loads again when the review now belongs in it.
-   * A failure is shown and changes nothing. Resolves true once added.
+   * click while the first add is in flight. Afterwards the open review's
+   * discussions load again, which draws the new reviewer card, and Needs My
+   * Review loads again when the review now belongs in it. A failure is shown
+   * and changes nothing. Resolves true once added.
    */
   public async addMe(workspaceId: string, review: IReview): Promise<boolean> {
     const service = this.service(workspaceId);
@@ -828,30 +867,22 @@ export class ReviewSession implements IReviewSessionView, Disposable {
         this.log(`Couldn't add you as a reviewer on review #${review.id}: ${errorText(error)}`);
         return failed(errorText(error));
       }
-      const { block, user } = joining;
-      if (block) {
-        this.ui.info(BLOCKED[block](review.id));
+      if (joining.block) {
+        this.ui.info(BLOCKED[joining.block](review.id));
         return false;
-      }
-      if (!isEmailAddress(user)) {
-        this.log(`Couldn't add you as a reviewer on review #${review.id}: ${notAnAddress(user)}`);
-        return failed(notAnAddress(user));
       }
       if (!await this.readyToAdd(workspaceId, review.id)) {
         return false;
       }
       const failure = await this.addUser(claim, workspaceId, review.id);
       if (failure) {
-        if (failure.cancelled) {
-          return false;
+        // Cancelled before cm started, nothing happened; any other end is shown, even a cancel once cm had started.
+        const result = failure.cancelled && !failure.uncertain ? false : failed(failure.message);
+        if (failure.uncertain) {
+          // cm may have added the user: the discussions say whether it did.
+          await this.reloadDiscussions(workspaceId, review.id);
         }
-        // cm refused to create the token only now, for this add: said as when that is known beforehand.
-        const refusal = failure.uncertain ? undefined : await this.refusal(workspaceId);
-        if (refusal) {
-          this.refusalAlert(workspaceId, review.id, refusal);
-          return false;
-        }
-        return failed(failure.message);
+        return result;
       }
       this.ui.status(`$(person-add) Added you as a reviewer on review #${review.id}`);
       if (workspaceId === this.selected) {
@@ -933,25 +964,27 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     };
   }
 
-  /** Tells the session which review views are on screen; polling runs only while one is. */
+  /** Tells the session which review views are on screen; the queue is polled only while the Reviews view is. */
   public setViewVisible(viewId: string, visible: boolean): void {
     if (visible) {
       this.visibleViews.add(viewId);
     } else {
       this.visibleViews.delete(viewId);
     }
-    if (this.visibleViews.size && !this.disposed) {
-      this.timer = this.timer ?? setInterval(() => void this.poll(), this.pollInterval);
-    } else {
-      this.stopPolling();
-    }
+    this.syncTimer();
+  }
+
+  /** The update check settings may have changed: the timer follows the interval, without a window reload. */
+  public applySettings(): void {
+    this.syncTimer();
   }
 
   /**
    * One poll: the queue when the Reviews view is visible, and what changed in
-   * the active review when the Review or Discussions view or its Overview is.
-   * Skipped while a user operation runs, so a click never waits behind it for
-   * long. A failed poll only writes to the output channel.
+   * the active review for as long as one is open, whether or not its views are
+   * on screen, so that the user hears about it while working elsewhere.
+   * Skipped while a user operation or another poll runs, so a click never
+   * waits behind it for long. A failed poll only writes to the output channel.
    */
   public async poll(): Promise<void> {
     if (this.busyCount > 0 || this.polling || this.disposed) {
@@ -962,8 +995,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       if (this.visibleViews.has(reviewListViewId)) {
         await this.pollList();
       }
-      const reviewShown = [ reviewTreeViewId, discussionsViewId, overviewViewId ].some(id => this.visibleViews.has(id));
-      if (this.busyCount === 0 && reviewShown) {
+      if (this.busyCount === 0 && !this.disposed) {
         await this.pollActive();
       }
     } finally {
@@ -985,9 +1017,10 @@ export class ReviewSession implements IReviewSessionView, Disposable {
    * The Overview document of a review; only the active review has one. Its
    * links open threads and file rows through `overviewLink`, and the cm user
    * is marked once `cm whoami` has answered: asked here the first time, after
-   * which the Overview is drawn again. With experimental posting on, a user
-   * who can be added to the reviewers is offered a link that does it; the
-   * link carries `linkKey`.
+   * which the Overview is drawn again. With review writes on, a user
+   * who can be added to the reviewers is offered a link that does it, and
+   * while posting works, review-level comments link their writes; every link
+   * that writes carries `linkKey`.
    */
   public overview(workspaceId: string, reviewId: number): string {
     const active = this.current;
@@ -997,9 +1030,10 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     const link = this.options.overviewLink;
     return renderOverview(active, {
       addMe: !!this.options.reviewers?.settingOn() && this.canAddMe(),
+      commentActions: !!this.options.reviewers?.enabled?.(),
       isViewed: file => this.isViewed(file),
       link: link && (target => link({
-        ...(target.kind === "addMeAsReviewer" ? { key: this.linkKey } : {}),
+        ...(isWriteTarget(target) ? { key: this.linkKey } : {}),
         reviewId,
         target,
         workspaceId,
@@ -1143,9 +1177,113 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       if (JSON.stringify(updates) !== JSON.stringify(active.updates)) {
         this.update({ updates });
       }
+      await this.announce(service, updates, generation);
     } catch (error) {
       this.log(`Review #${active.review.id} update check failed: ${errorText(error)}`);
     }
+  }
+
+  /**
+   * Tells the user what a check found in the active review, in a notification
+   * that blocks nothing, once: pending updates that were already reported say
+   * nothing again, a further change does. Comments the cm user wrote are not
+   * news to them (they still count as updates), and with
+   * `plastic-scm.reviews.notifyUpdates` off nothing is shown at all. The
+   * actions act on the review only while it is still the open one.
+   * `generation` is the one the check started in: a reload that starts while
+   * cm is asked who the user is loads these updates already, and replaces
+   * `current` only once it has, so the generation is what tells.
+   */
+  private async announce(service: ReviewService, updates: IReviewUpdates | undefined, generation: number):
+      Promise<void> {
+    const shown = this.current;
+    if (!shown) {
+      return;
+    }
+    let me = service.knownUser;
+    if (me === undefined && updates?.comments.length) {
+      try {
+        me = await service.whoami();
+      } catch (error) {
+        // Better a notification about the user's own comment than none about someone else's.
+        this.log(`Couldn't ask cm who the user is: ${errorText(error)}`);
+      }
+      if (generation !== this.generation || this.current !== shown) {
+        // Something else changed or is reloading the review; the next check reports what is still pending.
+        return;
+      }
+    }
+    const { review, workspaceId } = shown;
+    const notice = updates && updateNotice(review.id, updates, me);
+    const reported = this.reported;
+    this.reported = notice;
+    if (!notice || !hasNews(notice, reported) || !this.notifies()) {
+      return;
+    }
+    const comments = notice.comments.length > 0 || notice.removedComments > 0;
+    const actions = comments ? [ LOAD_UPDATES, SHOW_DISCUSSIONS ] : [LOAD_UPDATES];
+    // Not awaited: the notification stays until the user answers it, and polls must go on meanwhile.
+    void Promise.resolve(this.ui.notify(notice.message, actions)).then(choice => {
+      if (this.disposed || !this.openReview(workspaceId, review.id)) {
+        return;
+      }
+      if (choice === LOAD_UPDATES) {
+        this.ui.loadUpdates();
+      } else if (choice === SHOW_DISCUSSIONS) {
+        this.ui.showDiscussions();
+      }
+    }, error => this.log(`Couldn't show a notification: ${errorText(error)}`));
+  }
+
+  /**
+   * The discussions loaded again by themselves (see `reloadDiscussions`), so
+   * the comments the last check counted are shown: they leave the pending
+   * updates and what was reported. A new head or status stays pending.
+   */
+  private dropCommentUpdates(active: IActiveReview): void {
+    if (this.reported) {
+      this.reported = { ...this.reported, comments: [], removedComments: 0 };
+    }
+    const updates = active.updates;
+    if (!updates || (updates.newComments === 0 && updates.removedComments === 0)) {
+      return;
+    }
+    const rest: IReviewUpdates = { ...updates, comments: [], newComments: 0, removedComments: 0 };
+    this.update({ updates: rest.status !== undefined || rest.newHead !== undefined ? rest : undefined });
+  }
+
+  private notifies(): boolean {
+    return this.options.notifyUpdates
+      ? this.options.notifyUpdates()
+      : workspace.getConfiguration().get<boolean>(NOTIFY_UPDATES_SETTING, true);
+  }
+
+  /** The milliseconds between two polls; 0 when the checks are turned off. */
+  private checkInterval(): number {
+    const injected = this.options.pollInterval;
+    if (injected !== undefined) {
+      return typeof injected === "function" ? injected() : injected;
+    }
+    return updateCheckInterval(workspace.getConfiguration().get<unknown>(UPDATE_INTERVAL_SETTING));
+  }
+
+  /**
+   * Runs the poll timer exactly while there is something to poll: a review
+   * view on screen (the queue) or an open review (its updates, whatever is on
+   * screen), and an interval that is not 0. A changed interval starts it again.
+   */
+  private syncTimer(): void {
+    const interval = this.checkInterval();
+    if (this.disposed || !(interval > 0) || (this.visibleViews.size === 0 && !this.current)) {
+      this.stopPolling();
+      return;
+    }
+    if (this.timer && this.timerInterval === interval) {
+      return;
+    }
+    this.stopPolling();
+    this.timerInterval = interval;
+    this.timer = setInterval(() => void this.poll(), interval);
   }
 
   private stopPolling(): void {
@@ -1326,6 +1464,8 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     const previous = this.current;
     this.current = active;
     this.changesetStages.clear();
+    this.reported = undefined;
+    this.syncTimer();
     if (!active && !previous) {
       return;
     }
@@ -1371,6 +1511,8 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     const active = this.current;
     if (active && active.workspaceId === workspaceId && active.review.id === fresh.id) {
       const updates = active.updates && { ...active.updates, status: undefined };
+      // The status on screen is the server's again; another one is news even if it was reported before.
+      this.reported = this.reported && { ...this.reported, status: undefined };
       const pending = !!updates &&
         (updates.newHead !== undefined || updates.newComments > 0 || updates.removedComments > 0);
       this.update({ review: fresh, updates: pending ? updates : undefined });
@@ -1549,9 +1691,11 @@ export class ReviewSession implements IReviewSessionView, Disposable {
 
   /**
    * After the add before a verdict failed: an unknown result stops, and a
-   * definite failure asks before the review's status is set with cm. When
-   * the add failed because cm refused to create the token, the choices are
-   * those of a refusal known beforehand. `own`: the add was this action's.
+   * definite failure asks before the review's status is set without adding.
+   * `own`: the add was this action's. An unknown result of its own add,
+   * including a cancel once cm had started, is shown, and the discussions
+   * load again to show whether the user was added; Add Me as Reviewer does
+   * the same for its own.
    */
   private async afterFailedAdd(
       workspaceId: string,
@@ -1561,21 +1705,15 @@ export class ReviewSession implements IReviewSessionView, Disposable {
       failure: IAddFailure,
       own: boolean): Promise<IReview | undefined> {
     if (failure.cancelled || failure.uncertain) {
-      if (failure.uncertain && !failure.cancelled && own) {
-        // Add Me as Reviewer says so itself when the add was its own.
+      if (failure.uncertain && own) {
         this.ui.error(`Couldn't add you as a reviewer on review #${review.id}: ${failure.message}`);
+        await this.reloadDiscussions(workspaceId, review.id);
       }
       return undefined;
     }
-    const refusal = await this.refusal(workspaceId);
-    const choice = await this.ui.choose(`Couldn't add you as a reviewer on review #${review.id}.`,
-      refusal?.message ?? failure.message, refusal ? [ WITHOUT_ADDING, OPEN_IN_DESKTOP ] : [SET_ANYWAY]);
-    if (choice === OPEN_IN_DESKTOP) {
-      await this.openInDesktop(workspaceId, review.id);
-    }
-    return choice === SET_ANYWAY || choice === WITHOUT_ADDING
-      ? this.statusWithCm(workspaceId, review, status, service)
-      : undefined;
+    const choice = await this.ui.choose(`Couldn't add you as a reviewer on review #${review.id}.`, failure.message,
+      [WITHOUT_ADDING]);
+    return choice === WITHOUT_ADDING ? this.statusWithCm(workspaceId, review, status, service) : undefined;
   }
 
   /** The review's status with cm, where the plan was another; a review with that status already is left alone. */
@@ -1592,11 +1730,15 @@ export class ReviewSession implements IReviewSessionView, Disposable {
   }
 
   /**
-   * The cm user's own verdict through the REST API; then the review read back
-   * through cm and shown everywhere, the queue following, and its discussions
-   * loaded again for the verdict's row and an add's. A failure is shown; when
-   * it is cm's refusal to create the token, which only now shows, the
-   * review's status can be set with cm instead.
+   * The cm user's own verdict with cm; then the review read back and shown
+   * everywhere, the queue following, and its discussions loaded again for
+   * the verdict's row and an add's. A failure whose result is unknown, or
+   * where cm did not get to answer (it is missing, could not start or lost
+   * the server), is shown. Only when cm refused, which it does to someone
+   * who is neither a reviewer nor a server administrator, can the review's
+   * own status be set instead; after an add of this action's, the
+   * discussions load again first, since the add stands whatever became of
+   * the verdict.
    */
   private async writeOwnStatus(
       workspaceId: string,
@@ -1607,28 +1749,22 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     const reviewers = this.options.reviewers;
     try {
       if (!reviewers) {
-        throw new Error("Experimental posting is not available here.");
+        throw new Error("Review writes are not available here.");
       }
       await this.track(() => this.ui.progress(reviewTreeViewId,
         () => reviewers.setStatus(workspaceId, review.id, status)));
     } catch (error) {
       this.log(`Couldn't set your status on review #${review.id} to ${status}: ${errorText(error)}`);
-      const refusal = added || (error instanceof ReviewWriteError && error.uncertain)
-        ? undefined
-        : await this.refusal(workspaceId);
-      if (refusal) {
-        const choice = await this.ui.choose(`Couldn't set your own status on review #${review.id}.`, refusal.message,
-          [ WITH_CM, OPEN_IN_DESKTOP ]);
-        if (choice === OPEN_IN_DESKTOP) {
-          await this.openInDesktop(workspaceId, review.id);
-        }
-        return choice === WITH_CM ? this.statusWithCm(workspaceId, review, status, service) : undefined;
-      }
-      this.ui.error(`Couldn't set your status on review #${review.id} to ${status}: ${errorText(error)}`);
       if (added) {
         await this.reloadDiscussions(workspaceId, review.id);
       }
-      return undefined;
+      if (!(error instanceof ReviewWriteError && error.refused)) {
+        this.ui.error(`Couldn't set your status on review #${review.id} to ${status}: ${errorText(error)}`);
+        return undefined;
+      }
+      const choice = await this.ui.choose(`Couldn't set your own status on review #${review.id}.`, errorText(error),
+        [REVIEW_STATUS]);
+      return choice === REVIEW_STATUS ? this.statusWithCm(workspaceId, review, status, service) : undefined;
     }
     let fresh = review;
     try {
@@ -1670,65 +1806,21 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     }
   }
 
-  /** cm's refusal to create a token, as the workspace's access says it now; undefined for any other access. */
-  private async refusal(workspaceId: string): Promise<TokenRefusal | undefined> {
-    let access: ReviewAccess | undefined;
-    try {
-      access = await this.options.reviewers?.access(workspaceId);
-    } catch {
-      access = undefined;
-    }
-    return access?.state === "notAllowed" || access?.state === "disabled" ? access : undefined;
-  }
-
-  /**
-   * Add Me as Reviewer's error when cm refuses to create a token: what an
-   * admin can do, the admin's command to copy for `notAllowed`, and the
-   * desktop app at hand. It does not wait for the notification.
-   */
-  private refusalAlert(workspaceId: string, reviewId: number, refusal: TokenRefusal): void {
-    const actions = refusal.state === "notAllowed" ? [ COPY_COMMAND, OPEN_IN_DESKTOP ] : [OPEN_IN_DESKTOP];
-    void this.ui.alert(`Couldn't add you as a reviewer on review #${reviewId}: ${refusal.message}`, actions)
-      .then(async choice => {
-        if (choice === COPY_COMMAND && refusal.state === "notAllowed") {
-          await this.ui.copy(refusal.command);
-        } else if (choice === OPEN_IN_DESKTOP) {
-          await this.openInDesktop(workspaceId, reviewId);
-        }
-      });
-  }
-
-  /**
-   * Whether Add Me as Reviewer can send its add now: without a token yet it
-   * asks to create one, and when cm refused to, it says what an admin can do,
-   * without waiting for the notification.
-   */
+  /** Whether Add Me as Reviewer can send its add now; says why not when review writes cannot work here. */
   private async readyToAdd(workspaceId: string, reviewId: number): Promise<boolean> {
     let access: ReviewAccess;
     try {
       access = await this.options.reviewers?.access(workspaceId) ??
-        { reason: "Experimental posting is not available here.", state: "blocked" };
+        { reason: "Review writes are not available here.", state: "blocked" };
     } catch (error) {
       access = { reason: errorText(error), state: "blocked" };
     }
-    const title = `Couldn't add you as a reviewer on review #${reviewId}`;
-    switch (access.state) {
-    case "ready":
+    if (access.state === "ready") {
       return true;
-    case "needsConsent":
-      return await this.ui.choose(CONSENT_MESSAGE, consentDetail(access.server), [CREATE_AND_ADD]) === CREATE_AND_ADD &&
-        this.consentTo(workspaceId);
-    case "notAllowed":
-    case "disabled":
-      this.refusalAlert(workspaceId, reviewId, access);
-      return false;
-    case "settingOff":
-      this.ui.error(`${title}: experimental posting is off.`);
-      return false;
-    default:
-      this.ui.error(`${title}: ${access.reason}`);
-      return false;
     }
+    this.ui.error(`Couldn't add you as a reviewer on review #${reviewId}: ` +
+      (access.state === "settingOff" ? "review writes are off." : access.reason));
+    return false;
   }
 
   /**
@@ -1741,7 +1833,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     claim.failure = undefined;
     try {
       if (!reviewers) {
-        throw new Error("Experimental posting is not available here.");
+        throw new Error("Review writes are not available here.");
       }
       await this.track(() => this.ui.cancellable(`Adding you as a reviewer on review #${reviewId}…`, cancel => {
         token = cancel;
@@ -1798,43 +1890,6 @@ export class ReviewSession implements IReviewSessionView, Disposable {
     }
   }
 
-  /** Records the user's consent to a personal access token; a failure is shown. Resolves true once recorded. */
-  private async consentTo(workspaceId: string): Promise<boolean> {
-    const reviewers = this.options.reviewers;
-    try {
-      if (!reviewers) {
-        throw new Error("Experimental posting is not available here.");
-      }
-      await reviewers.consent(workspaceId);
-      return true;
-    } catch (error) {
-      this.ui.error(`Couldn't create a personal access token: ${errorText(error)}`);
-      return false;
-    }
-  }
-
-  /**
-   * Loads the open review's discussions again, timeline included, when it is
-   * this review; the other stages stay as they are. While the discussions are
-   * still loading, the whole review loads again instead, so that a load which
-   * started before the change cannot land last.
-   */
-  private async reloadDiscussions(workspaceId: string, reviewId: number): Promise<void> {
-    const active = this.openReview(workspaceId, reviewId);
-    const service = active && this.service(workspaceId);
-    if (!active || !service) {
-      return;
-    }
-    if (active.discussions.state === "loading") {
-      await this.reload();
-      return;
-    }
-    const generation = this.generation;
-    const files = active.files.state === "ready" ? active.files.value : undefined;
-    await this.track(() => this.ui.progress(reviewTreeViewId,
-      () => this.loadDiscussions(generation, service, files, true)));
-  }
-
   /**
    * Needs My Review after the cm user joined a review that now belongs in it:
    * under review and not listed there yet. It loads again once the personal
@@ -1887,26 +1942,13 @@ function sameReviews(a: readonly IReview[], b: readonly IReview[]): boolean {
   return a.length === b.length && a.every((review, index) => JSON.stringify(review) === JSON.stringify(b[index]));
 }
 
-/** The non-empty parts, a line each. */
-function joinLines(...parts: Array<string | undefined>): string {
-  return parts.filter(Boolean).join("\n");
-}
-
-/** Why the REST API cannot take the cm user as a reviewer. */
-function notAnAddress(user: string): string {
-  return `cm names you "${user}", which is not an e-mail address, and Unity Version Control names reviewers by ` +
-    "e-mail address.";
-}
-
 function defaultUi(): IReviewSessionUi {
   return {
-    alert: (message, actions) => window.showErrorMessage(message, ...actions),
     cancellable: (title, task) => window.withProgress(
       { cancellable: true, location: ProgressLocation.Notification, title }, (_progress, cancel) => task(cancel)),
     choose: (message, detail, actions) => window.showWarningMessage(message, { detail, modal: true }, ...actions),
     confirm: async (message, detail, action) =>
       await window.showWarningMessage(message, { detail, modal: true }, action) === action,
-    copy: text => env.clipboard.writeText(text),
     error: message => {
       void window.showErrorMessage(message, "Show Output").then(choice => {
         if (choice) {
@@ -1917,8 +1959,15 @@ function defaultUi(): IReviewSessionUi {
     info: message => {
       void window.showInformationMessage(message);
     },
+    loadUpdates: () => {
+      void commands.executeCommand(REVIEW_TREE_COMMANDS.loadUpdates);
+    },
+    notify: (message, actions) => window.showInformationMessage(message, ...actions),
     openExternal: link => env.openExternal(Uri.parse(link, true)),
     progress: (viewId, task) => window.withProgress({ location: { viewId }}, task),
+    showDiscussions: () => {
+      void commands.executeCommand(`${discussionsViewId}.focus`);
+    },
     status: message => {
       window.setStatusBarMessage(message, 4000);
     },

@@ -1,5 +1,12 @@
 import { FileChangeStatus, IChangesetFileChange, RevisionType } from "../models";
-import { IReview, IReviewChangeset, IReviewComment, IReviewThread, IReviewUpdates } from "./models";
+import {
+  IReview,
+  IReviewChangeset,
+  IReviewComment,
+  IReviewThread,
+  IReviewTimelineEvent,
+  IReviewUpdates,
+} from "./models";
 import { MarkdownString, QuickPickItem, ThemeColor, ThemeIcon, Uri } from "vscode";
 import { noDiffReason, SOURCE_UNAVAILABLE } from "./reviewFileTree";
 import { posix } from "path";
@@ -725,6 +732,53 @@ export function threadCounts(threads: readonly IReviewThread[]): IThreadCounts {
   };
 }
 
+/**
+ * A question nobody but its asker has answered yet. The same rule as the
+ * Overview's open questions, so a row and the Overview agree on what is open.
+ */
+export function isOpenQuestion(thread: IReviewThread): boolean {
+  const asker = (thread.comments[0]?.owner ?? "").trim().toLowerCase();
+  return thread.kind === "question" &&
+    thread.comments.slice(1).every(reply => reply.owner.trim().toLowerCase() === asker);
+}
+
+/**
+ * The discussion marks of a file or folder row: `💬 3` for every thread, then
+ * `🟠 1` for pending change requests and `❓ 1` for open questions. A tree
+ * row's description is always drawn in one muted colour, so emoji, which keep
+ * their own colours, are what makes what needs attention stand out. Empty
+ * without threads.
+ */
+export function discussionMarks(threads: readonly IReviewThread[]): string {
+  if (!threads.length) {
+    return "";
+  }
+  const marks = [`💬 ${threads.length}`];
+  const pending = threadCounts(threads).pending;
+  if (pending) {
+    marks.push(`🟠 ${pending}`);
+  }
+  const open = threads.filter(isOpenQuestion).length;
+  if (open) {
+    marks.push(`❓ ${open}`);
+  }
+  return marks.join("  ");
+}
+
+/**
+ * What `discussionMarks` stands for, in words, for a row's tooltip:
+ * `💬 3 discussions: 🟠 1 pending change request, ❓ 1 open question`.
+ */
+export function discussionMarksText(threads: readonly IReviewThread[]): string {
+  const pending = threadCounts(threads).pending;
+  const open = threads.filter(isOpenQuestion).length;
+  const details = [
+    pending ? `🟠 ${pending} pending change request${pending === 1 ? "" : "s"}` : "",
+    open ? `❓ ${open} open question${open === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return `💬 ${discussionCount(threads.length)}${details.length ? `: ${details.join(", ")}` : ""}`;
+}
+
 /** `2 discussions`, `1 discussion`. */
 export function discussionCount(count: number): string {
   return `${count} ${count === 1 ? "discussion" : "discussions"}`;
@@ -774,9 +828,8 @@ export function fileTooltip(
     tooltip.appendText(`Moved from ${file.oldPath}`);
   }
   if (threads.length) {
-    const pending = threadCounts(threads).pending;
-    const suffix = pending ? ` (${pending} pending change request${pending === 1 ? "" : "s"})` : "";
-    tooltip.appendMarkdown(`  \n${discussionCount(threads.length)}${suffix}`);
+    tooltip.appendMarkdown("  \n");
+    tooltip.appendText(discussionMarksText(threads));
   }
   const reason = noDiffReason(file);
   if (reason) {
@@ -827,6 +880,88 @@ export function updateSummary(updates: IReviewUpdates): string {
     parts.push(`status: ${updates.status}`);
   }
   return parts.join(" · ") || "changes available";
+}
+
+/**
+ * What a notification tells the user about the open review's pending updates
+ * (see `updateNotice`): the message, and what it reports, which decides whether
+ * a later check has anything new to say (`hasNews`).
+ */
+export interface IUpdateNotice {
+  message: string;
+  status?: string;
+  newHead?: number;
+  /** The ids of the new or changed comments it counts: those the user did not write. */
+  comments: number[];
+  removedComments: number;
+}
+
+function plural(count: number, noun: string): string {
+  return `${formatCount(count)} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** `ana@example.com`, `ana@example.com and bo@example.com`, `ana@example.com, bo@example.com and 2 others`. */
+function authorList(owners: readonly string[]): string {
+  const seen = new Set<string>();
+  const names = owners
+    .map(owner => owner.trim())
+    .filter(owner => owner && !seen.has(owner.toLowerCase()) && !!seen.add(owner.toLowerCase()))
+    .sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1);
+  if (names.length <= 2) {
+    return names.join(" and ");
+  }
+  return `${names.slice(0, 2).join(", ")} and ${plural(names.length - 2, "other")}`;
+}
+
+/**
+ * `Review #312: 2 new comments from ana@example.com; new changesets on the
+ * branch; status is now Reviewed`. Comments `me` (the cm user, in any case)
+ * wrote are left out: the user knows about those. Undefined when nothing else
+ * is pending. Like `updateSummary`, "new" counts edited comments and applied
+ * change requests.
+ */
+export function updateNotice(reviewId: number, updates: IReviewUpdates, me?: string): IUpdateNotice | undefined {
+  const mine = me?.trim().toLowerCase();
+  const others = updates.comments.filter(comment => !mine || comment.owner.trim().toLowerCase() !== mine);
+  const parts: string[] = [];
+  if (others.length) {
+    const authors = authorList(others.map(comment => comment.owner));
+    parts.push(`${plural(others.length, "new comment")}${authors ? ` from ${authors}` : ""}`);
+  }
+  if (updates.removedComments > 0) {
+    parts.push(`${plural(updates.removedComments, "comment")} removed`);
+  }
+  if (updates.newHead !== undefined) {
+    parts.push(updates.newHead < 0 ? "the branch was deleted" : "new changesets on the branch");
+  }
+  if (updates.status !== undefined) {
+    parts.push(`status is now ${updates.status}`);
+  }
+  if (!parts.length) {
+    return undefined;
+  }
+  return {
+    comments: others.map(comment => comment.id),
+    message: `Review #${reviewId}: ${parts.join("; ")}`,
+    newHead: updates.newHead,
+    removedComments: updates.removedComments,
+    status: updates.status,
+  };
+}
+
+/**
+ * Whether a notice says something `reported`, the last one shown for the same
+ * review, did not: another status or head, a comment it did not count, or more
+ * removed comments. The same pending updates, or fewer, are not news.
+ */
+export function hasNews(notice: IUpdateNotice, reported?: IUpdateNotice): boolean {
+  if (!reported) {
+    return true;
+  }
+  return (notice.status !== undefined && notice.status !== reported.status) ||
+    (notice.newHead !== undefined && notice.newHead !== reported.newHead) ||
+    notice.comments.some(id => !reported.comments.includes(id)) ||
+    notice.removedComments > reported.removedComments;
 }
 
 /** Row kinds that have no text diff, for callers that only need the word. */
@@ -958,6 +1093,48 @@ function markdown(themeIcons = true): MarkdownString {
   value.isTrusted = false;
   value.supportHtml = false;
   return value;
+}
+
+const COMMENT_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether a comment has the GUID cm's reply, edit and delete name it by. */
+export function hasCommentGuid(comment: IReviewComment | undefined): comment is IReviewComment {
+  return !!comment && COMMENT_GUID.test(comment.guid.trim());
+}
+
+/**
+ * Whether the cm user may edit and delete a comment from here: it is theirs
+ * (cm prints one address in different cases, so owners compare without
+ * case), it has a GUID, and it is not a timeline row. Timeline rows are the
+ * review's own record (verdicts, requests, renames, the description), so no
+ * edit or delete is offered on them; the description's edit has its own
+ * path (see `isOwnDescription`). False while the user is not known.
+ */
+export function isOwnComment(comment: IReviewComment, user: string | undefined): boolean {
+  return !!user?.trim() && hasCommentGuid(comment) && comment.type !== "timeline" &&
+    comment.owner.trim().toLowerCase() === user.trim().toLowerCase();
+}
+
+/**
+ * Whether the review's description row is the cm user's and can be edited:
+ * cm's edit keeps a description's `[description]` prefix, so only its text
+ * changes. Never deleted from here: cm's help does not say what a review
+ * without its description row would show.
+ */
+export function isOwnDescription(event: IReviewTimelineEvent | undefined, user: string | undefined):
+    event is IReviewTimelineEvent & { guid: string } {
+  return !!event && event.kind === "description" && !!user?.trim() && COMMENT_GUID.test(event.guid ?? "") &&
+    event.owner.trim().toLowerCase() === user.trim().toLowerCase();
+}
+
+/**
+ * Whether a thread takes a reply from here: its root has a GUID and is not a
+ * timeline row. cm's help does not say that a verdict, a request or the
+ * description takes replies, so threads rooted in one are left as they are.
+ */
+export function canReplyToThread(thread: IReviewThread): boolean {
+  const root = thread.comments[0];
+  return hasCommentGuid(root) && root.type !== "timeline";
 }
 
 /** The type a reply's own header shows: `Question`, `Change request`, `Discarded` or `Comment`. */

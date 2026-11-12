@@ -1,4 +1,6 @@
-import { avatarUri, noDiffMessage, reviewCommentMarkdown, threadTypeLabel } from "./reviewPresentation";
+import {
+  avatarUri, isOpenQuestion, isOwnComment, noDiffMessage, reviewCommentMarkdown, threadTypeLabel,
+} from "./reviewPresentation";
 import {
   commands,
   Comment,
@@ -41,6 +43,7 @@ import {
 } from "./models";
 import { mapReviewLine, splitLines } from "./anchors";
 import { FileScope } from "./sessionTypes";
+import { ICommentTarget } from "./reviewPosting";
 import { IReviewDraft } from "./reviewWriter";
 import { isDiffable } from "./reviewFileTree";
 import { posix } from "path";
@@ -56,6 +59,11 @@ const SIDES: readonly ReviewSide[] = [ "left", "right" ];
 /** Right first: a pure move has one revision on both sides, and its new name is the one to read. */
 const EXACT_ORDER: readonly ReviewSide[] = [ "right", "left" ];
 const REOPEN = "Reopen this file from Plastic Reviews to load its comparison.";
+const REOPEN_TO_COMMENT = "Reopen this file from Plastic Reviews to comment on it.";
+/** cm's `--revision` takes only what the review's diff comments on (see `commentRefusal`). */
+const NEW_SIDE_ONLY = "New comments go on the right side: cm takes the left side's revision only for a deleted file.";
+const NOT_IN_REVIEW = "This diff shows a revision outside the review's diff, so cm can't file a comment on it. " +
+  "Comment on the file in the review's own diff.";
 /** Changeset diffs kept for original-context editors; each is one `cm diff cs:N`. */
 const MAX_CACHED_ORIGINALS = 16;
 /** Overview refreshes this close together are one: marking many files viewed redraws it once. */
@@ -110,6 +118,12 @@ export interface IReviewEditorsOptions {
   /** Renders the Overview document of a review. */
   overview?: (workspaceId: string, reviewId: number) => Thenable<string> | string;
   postingEnabled?: boolean;
+  /**
+   * The repository spec of a review workspace, undefined until known: a file
+   * of another repository (an xlink) can't take a new comment, since cm
+   * reads `revid:N` in the workspace's repository.
+   */
+  repository?: (workspaceId: string) => string | undefined;
 }
 
 export interface IReviewSide {
@@ -169,6 +183,10 @@ interface ISideInfo {
   repository: string;
   path: string;
   service?: ReviewService;
+  /** The changeset whose diff this side is of, when that is one changeset of a branch review; see `diffChangeset`. */
+  changesetId?: number;
+  /** Why cm would refuse a new comment on this side, as a message safe to show; see `commentRefusal`. */
+  refusal?: string;
 }
 
 export function reviewDiff(
@@ -331,7 +349,7 @@ export { reviewCommentMarkdown };
  */
 export class ReviewEditors implements Disposable, TextDocumentContentProvider, CommentingRangeProvider {
   public readonly onDidChange: Event<Uri>;
-  /** Decides which local comments (experimental posting results) a thread refresh carries over. */
+  /** Decides which local comments (review writes results) a thread refresh carries over. */
   public keepLocalComment: (comment: Comment) => boolean;
   private readonly changes = new EventEmitter<Uri>();
   private readonly controller: CommentController;
@@ -339,12 +357,14 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
   private readonly diffs = new Map<string, IOpenDiff>();
   private readonly targets = new Map<string, ITarget>();
   private readonly threads = new Map<string, CommentThread[]>();
-  /** Threads the user started (experimental posting), by document; kept across refreshes. */
+  /** Threads the user started (review writes), by document; kept across refreshes. */
   private readonly adopted = new Map<string, Set<CommentThread>>();
   private readonly threadIds = new WeakMap<CommentThread, number>();
   private readonly replyTargets = new WeakMap<CommentThread, IReviewDraft>();
-  /** Comments built from review data, as opposed to local ones appended to a thread. */
-  private readonly rendered = new WeakSet<Comment>();
+  /** Comments built from review data, as opposed to local ones appended to a thread, with the row each shows. */
+  private readonly rendered = new WeakMap<Comment, ICommentTarget>();
+  /** Services already asked who the cm user is, so that a failing `cm whoami` is not asked on every render. */
+  private readonly askedUser = new WeakSet<ReviewService>();
   private readonly originals = new Map<string, Promise<IChangesetFileChange[]>>();
   private readonly overviewRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
   private context?: IReviewEditorContext;
@@ -421,19 +441,25 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     this.threads.forEach(list => list.forEach(thread => {
       thread.canReply = enabled;
     }));
+    if (this.context) {
+      this.askUser(this.context.service);
+    }
   }
 
   public provideTextDocumentContent(uri: Uri): Promise<string> {
     return this.content(uri);
   }
 
-  /** Every line of a revision side while posting is on; nothing on an empty side or the Overview. */
+  /**
+   * Every line of a side cm takes new comments on, while posting is on (see
+   * `commentRefusal`); nothing on an empty side or the Overview.
+   */
   public provideCommentingRanges(document: TextDocument): Range[] {
     if (!this.postingEnabled || document.lineCount < 1) {
       return [];
     }
     const side = this.sideOf(document.uri);
-    return side && side.revisionId >= 0 ? [new Range(0, 0, document.lineCount - 1, 0)] : [];
+    return side && side.revisionId >= 0 && !side.refusal ? [new Range(0, 0, document.lineCount - 1, 0)] : [];
   }
 
   /** Tells VS Code to read the Overview again; a burst of calls is one read. */
@@ -596,20 +622,27 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     return this.fileAt(window.activeTextEditor?.document.uri);
   }
 
-  /** A new comment at `line` of a revision side, pinned to that revision. */
+  /**
+   * A new comment at `line` of a revision side, pinned to that revision. It
+   * names a changeset only when the diff shows one changeset of the review
+   * (see `diffChangeset`), which is where the comment then belongs. A side
+   * cm would refuse is refused here (see `commentRefusal`).
+   */
   public async draftAt(uri: Uri, line: number): Promise<IReviewDraft> {
     const side = this.sideOf(uri);
     if (!side || side.revisionId < 0 || !Number.isSafeInteger(line) || line < 0) {
       throw new Error("Select a line on a non-empty side of a Plastic review diff.");
+    }
+    if (side.refusal) {
+      throw new Error(side.refusal);
     }
     const text = await this.content(uri);
     if (line >= splitLines(text).length) {
       throw new Error("The selected line is outside the pinned revision.");
     }
     const service = side.service ?? await this.resolve(side.serviceId);
-    const revision = await service.revision(side.revisionId, side.repository);
     return {
-      changesetId: revision.changesetId,
+      ...(side.changesetId === undefined ? {} : { changesetId: side.changesetId }),
       key: newDraftKey(),
       location: line,
       path: side.path,
@@ -619,10 +652,18 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     };
   }
 
-  /** A reply to a review thread shown here, with a fresh idempotency key; undefined for other threads. */
+  /**
+   * A reply to a review thread shown here, with a fresh idempotency key;
+   * undefined for other threads, and for one whose root has no GUID to reply to.
+   */
   public replyDraft(thread: CommentThread): IReviewDraft | undefined {
     const target = this.replyTargets.get(thread);
     return target && { ...target, key: newDraftKey() };
+  }
+
+  /** The server comment a rendered comment shows, for Edit and Delete; undefined for a local comment. */
+  public serverComment(comment: Comment): ICommentTarget | undefined {
+    return this.rendered.get(comment);
   }
 
   /** Takes over a thread the user started, so it is disposed with its tab or review. */
@@ -809,6 +850,7 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
   /** Replaces the threads on both sides of a diff; local comments of a replaced thread move to its successor. */
   private async render(diff: IOpenDiff, texts: Record<ReviewSide, string>, focus?: number): Promise<void> {
     const render = ++diff.renders;
+    this.askUser(diff.context.service);
     const placements = await this.place(diff, texts);
     if (this.disposed || render !== diff.renders || this.diffs.get(diff.key) !== diff) {
       return;
@@ -902,16 +944,18 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
       side.uri,
       new Range(placement.line, 0, placement.line, 0),
       // The thread's header names the type; each comment shows only its author and time, as in the Plastic clients.
-      thread.comments.map(comment => this.toComment(comment)).concat(local)
+      thread.comments.map(comment => this.toComment(diff, thread, comment)).concat(local)
     );
     const origin = placement.from !== undefined ? ` · from rev ${placement.from}`
       : diff.scope.kind !== "review" ? " · original context" : "";
-    native.label = `${label}${origin}`;
+    const mark = stateMark(thread);
+    native.label = `${mark ? `${mark} ` : ""}${label}${thread.kind === "question" && !isOpenQuestion(thread)
+      ? " · answered" : ""}${origin}`;
     const state = nativeState(thread);
     if (state !== undefined) {
       native.state = state;
     }
-    const expanded = (thread.kind === "change" && thread.state === "pending") || thread.kind === "question" ||
+    const expanded = (thread.kind === "change" && thread.state === "pending") || isOpenQuestion(thread) ||
       thread.id === focus;
     native.collapsibleState = expanded
       ? CommentThreadCollapsibleState.Expanded
@@ -919,11 +963,15 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     native.canReply = this.postingEnabled;
     native.contextValue = `reviewThread;${thread.kind};${thread.state}`;
     this.threadIds.set(native, thread.id);
+    // cm replies to a comment by its GUID; a thread whose root has none is not registered, and cannot be replied to.
+    const parentGuid = thread.comments[0]?.guid.trim();
+    if (!parentGuid) {
+      return native;
+    }
     this.replyTargets.set(native, {
-      changesetId: thread.anchor.changesetId,
       key: "",
       location: thread.anchor.location,
-      parentId: thread.id,
+      parentGuid,
       path: side.path,
       reviewId: diff.context.review.id,
       revisionId: thread.anchor.revisionId,
@@ -932,7 +980,12 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     return native;
   }
 
-  private toComment(comment: IReviewComment): Comment {
+  /**
+   * A server comment as a native one. A comment of the cm user's is marked
+   * `reviewComment-own`, which offers Edit and Delete while posting is on;
+   * the user is known once `cm whoami` has answered (see `askUser`).
+   */
+  private toComment(diff: IOpenDiff, thread: IReviewThread, comment: IReviewComment): Comment {
     const body = new MarkdownString(reviewCommentMarkdown(comment.text));
     body.isTrusted = false;
     body.supportHtml = false;
@@ -941,12 +994,35 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
       author: { iconPath: avatarUri(comment.owner), name: shortOwner(comment.owner) || "Unknown" },
       body,
       // A discarded reply says so; the thread's own label cannot, as it describes the root.
+      contextValue: isOwnComment(comment, diff.context.service.knownUser) ? "reviewComment-own" : "reviewComment",
       label: comment.type === "discarded" ? "Discarded" : undefined,
       mode: CommentMode.Preview,
       timestamp: isNaN(time) ? undefined : new Date(time),
     };
-    this.rendered.add(result);
+    this.rendered.set(result, {
+      comment,
+      replies: comment === thread.comments[0] ? thread.comments.length - 1 : 0,
+      reviewId: diff.context.review.id,
+      workspaceId: diff.context.service.workspaceId,
+    });
     return result;
+  }
+
+  /**
+   * Asks cm once per service who its user is, while posting is on, and
+   * renders the threads again once it has answered: until then no comment
+   * is known to be the user's own.
+   */
+  private askUser(service: ReviewService): void {
+    if (!this.postingEnabled || service.knownUser !== undefined || this.askedUser.has(service)) {
+      return;
+    }
+    this.askedUser.add(service);
+    service.whoami().then(() => {
+      if (!this.disposed) {
+        void this.refreshThreads();
+      }
+    }, () => undefined);
   }
 
   private async reveal(uri: Uri, selection: Range, threadId: number): Promise<void> {
@@ -996,7 +1072,9 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
       const { diff } = target;
       const side = diff.sides[target.side];
       return {
+        changesetId: diffChangeset(diff),
         path: side.path,
+        refusal: commentRefusal(diff, target.side, this.options.repository?.(diff.context.service.workspaceId)),
         repository: diff.file.repository,
         reviewId: diff.context.review.id,
         revisionId: side.revisionId,
@@ -1012,6 +1090,8 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     }
     return {
       path: uri.path,
+      // Its URI does not say which diff it was, so neither which changeset nor whether cm takes its revision.
+      refusal: REOPEN_TO_COMMENT,
       repository: query.repository,
       reviewId: query.reviewId,
       revisionId: query.revisionId,
@@ -1051,14 +1131,49 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
 
   private applyPostingOptions(): void {
     this.controller.options = this.postingEnabled ? {
-      placeHolder:
-        "Experimental: posts through the Unity Version Control REST API with a personal access token. " +
-        "Refresh afterwards to verify.",
-      prompt: "Reply (experimental)",
+      placeHolder: "Posts to the review with cm, as the user cm is signed in as.",
+      prompt: "Reply",
     } : undefined;
     // Assigning the provider again makes VS Code ask for the commenting ranges anew.
     this.controller.commentingRangeProvider = this;
   }
+}
+
+/**
+ * The changeset a new comment in a diff is filed under, which cm takes as
+ * `--changeset`: the diff's head changeset when the diff shows one changeset
+ * of a branch review, from the Changesets list or as a comment's original
+ * context. Undefined for the diff of the whole review, where cm files the
+ * comment without one, and for a changeset review, whose whole diff is its
+ * changeset. An outdated or previous-revision diff is neither: cm decides
+ * whether its revision can be commented on.
+ */
+function diffChangeset(diff: IOpenDiff): number | undefined {
+  const single = diff.comparison.kind === "changeset" || diff.scope.kind === "original";
+  return single && diff.context.review.targetType === "branch" ? diff.comparison.headChangesetId : undefined;
+}
+
+/**
+ * Why cm would refuse a new comment on a side of a diff; undefined when it
+ * takes one. cm's `--revision` must be one the review's diff (or the diff of
+ * `--changeset`) comments on: the new revision of an added or changed file,
+ * or the base revision of a deleted file. So the right side takes comments,
+ * and the left only when the file was deleted; an outdated or a
+ * previous-revision diff shows revisions outside those diffs. A file from
+ * another repository (an xlink) is refused too: cm would read its `revid:N`
+ * in the workspace's repository, where it is another revision altogether.
+ * `workspaceRepository` is undefined until known, and then refuses nothing.
+ */
+function commentRefusal(diff: IOpenDiff, side: ReviewSide, workspaceRepository: string | undefined):
+    string | undefined {
+  const repository = diff.file.repository;
+  if (workspaceRepository && repository && !sameRepository(workspaceRepository, repository)) {
+    return `Comments on files from xlinked repository ${repository} can't be posted from here.`;
+  }
+  if (diff.scope.kind !== "review" && diff.scope.kind !== "original") {
+    return NOT_IN_REVIEW;
+  }
+  return side === "left" && diff.sides.right.revisionId >= 0 ? NEW_SIDE_ONLY : undefined;
 }
 
 function sameReview(a: IReviewEditorContext, b: IReviewEditorContext): boolean {
@@ -1075,7 +1190,26 @@ function deriveScope(
   return context.files?.mergedKeys.has(fileKey(file)) ? "merged" : "changes";
 }
 
+/**
+ * The thread header's state, in the emoji the trees use: 🟠 a pending change
+ * request, ✅ an applied one or an answered question, ⚪ a discarded request,
+ * ❓ an open question. A header is plain text in one colour; emoji keep theirs.
+ */
+function stateMark(thread: IReviewThread): string {
+  if (thread.kind === "question") {
+    return isOpenQuestion(thread) ? "❓" : "✅";
+  }
+  if (thread.kind !== "change") {
+    return "";
+  }
+  return thread.state === "pending" ? "🟠" : thread.state === "applied" ? "✅" : "⚪";
+}
+
+/** Change requests by their state; questions as Plastic has them: resolved once someone else answers. */
 function nativeState(thread: IReviewThread): CommentThreadState | undefined {
+  if (thread.kind === "question") {
+    return isOpenQuestion(thread) ? CommentThreadState.Unresolved : CommentThreadState.Resolved;
+  }
   switch (thread.state) {
   case "pending":
     return CommentThreadState.Unresolved;

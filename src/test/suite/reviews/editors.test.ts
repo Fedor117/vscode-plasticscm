@@ -6,8 +6,10 @@ import {
   comment,
   commentsXml,
   defaultAnswer,
+  DELETED_PATH,
   file,
   LAP_TIMER_PATH,
+  ME,
   MERGED_PATH,
   PHANTOM_PATH,
 } from "./fixtures";
@@ -112,7 +114,7 @@ describe("Native review editors", function() {
       const applied = nativeThread(editors, 12918)!;
       expect(applied.uri.toString()).to.equal(diff.right.uri.toString());
       expect(applied.range.start.line).to.equal(40);
-      expect(applied.label).to.equal("Change request · applied in cs:3718");
+      expect(applied.label).to.equal("✅ Change request · applied in cs:3718");
       expect(applied.state).to.equal(CommentThreadState.Resolved);
       expect(applied.contextValue).to.equal("reviewThread;change;applied");
       expect(applied.canReply).to.equal(false);
@@ -122,7 +124,7 @@ describe("Native review editors", function() {
       await editors.open(context, context.files!.final, row(context, LAP_TIMER_PATH));
       const mapped = nativeThread(editors, 12919)!;
       expect(mapped.range.start.line).to.equal(12);
-      expect(mapped.label).to.equal("Change request · discarded · from rev 12671");
+      expect(mapped.label).to.equal("⚪ Change request · discarded · from rev 12671");
       expect(mapped.state).to.equal(CommentThreadState.Resolved);
       // The thread's header names its type; the root comment does not repeat it.
       expect(mapped.comments[0].label).to.equal(undefined);
@@ -155,14 +157,14 @@ describe("Native review editors", function() {
       editors.setContext(context);
       await editors.open(context, context.files!.final, row(context, ANALYTICS_PATH));
       const pending = nativeThread(editors, 12907)!;
-      expect(pending.label).to.equal("Change request");
+      expect(pending.label).to.equal("🟠 Change request");
       expect(pending.state).to.equal(CommentThreadState.Unresolved);
       expect(pending.collapsibleState).to.equal(CommentThreadCollapsibleState.Expanded);
       expect(pending.contextValue).to.equal("reviewThread;change;pending");
       const asked = nativeThread(editors, 99)!;
-      expect(asked.label).to.equal("Question");
+      expect(asked.label).to.equal("❓ Question");
       expect(asked.collapsibleState).to.equal(CommentThreadCollapsibleState.Expanded);
-      expect(asked.state).to.equal(undefined);
+      expect(asked.state).to.equal(CommentThreadState.Unresolved);
     });
 
     it("keeps generic types and line breaks in comment bodies", async () => {
@@ -292,7 +294,7 @@ describe("Native review editors", function() {
       expect(activeTabLabel()).to.equal("LapTimer.cs (cs:3471 ↔ rev 12671 · outdated) · #12831");
       const native = nativeThread(editors, 12919)!;
       expect(native.range.start.line).to.equal(12);
-      expect(native.label).to.equal("Change request · discarded · original context");
+      expect(native.label).to.equal("⚪ Change request · discarded · original context");
       const right = editors.activeFile();
       expect(right).to.equal(undefined, "an outdated diff is not a review file");
       const query = JSON.parse(native.uri.query) as { revisionId: number; side: string };
@@ -317,7 +319,10 @@ describe("Native review editors", function() {
         await editors.openComment(simpleContext, simpleContext.threads[0]);
         expect(simple.shell.calls.some(call => call.command === "diff" && call.args[0] === "cs:2")).to.equal(true);
         expect(activeTabLabel()).to.equal("Test.cs (rev 11 · cs:2 · original context) · #5");
-        expect(allThreads(editors).some(native => native.label === "Question · original context")).to.equal(true);
+        const native = allThreads(editors).find(candidate => candidate.label === "❓ Question · original context");
+        expect(native).to.not.equal(undefined);
+        // A comment written there is filed under that changeset's diff, the one the comment's revision is in.
+        expect(await editors.draftAt(native!.uri, 1)).to.include({ changesetId: 2, revisionId: 11 });
       } finally {
         simple.service.dispose();
       }
@@ -364,8 +369,10 @@ describe("Native review editors", function() {
       expect((await workspace.openTextDocument(uri)).lineCount).to.equal(400);
       const elsewhere = reviewDiff("gone", BRANCH_REVIEW_ID, comparison, file()).right.uri;
       expect(await failure(editors.provideTextDocumentContent(elsewhere))).to.contain("Reopen");
-      const draft = await editors.draftAt(uri, 3);
-      expect(draft).to.include({ location: 3, reviewId: BRANCH_REVIEW_ID, revisionId: 12804, workspaceId: "wk" });
+      // Its URI does not say which diff it was, so it takes no new comment until it is opened again.
+      expect(await failure(editors.draftAt(uri, 3))).to.contain("Reopen this file from Plastic Reviews to comment");
+      editors.setPostingEnabled(true);
+      expect(editors.provideCommentingRanges(await workspace.openTextDocument(uri))).to.deep.equal([]);
       expect(editors.fileAt(uri)).to.equal(undefined);
     });
 
@@ -395,12 +402,139 @@ describe("Native review editors", function() {
       const lapTimer = row(context, LAP_TIMER_PATH);
       await editors.open(context, context.files!.final, lapTimer);
       const diff = reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, lapTimer);
-      const draft = await editors.draftAt(diff.left.uri, 2);
-      expect(draft).to.include({ location: 2, path: LAP_TIMER_PATH, reviewId: BRANCH_REVIEW_ID, revisionId: 10851,
-        workspaceId: "wk" });
-      expect(draft.changesetId).to.equal(3301);
+      const draft = await editors.draftAt(diff.right.uri, 2);
+      expect(draft).to.include({ location: 2, path: LAP_TIMER_PATH, reviewId: BRANCH_REVIEW_ID,
+        revisionId: lapTimer.revisionId, workspaceId: "wk" });
+      // The diff of the whole review: cm files the comment without a changeset.
+      expect(draft).to.not.have.property("changesetId");
+      expect(draft).to.not.have.property("parentGuid");
       expect(draft.key).to.have.length(32);
       expect(await failure(editors.draftAt(diff.right.uri, 400))).to.contain("outside");
+    });
+
+    it("takes new comments only on the sides cm takes them on: the new side, and a deleted file's base", async () => {
+      editors.setPostingEnabled(true);
+      const ranges = async (uri: Uri) => editors.provideCommentingRanges(await workspace.openTextDocument(uri));
+      const lapTimer = row(context, LAP_TIMER_PATH);
+      await editors.open(context, context.files!.final, lapTimer);
+      const changed = reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, lapTimer);
+      // cm's --revision takes the new revision of a changed file, not its base.
+      expect(await ranges(changed.left.uri)).to.deep.equal([]);
+      expect(await failure(editors.draftAt(changed.left.uri, 2))).to.contain("New comments go on the right side");
+      expect(await ranges(changed.right.uri)).to.have.length(1);
+
+      const deleted = row(context, DELETED_PATH);
+      await editors.open(context, context.files!.final, deleted);
+      const gone = reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, deleted);
+      expect(await ranges(gone.left.uri)).to.have.length(1);
+      expect(await editors.draftAt(gone.left.uri, 0))
+        .to.include({ path: DELETED_PATH, revisionId: deleted.revisionId });
+    });
+
+    it("takes no new comment in an outdated or a previous-revision diff", async () => {
+      editors.setPostingEnabled(true);
+      texts = id => id === 12671 ? numberedText(400, "old") : numberedText(400);
+      await editors.openComment(context, thread(context, 12919));
+      const outdated = nativeThread(editors, 12919)!.uri;
+      expect(editors.provideCommentingRanges(await workspace.openTextDocument(outdated))).to.deep.equal([]);
+      expect(await failure(editors.draftAt(outdated, 2))).to.contain("outside the review's diff");
+
+      const answer = (command: string, args: string[]) => command === "diff" ? "" : defaultAnswer(command, args);
+      const simple = reviewService(channel, () => numberedText(10), answer, "wk3", "/unused");
+      try {
+        const simpleContext = await loadContext(simple.service, 5);
+        await editors.openComment(simpleContext, simpleContext.threads[0]);
+        expect(activeTabLabel()).to.equal("Test.cs (rev 11 vs previous revision) · #5");
+        const previous = allThreads(editors)[0].uri;
+        expect(await failure(editors.draftAt(previous, 2))).to.contain("outside the review's diff");
+      } finally {
+        simple.service.dispose();
+      }
+    });
+
+    it("takes no new comment on a file from an xlinked repository", async () => {
+      editors.dispose();
+      const known: { repository?: string } = {};
+      editors = new ReviewEditors({ repository: () => known.repository, resolveService: () => service });
+      editors.setContext(context);
+      editors.setPostingEnabled(true);
+      const lapTimer = row(context, LAP_TIMER_PATH);
+      const xlinked = { ...lapTimer, repository: "Shared/Physics@acme-studio@unity" };
+      await editors.open(context, context.files!.final, xlinked);
+      const diff = reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, xlinked);
+      // Not known yet: posting itself waits for the repository.
+      expect(await editors.draftAt(diff.right.uri, 2)).to.include({ revisionId: lapTimer.revisionId });
+      known.repository = lapTimer.repository.toUpperCase();
+      const document = await workspace.openTextDocument(diff.right.uri);
+      expect(editors.provideCommentingRanges(document)).to.deep.equal([]);
+      expect(await failure(editors.draftAt(diff.right.uri, 2)))
+        .to.contain("Comments on files from xlinked repository Shared/Physics@acme-studio@unity can't be posted");
+      // The workspace's own repository, however its spec is written, takes comments.
+      await editors.open(context, context.files!.final, lapTimer);
+      const own = reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, lapTimer);
+      expect(editors.provideCommentingRanges(await workspace.openTextDocument(own.right.uri))).to.have.length(1);
+    });
+
+    it("names the changeset in a draft only in the diff of one changeset of a branch review", async () => {
+      const lapTimer = row(context, LAP_TIMER_PATH);
+      const single: IReviewComparison = {
+        ...context.files!.final, baseChangesetId: 3672, headChangesetId: 3673, id: "one-changeset", kind: "changeset",
+      };
+      await editors.open(context, single, lapTimer);
+      const diff = reviewDiff("wk", BRANCH_REVIEW_ID, single, lapTimer);
+      expect((await editors.draftAt(diff.right.uri, 2)).changesetId).to.equal(3673);
+      // Its left side is the changeset's base, which that changeset's diff does not comment on either.
+      expect(await failure(editors.draftAt(diff.left.uri, 2))).to.contain("New comments go on the right side");
+
+      // A changeset review's whole diff is its changeset: nothing to name.
+      const changesetReview = { ...context, review: { ...context.review, targetType: "changeset" }};
+      const other: IReviewComparison = { ...single, id: "changeset-review" };
+      await editors.open(changesetReview, other, lapTimer);
+      const whole = reviewDiff("wk", BRANCH_REVIEW_ID, other, lapTimer);
+      expect(await editors.draftAt(whole.right.uri, 2)).to.not.have.property("changesetId");
+    });
+
+    it("has no reply draft for a thread whose root comment has no GUID yet", async () => {
+      const unnamed = context.threads.map(candidate => (candidate.id !== 12918 ? candidate : {
+        ...candidate, comments: [{ ...candidate.comments[0], guid: "" }].concat(candidate.comments.slice(1)),
+      }));
+      context = { ...context, threads: unnamed };
+      editors.setContext(context);
+      const lapTimer = row(context, LAP_TIMER_PATH);
+      await editors.open(context, context.files!.final, lapTimer);
+      expect(nativeThread(editors, 12918)).to.not.equal(undefined);
+      expect(editors.replyDraft(nativeThread(editors, 12918)!)).to.equal(undefined);
+    });
+
+    it("offers Edit and Delete only on the cm user's own comments, once cm has said who that is", async () => {
+      const mine = "5a1e0000-aaaa-4bbb-8ccc-000000000001";
+      const theirs = "5a1e0000-aaaa-4bbb-8ccc-000000000002";
+      const owned = context.threads.map(candidate => (candidate.id !== 12918 ? candidate : {
+        ...candidate,
+        comments: [
+          // Owners compare without case: cm prints one address in different cases.
+          { ...candidate.comments[0], guid: mine, owner: ME.toUpperCase() },
+          { ...candidate.comments[0], guid: theirs, id: 99001, owner: "jordan.lee@example.com", parentId: 12918 },
+          { ...candidate.comments[0], guid: "not-a-guid", id: 99002, owner: ME, parentId: 12918 },
+        ],
+      }));
+      context = { ...context, threads: owned };
+      editors.setContext(context);
+      const lapTimer = row(context, LAP_TIMER_PATH);
+      await editors.open(context, context.files!.final, lapTimer);
+      // Posting off: cm is not asked who the user is, and nothing is marked as theirs.
+      expect(nativeThread(editors, 12918)!.comments.map(native => native.contextValue))
+        .to.deep.equal([ "reviewComment", "reviewComment", "reviewComment" ]);
+      editors.setPostingEnabled(true);
+      await until(() => nativeThread(editors, 12918)?.comments[0].contextValue === "reviewComment-own");
+      const native = nativeThread(editors, 12918)!;
+      expect(native.comments.map(each => each.contextValue))
+        .to.deep.equal([ "reviewComment-own", "reviewComment", "reviewComment" ]);
+      expect(editors.serverComment(native.comments[0])).to.deep.include({
+        replies: 2, reviewId: BRANCH_REVIEW_ID, workspaceId: "wk",
+      });
+      expect(editors.serverComment(native.comments[0])!.comment.guid).to.equal(mine);
+      expect(editors.serverComment(native.comments[1])!.replies).to.equal(0);
     });
 
     it("rejects drafts on a synthetic empty side", async () => {
@@ -424,13 +558,21 @@ describe("Native review editors", function() {
       expect(ranges[0].start.line).to.equal(0);
       expect(ranges[0].end.line).to.equal(399);
       const replyDraft = editors.replyDraft(nativeThread(editors, 12918)!);
-      expect(replyDraft).to.include({ parentId: 12918, reviewId: BRANCH_REVIEW_ID, workspaceId: "wk" });
+      // The reply names its thread by the root comment's GUID, which is how cm replies.
+      const root = context.threads.find(candidate => candidate.id === 12918)!.comments[0];
+      expect(root.guid).to.not.equal("");
+      expect(replyDraft).to.include({ parentGuid: root.guid, reviewId: BRANCH_REVIEW_ID, workspaceId: "wk" });
+      expect(replyDraft).to.not.have.property("changesetId");
       expect(replyDraft?.key).to.have.length(32);
       const added = row(context, ADDED_PATH);
       await editors.open(context, context.files!.final, added);
       const empty = await workspace.openTextDocument(
         reviewDiff("wk", BRANCH_REVIEW_ID, context.files!.final, added).left.uri);
       expect(editors.provideCommentingRanges(empty)).to.deep.equal([]);
+      // The added file's diff took the preview tab: the earlier diff is released, and nothing says which diff its
+      // right side was of any more, so it takes no new comment until it is opened again.
+      expect(editors.provideCommentingRanges(await workspace.openTextDocument(right.uri))).to.deep.equal([]);
+      await editors.open(context, context.files!.final, lapTimer);
       expect(editors.provideCommentingRanges(await workspace.openTextDocument(right.uri))).to.have.length(1);
     });
 

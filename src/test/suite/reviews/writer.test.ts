@@ -1,419 +1,533 @@
-import * as https from "https";
-import { FakeRest, IRestCall, json } from "./restFixtures";
 import {
-  httpsTransport,
-  IReviewConnection,
+  cmMessage,
+  commentArguments,
   IReviewDraft,
-  repositoryForms,
-  REST_HOSTS,
-  restOrigin,
-  restUrl,
-  ReviewRequestError,
   ReviewWriteError,
   ReviewWriter,
-  serverMessage,
 } from "../../../reviews/reviewWriter";
-import { ORIGIN, REGION } from "./tokenFixtures";
+import { commentGuid, exited, FakeCm, OLD_USAGE } from "./cmFixtures";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { CancellationTokenSource } from "vscode";
 import { expect } from "chai";
+import { ICmOutput } from "../../../reviews/cmRunner";
+import { join } from "path";
+import { ReviewStatus } from "../../../reviews/models";
+import { tmpdir } from "os";
 
 /**
- * Review writes to the Unity Version Control Server REST API, on a fake
- * transport: nothing reaches the network. Every organization, repository,
- * review, user and token here is made up.
+ * Review writes with cm, on a fake runner: nothing here starts a process.
+ * Every review, revision, path and GUID is made up.
  */
 
-const ME = "dana.kim@example.test";
-const REVIEW = 12831;
-const API = "/api/v1/organizations/acme-studio/repos/Nimbus%2FNimbus/codereview/12831";
+const ROOT = "/work/nimbus";
+const PARENT = "5a1e0000-1111-4222-8333-444455556666";
 const draft: IReviewDraft = {
-  changesetId: 21,
   key: "draft-one",
   location: 4,
   path: "/Code/Test.cs",
-  reviewId: REVIEW,
+  reviewId: 312,
   revisionId: 42,
   workspaceId: "workspace",
 };
-
-/** A connection whose tokens are `synthetic-token-1`, then `-2` and on, a new one per renewal it is asked for. */
-function connection(overrides: Partial<IReviewConnection> = {}):
-    IReviewConnection & { stale: Array<string | undefined> } {
-  const stale: Array<string | undefined> = [];
-  let current = 1;
-  return {
-    organizations: ["acme-studio"],
-    origin: ORIGIN,
-    repository: "Nimbus/Nimbus",
-    server: "acme-studio@unity",
-    stale,
-    token: previous => {
-      stale.push(previous);
-      if (previous !== undefined) {
-        current++;
-      }
-      return Promise.resolve(`synthetic-token-${current}`);
-    },
-    user: ME,
-    ...overrides,
-  };
-}
+const reply: IReviewDraft = { ...draft, key: "reply-one", parentGuid: PARENT };
+const KILLED: ICmOutput = { code: undefined, killed: "timeout", started: true, stderr: "", stdout: "" };
 
 async function failure(action: Promise<unknown>): Promise<ReviewWriteError> {
   try {
     await action;
   } catch (error) {
+    expect(error).to.be.instanceOf(ReviewWriteError);
     return error as ReviewWriteError;
   }
-  throw new Error("Expected rejection");
+  throw new Error("Expected the write to be refused.");
 }
 
-/** Each call as `METHOD path`. */
-function lines(calls: readonly IRestCall[]): string[] {
-  return calls.map(call => `${call.method} ${call.path}`);
-}
+describe("ReviewWriter (fake cm)", () => {
+  let cm: FakeCm;
+  let log: string[];
+  let cmPath: string;
+  let writer: ReviewWriter;
 
-/** A fake API that answers writes with `status` and `body`, and the settling reads as usual. */
-function answeringWrites(status: number, body: object | string = {}): FakeRest {
-  const rest = new FakeRest();
-  rest.respond = call => (call.method === "GET" ? undefined
-    : { body: typeof body === "string" ? body : JSON.stringify(body), status });
-  return rest;
-}
+  beforeEach(() => {
+    cm = new FakeCm();
+    log = [];
+    cmPath = "cm";
+    writer = new ReviewWriter({ cmPath: () => cmPath, log: message => log.push(message), run: cm.run });
+  });
 
-describe("Review writes through the Server REST API (fake transport)", () => {
-  it("settles the organization and the repository with reads, then adds the user with the token only in a header",
-    async () => {
-      const rest = new FakeRest();
-      const requests: Array<{ headers: { readonly [name: string]: string }; url: string }> = [];
-      const writer = new ReviewWriter((call, cancel) => {
-        requests.push({ headers: call.headers, url: call.url.toString() });
-        return rest.transport(call, cancel);
-      });
-      await writer.addReviewer(connection({ user: ` ${ME} ` }), REVIEW);
-      expect(lines(rest.calls)).to.deep.equal([
-        "GET /api/v1/organizations/acme-studio/user",
-        `GET ${API}`,
-        `POST ${API}/reviewers`,
+  describe("arguments", () => {
+    it("pins a new comment to its revision and one-based line, as a plain comment", () => {
+      expect(commentArguments(draft)).to.deep.equal([
+        "codereview", "comment", "add", "312", "-commentsfile=-", "--revision=revid:42", "--line=5", "--type=Comment",
       ]);
-      expect(rest.calls[2].body).to.deep.equal({ reviewers: [ME] });
-      expect(requests[0].headers)
-        .to.deep.equal({ Accept: "application/json", Authorization: "Bearer synthetic-token-1" });
-      expect(requests[2].headers).to.deep.equal({
-        "Accept": "application/json", "Authorization": "Bearer synthetic-token-1", "Content-Type": "application/json",
-      });
-      expect(requests.map(request => request.url).join(" ")).to.not.contain("synthetic-token");
-      expect(requests[2].url).to.equal(`https://${REGION}:7178${API}/reviewers`);
-
-      // Both answers are kept: the next write is the only request.
-      await writer.setStatus(connection(), REVIEW, "Reviewed");
-      expect(lines(rest.calls.slice(3))).to.deep.equal([`PUT ${API}/reviewers/dana.kim%40example.test/status`]);
-      expect(rest.calls[3].body).to.deep.equal({ status: "Reviewed" });
     });
 
-  it("sends each write's documented method, path and body", async () => {
-    const rest = new FakeRest();
-    const writer = new ReviewWriter(rest.transport);
-    for (const status of [ "Under review", "Reviewed", "Rework required" ] as const) {
-      await writer.setStatus(connection(), REVIEW, status);
-    }
-    await writer.send(connection(), draft, "First line\nSecond line");
-    await writer.send(connection(), { ...draft, key: "reply", location: -1, parentId: 2227, revisionId: -1 }, "Reply");
-    expect(rest.writes().map(call => [ call.method, call.path.substring(API.length), call.body ])).to.deep.equal([
-      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Under review" }],
-      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Reviewed" }],
-      [ "PUT", "/reviewers/dana.kim%40example.test/status", { status: "Rework required" }],
-      [ "POST", "/comment", {
-        changesetId: 21, commentText: "First line\nSecond line", locationSpec: "4", revisionId: 42, type: "Comment",
-      }],
-      [ "POST", "/comment/2227/reply", { commentText: "Reply" }],
-    ]);
-  });
-
-  it("names the organization by its unityid when the REST API does not take its name, and says when it takes neither",
-    async () => {
-      const rest = new FakeRest();
-      rest.organizations = ["1234567890123"];
-      const writer = new ReviewWriter(rest.transport);
-      await writer.addReviewer(connection({ organizations: [ "acme-studio", "1234567890123" ] }), REVIEW);
-      expect(lines(rest.calls)).to.deep.equal([
-        "GET /api/v1/organizations/acme-studio/user",
-        "GET /api/v1/organizations/1234567890123/user",
-        "GET /api/v1/organizations/1234567890123/repos/Nimbus%2FNimbus/codereview/12831",
-        "POST /api/v1/organizations/1234567890123/repos/Nimbus%2FNimbus/codereview/12831/reviewers",
+    it("names the changeset only for a draft written in one changeset's diff", () => {
+      expect(commentArguments({ ...draft, changesetId: 3715 })).to.deep.equal([
+        "codereview", "comment", "add", "312", "-commentsfile=-", "--revision=revid:42", "--line=5",
+        "--changeset=cs:3715", "--type=Comment",
       ]);
-
-      const refusing = new FakeRest();
-      refusing.organizations = [];
-      const error = await failure(new ReviewWriter(refusing.transport)
-        .addReviewer(connection({ organizations: [ "acme-studio", "1234567890123" ] }), REVIEW));
-      expect(error.message)
-        .to.equal("The Unity Version Control REST API did not accept the token for this organization.");
-      expect(error.uncertain).to.equal(false);
-      expect(refusing.writes()).to.deep.equal([]);
     });
 
-  it("encodes the repository as one segment, then as a path after a 404, and names the review when neither answers",
-    async () => {
-      const rest = new FakeRest();
-      rest.repositories = ["Nimbus/Nimbus"];
-      const writer = new ReviewWriter(rest.transport);
-      await writer.send(connection(), draft, "Hello");
-      expect(lines(rest.calls).slice(1)).to.deep.equal([
-        `GET ${API}`,
-        "GET /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/12831",
-        "POST /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/12831/comment",
+    it("posts a draft without a revision as a comment on the whole review", () => {
+      expect(commentArguments({ ...draft, location: -1, revisionId: -1 })).to.deep.equal([
+        "codereview", "comment", "add", "312", "-commentsfile=-",
       ]);
-      // The form that answered is kept for the repository, whichever review comes next.
-      await writer.addReviewer(connection(), 312);
-      expect(lines(rest.calls).slice(4))
-        .to.deep.equal(["POST /api/v1/organizations/acme-studio/repos/Nimbus/Nimbus/codereview/312/reviewers"]);
-
-      rest.repositories = [];
-      const missing = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), 7));
-      expect(missing.message).to.equal("The Unity Version Control REST API has no review #7 in Nimbus/Nimbus, " +
-        "with the repository's name as one path segment or as a path.");
-      expect(repositoryForms("Nimbus")).to.deep.equal(["Nimbus"]);
-      expect(repositoryForms("Nimbus/Sub Repo")).to.deep.equal([ "Nimbus%2FSub%20Repo", "Nimbus/Sub%20Repo" ]);
     });
 
-  it("answers a 401 once with a renewed token, and a second 401 is an error", async () => {
-    const rest = new FakeRest();
-    rest.expired.add("synthetic-token-1");
-    const conn = connection();
-    const writer = new ReviewWriter(rest.transport);
-    await writer.addReviewer(conn, REVIEW);
-    expect(conn.stale).to.deep.equal([ undefined, "synthetic-token-1", undefined, undefined ]);
-    expect(rest.calls.map(call => call.token)).to.deep.equal([
-      "synthetic-token-1", "synthetic-token-2", "synthetic-token-2", "synthetic-token-2",
-    ]);
-
-    // Expired again at the write, and the renewed one too: sent twice, then refused, never a third time.
-    rest.respond = call => (call.method === "POST" ? json(401, { error: { message: "The token has expired." }})
-      : undefined);
-    const error = await failure(writer.addReviewer(conn, REVIEW));
-    expect(rest.writes().map(call => call.token).slice(1)).to.deep.equal([ "synthetic-token-2", "synthetic-token-3" ]);
-    expect(error.message).to.equal("The Unity Version Control server refused the request: The token has expired.");
-    expect(error.uncertain).to.equal(false);
-  });
-
-  it("sends nothing to a host the REST API does not document", async () => {
-    expect(REST_HOSTS.map(host => restOrigin(host))).to.deep.equal(REST_HOSTS.map(host => `https://${host}:7178`));
-    for (const region of [ "", "-", "cloud.plasticscm.com", `${REGION}.example.test`, `evil.${REGION}`, "localhost" ]) {
-      expect(restOrigin(region), region).to.equal(undefined);
-    }
-    for (const origin of [ "https://api.example.test:7178", `http://${REGION}:7178`, `https://${REGION}:443`,
-      `https://${REGION}` ]) {
-      expect(() => restUrl(origin, "/api/v1/organizations"), origin).to.throw(ReviewWriteError);
-    }
-    expect(() => restUrl(ORIGIN, "//api.example.test/api")).to.throw(ReviewWriteError);
-    expect(() => restUrl(ORIGIN, "/api/v1/organizations/../x")).to.throw(ReviewWriteError);
-    expect(() => restUrl(ORIGIN, "/api/v1/organizations/%2e%2e/x")).to.throw(ReviewWriteError);
-    expect(() => restUrl(ORIGIN, "/api/v1/organizations/a?b")).to.throw(ReviewWriteError);
-    expect(restUrl(ORIGIN, "/api/v1/organizations/acme-studio/user").toString())
-      .to.equal(`${ORIGIN}/api/v1/organizations/acme-studio/user`);
-
-    let sent = 0;
-    const writer = new ReviewWriter(() => {
-      sent++;
-      return Promise.resolve(json(200, {}));
+    it("replies by the parent's GUID alone", () => {
+      expect(commentArguments(reply)).to.deep.equal([ "codereview", "comment", "reply", PARENT, "-commentsfile=-" ]);
     });
-    const elsewhere = await failure(
-      writer.addReviewer(connection({ origin: "https://api.example.test:7178" }), REVIEW));
-    expect(elsewhere.message).to.equal("The Unity Version Control REST API did not accept the token for this " +
-      "organization.");
-    // A repository that would climb out of its path has no form to send.
-    const climbing = await failure(writer.addReviewer(connection({ repository: ".." }), REVIEW));
-    expect(climbing.message).to.contain("has no review #12831 in ..");
-    expect(sent).to.equal(1);
-  });
 
-  it("takes any 2xx as success, and maps 400, 403, 404 and other 4xx to what the server said", async () => {
-    for (const status of [ 200, 201, 204 ]) {
-      await new ReviewWriter(answeringWrites(status).transport).setStatus(connection(), REVIEW, "Reviewed");
-    }
-    const message = { error: { message: "Status is not valid for this review." }};
-    const cases: Array<{ status: number; body: object | string; expected: string; write?: "status" }> = [
-      { body: message, expected: "The Unity Version Control server rejected the request: Status is not valid for " +
-        "this review.", status: 400 },
-      { body: "", expected: "The Unity Version Control server rejected the request (HTTP 400).", status: 400 },
-      { body: { title: "Forbidden", type: "about:blank" }, expected: "The Unity Version Control server refused the " +
-        "request: Forbidden. Only reviewers can set their own status.", status: 403, write: "status" },
-      { body: {}, expected: "The Unity Version Control server refused the request.", status: 403 },
-      { body: message, expected: "The Unity Version Control server has no review #12831 in Nimbus/Nimbus.",
-        status: 404 },
-      { body: { detail: "Too many requests" }, expected: "The Unity Version Control server refused the request " +
-        "(HTTP 429): Too many requests.", status: 429 },
-      { body: "", expected: "The Unity Version Control server refused the request (HTTP 302).", status: 302 },
-    ];
-    for (const entry of cases) {
-      const rest = answeringWrites(entry.status, entry.body);
-      const writer = new ReviewWriter(rest.transport);
-      const error = await failure(entry.write === "status"
-        ? writer.setStatus(connection(), REVIEW, "Reviewed")
-        : writer.send(connection(), draft, "Hello"));
-      expect(error.message, `${entry.status} ${JSON.stringify(entry.body)}`).to.equal(entry.expected);
-      expect(error.uncertain).to.equal(false);
-      expect(rest.writes(), String(entry.status)).to.have.length(1);
-    }
-  });
-
-  it("says a 5xx, a 408 and no complete answer may have taken effect, and never sends such a write again",
-    async () => {
-      for (const status of [ 500, 502, 503, 408 ]) {
-        const rest = answeringWrites(status, { error: { message: "Internal error" }});
-        const error = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
-        expect(error.message).to.equal(`The Unity Version Control server returned HTTP ${status}. You may have been ` +
-          "added; refresh the review before retrying.");
-        expect(error.uncertain).to.equal(true);
-        expect(rest.writes()).to.have.length(1);
-      }
-      const rejecting = (reason: Error) => {
-        const rest = new FakeRest();
-        rest.respond = call => (call.method === "GET" ? undefined : Promise.reject(reason));
-        return rest;
-      };
-      const cases: Array<[Error, string]> = [
-        [ new ReviewRequestError("failed", true), "No complete response was received. Your status may have been " +
-          "set; refresh the review before retrying." ],
-        [ new ReviewRequestError("interrupted", true), "The response was interrupted. Your status may have been set; " +
-          "refresh the review before retrying." ],
-        [ new ReviewRequestError("cancelled", true), "Cancelled before the Unity Version Control server answered. " +
-          "Your status may have been set; refresh the review before retrying." ],
-        [ new Error("synthetic-token-1 socket detail"), "The request ended without a confirmed result. Your status " +
-          "may have been set; refresh the review before retrying." ],
+    it("refuses anything that is not what cm expects, before cm runs", async () => {
+      const refused: Array<[string, IReviewDraft, string]> = [
+        [ "a review id of zero", { ...draft, reviewId: 0 }, "Invalid review id: 0" ],
+        [ "a fractional review id", { ...draft, reviewId: 3.5 }, "Invalid review id: 3.5" ],
+        [ "a review id that is not a number", { ...draft, reviewId: "312 --all" as unknown as number },
+          "Invalid review id: 312 --all" ],
+        [ "a fractional revision", { ...draft, revisionId: 4.2 }, "valid pinned revision and line" ],
+        [ "a revision without a line", { ...draft, location: -1 }, "valid pinned revision and line" ],
+        [ "a line that is not an integer", { ...draft, location: 1.5 }, "valid pinned revision and line" ],
+        [ "a negative changeset", { ...draft, changesetId: -1 }, "valid changeset" ],
+        [ "a changeset that is not a number", { ...draft, changesetId: "7 --x" as unknown as number },
+          "valid changeset" ],
+        [ "an empty parent GUID", { ...draft, parentGuid: "" }, "cannot be replied to yet" ],
+        [ "a parent that is a number", { ...draft, parentGuid: "2227" }, "cannot be replied to yet" ],
+        [ "a GUID with something after it", { ...draft, parentGuid: `${PARENT} --discard` },
+          "cannot be replied to yet" ],
+        [ "a GUID in braces", { ...draft, parentGuid: `{${PARENT}}` }, "cannot be replied to yet" ],
       ];
-      for (const [ reason, expected ] of cases) {
-        const rest = rejecting(reason);
-        const error = await failure(new ReviewWriter(rest.transport).setStatus(connection(), REVIEW, "Reviewed"));
-        expect(error.message).to.equal(expected);
+      for (const [ what, bad, message ] of refused) {
+        const error = await failure(writer.send(ROOT, { ...bad, key: what }, "Hello"));
+        expect(error.message, what).to.contain(message);
+        expect(error.uncertain, what).to.equal(false);
+      }
+      expect(cm.calls).to.deep.equal([]);
+    });
+
+    it("refuses an empty text and one over 64,000 characters", async () => {
+      for (const text of [ "", "  \n ", "x".repeat(64001) ]) {
+        expect((await failure(writer.send(ROOT, draft, text))).message)
+          .to.equal("Enter a comment of at most 64,000 characters.");
+      }
+      expect(cm.calls).to.deep.equal([]);
+      expect(await writer.send(ROOT, draft, "x".repeat(64000))).to.equal(commentGuid(1));
+    });
+  });
+
+  describe("comments and replies", () => {
+    it("runs cm in the workspace's folder with the text on stdin, and resolves the new comment's GUID", async () => {
+      const text = "First line\n  second \"line\" & $(more) --type=Change\n";
+      expect(await writer.send(ROOT, draft, text)).to.equal(commentGuid(1));
+      expect(cm.writes()).to.deep.equal([{
+        args: [
+          "codereview", "comment", "add", "312", "-commentsfile=-", "--revision=revid:42", "--line=5",
+          "--type=Comment",
+        ],
+        cmPath: "cm",
+        cwd: ROOT,
+        stdin: text,
+      }]);
+    });
+
+    it("replies with the text on stdin and resolves the reply's GUID", async () => {
+      expect(await writer.send(ROOT, reply, "Because.")).to.equal(commentGuid(1));
+      expect(cm.writes()).to.deep.equal([{
+        args: [ "codereview", "comment", "reply", PARENT, "-commentsfile=-" ], cmPath: "cm", cwd: ROOT,
+        stdin: "Because.",
+      }]);
+    });
+
+    it("finds the GUID among whatever else cm prints", async () => {
+      cm.answer = () => exited(0, `Comment created: ${commentGuid(7).toUpperCase()}\r\n`);
+      expect(await writer.send(ROOT, draft, "Hello")).to.equal(commentGuid(7).toUpperCase());
+    });
+
+    it("logs the command and the review, never the text or what cm printed", async () => {
+      cm.answer = call => (call.args[2] === "reply" ? exited(1, "", "Error: secret words echoed") : undefined);
+      await writer.send(ROOT, draft, "secret words");
+      await failure(writer.send(ROOT, reply, "secret words"));
+      expect(log).to.deep.equal([
+        "cm codereview comment add 312 (text on stdin)",
+        "cm codereview comment add 312: exit code 0",
+        `cm codereview comment reply ${PARENT} (text on stdin)`,
+        `cm codereview comment reply ${PARENT}: exit code 1`,
+      ]);
+    });
+
+    it("refuses a draft that is sending or was sent, and sends a failed one again", async () => {
+      let release!: () => void;
+      const held = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      cm.answer = () => held.then(() => undefined);
+      const first = writer.send(ROOT, draft, "Hello");
+      expect((await failure(writer.send(ROOT, draft, "Hello"))).message)
+        .to.equal("This draft is already sending or has been sent.");
+      release();
+      await first;
+      await failure(writer.send(ROOT, draft, "Hello"));
+      expect(cm.writes()).to.have.length(1);
+
+      cm.answer = () => exited(1, "", "Error: The code review 312 does not exist.");
+      await failure(writer.send(ROOT, { ...draft, key: "other" }, "Hello"));
+      cm.answer = undefined;
+      expect(await writer.send(ROOT, { ...draft, key: "other" }, "Hello")).to.equal(commentGuid(2));
+    });
+  });
+
+  describe("outcomes", () => {
+    it("takes cm's message, on one line and without its Error prefix, as a refusal", async () => {
+      cm.answer = () => exited(1, "", "Error: The revision revid:42 is not part\r\n  of the code review 312.\n");
+      const error = await failure(writer.send(ROOT, draft, "Hello"));
+      expect(error.message).to.equal("The revision revid:42 is not part of the code review 312.");
+      expect([ error.uncertain, error.refused ]).to.deep.equal([ false, true ]);
+    });
+
+    it("reads the message from stdout when stderr is empty", async () => {
+      cm.answer = () => exited(3, "Error: You must be a reviewer", "");
+      const error = await failure(writer.setStatus(ROOT, 312, "Reviewed"));
+      expect([ error.message, error.uncertain, error.refused ])
+        .to.deep.equal([ "You must be a reviewer.", false, true ]);
+    });
+
+    it("does not know the result when cm lost the server, or failed without a word", async () => {
+      const lost = [
+        "Error: The server didn't respond in time.",
+        "Error: The operation has timed out",
+        "Error: Unable to connect to the remote server",
+        "Error: Connection reset by peer",
+        "Error: The service is unavailable.",
+      ];
+      for (const said of lost) {
+        cm.answer = () => exited(1, "", said);
+        const error = await failure(writer.send(ROOT, { ...draft, key: said }, "Hello"));
+        expect([ error.uncertain, error.refused ], said).to.deep.equal([ true, false ]);
+        expect(error.message, said)
+          .to.match(/\. The comment may have been posted; refresh the review before retrying\.$/);
+      }
+      cm.answer = () => exited(3);
+      const silent = await failure(writer.setStatus(ROOT, 312, "Reviewed"));
+      expect([ silent.message, silent.uncertain, silent.refused ]).to.deep.equal([
+        "cm exited with code 3. Your status may have been set; refresh the review before retrying.", true, false,
+      ]);
+      // Unknown is not sent: Send Again's guard does not hold the draft, Allow Another Attempt decides.
+      cm.answer = undefined;
+      expect(await writer.send(ROOT, { ...draft, key: lost[0] }, "Hello")).to.equal(commentGuid(1));
+    });
+
+    it("cleans cm's messages", () => {
+      expect(cmMessage({ stderr: "Error: Error:  a\n\tb ", stdout: "ignored" })).to.equal("a b");
+      expect(cmMessage({ stderr: " \n", stdout: "from stdout" })).to.equal("from stdout");
+      expect(cmMessage({ stderr: "", stdout: "" })).to.equal(undefined);
+      expect(cmMessage({ stderr: "x".repeat(400), stdout: "" })).to.have.length(300);
+    });
+
+    it("does not know the result when cm exits cleanly without a GUID", async () => {
+      cm.answer = () => exited(0, "Done.\n");
+      const error = await failure(writer.send(ROOT, draft, "Hello"));
+      expect(error.uncertain).to.equal(true);
+      expect(error.message).to.equal("cm did not name the new comment. The comment may have been posted; refresh " +
+        "the review before retrying.");
+      // Unknown is not sent: the same draft may go again once the user allows it.
+      cm.answer = undefined;
+      expect(await writer.send(ROOT, draft, "Hello")).to.equal(commentGuid(1));
+    });
+
+    it("does not know the result when cm was killed after it started", async () => {
+      const cases: Array<[ICmOutput, string]> = [
+        [ KILLED, "cm did not finish in time. The reply may have been posted; refresh the review before retrying." ],
+        [{ ...KILLED, killed: "cancelled" },
+          "Cancelled before cm finished. The reply may have been posted; refresh the review before retrying." ],
+        [{ ...KILLED, killed: undefined },
+          "cm ended without a result. The reply may have been posted; refresh the review before retrying." ],
+      ];
+      for (const [ output, message ] of cases) {
+        cm.answer = () => output;
+        const error = await failure(writer.send(ROOT, { ...reply, key: message }, "Hello"));
+        expect(error.message).to.equal(message);
         expect(error.uncertain).to.equal(true);
-        expect(rest.writes()).to.have.length(1);
       }
-      const unsent = rejecting(new ReviewRequestError("cancelled", false));
-      const cancelled = await failure(new ReviewWriter(unsent.transport).send(connection(), draft, "Hello"));
-      expect(cancelled.message).to.equal("Cancelled before anything was sent.");
-      expect(cancelled.uncertain).to.equal(false);
+      cm.answer = () => KILLED;
+      const add = await failure(writer.addReviewer(ROOT, 312));
+      expect([ add.message, add.uncertain ]).to.deep.equal([
+        "cm did not finish in time. You may have been added; refresh the review before retrying.", true,
+      ]);
+      const verdict = await failure(writer.setStatus(ROOT, 312, "Reviewed"));
+      expect([ verdict.message, verdict.uncertain ]).to.deep.equal([
+        "cm did not finish in time. Your status may have been set; refresh the review before retrying.", true,
+      ]);
     });
 
-  it("treats a failed read as certain: nothing was written", async () => {
-    const rest = new FakeRest();
-    rest.respond = call => (call.path.endsWith("/user") ? json(503, {}) : undefined);
-    const busy = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
-    expect(busy.message)
-      .to.equal("The Unity Version Control server returned HTTP 503. Nothing was changed; try again.");
-    expect(busy.uncertain).to.equal(false);
-
-    rest.respond = call => (call.method === "GET" && !call.path.endsWith("/user")
-      ? Promise.reject(new ReviewRequestError("failed", true)) : undefined);
-    const silent = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
-    expect(silent.message).to.equal("The Unity Version Control server did not answer. Nothing was changed; try again.");
-    expect(silent.uncertain).to.equal(false);
-
-    rest.respond = call => (call.method === "GET" && !call.path.endsWith("/user")
-      ? json(403, { message: "No access to this repository." }) : undefined);
-    const refused = await failure(new ReviewWriter(rest.transport).addReviewer(connection(), REVIEW));
-    expect(refused.message).to.equal("The Unity Version Control server refused the request: No access to this " +
-      "repository.");
-    expect(rest.writes()).to.deep.equal([]);
-  });
-
-  it("fails an add answered with another reviewer as a result to check, and takes the user in any case", async () => {
-    const other = answeringWrites(201, { isGroup: false, reviewer: "sam.rivera@example.test", status: "Under review" });
-    const error = await failure(new ReviewWriter(other.transport).addReviewer(connection(), REVIEW));
-    expect(error.message).to.equal("The Unity Version Control server answered with another reviewer. Refresh the " +
-      "review to check whether you were added.");
-    expect(error.uncertain).to.equal(true);
-    const same = answeringWrites(201, { isGroup: false, reviewer: "Dana.Kim@Example.TEST", status: "Under review" });
-    await new ReviewWriter(same.transport).addReviewer(connection(), REVIEW);
-    // A body that is not a CodeReviewerModel says nothing about who was added.
-    await new ReviewWriter(answeringWrites(200, "[]").transport).addReviewer(connection(), REVIEW);
-  });
-
-  it("refuses a user that is not an e-mail address, a bad review id, status or anchor, and a token unfit for a header",
-    async () => {
-      const rest = new FakeRest();
-      const writer = new ReviewWriter(rest.transport);
-      for (const user of [ "dana", "dana@localhost", "dana kim@example.test", "", "<dana@example.test>" ]) {
-        const error = await failure(writer.addReviewer(connection({ user }), REVIEW));
-        expect(error.message, user).to.contain("is not an e-mail address");
-      }
-      for (const id of [ 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1 ]) {
-        expect((await failure(writer.addReviewer(connection(), id))).message, String(id))
-          .to.match(/^Invalid review id/);
-      }
-      expect((await failure(writer.setStatus(connection(), REVIEW, "Approved" as "Reviewed"))).message)
-        .to.equal("Invalid review status: Approved");
-      expect((await failure(writer.send(connection(), draft, "  "))).message)
-        .to.equal("Enter a comment of at most 64,000 characters.");
-      expect((await failure(writer.send(connection(), { ...draft, location: -1 }, "Hello"))).message)
-        .to.equal("This comment does not have a valid pinned revision and line.");
-      expect((await failure(writer.send(connection(), { ...draft, parentId: -2 }, "Hello"))).message)
-        .to.equal("Invalid reply target.");
-      const injected = await failure(writer.addReviewer(connection({
-        token: () => Promise.resolve("synthetic-token\r\nX-Evil: 1"),
-      }), REVIEW));
-      expect(injected.message).to.equal("cm revealed a token that cannot be sent in a request.");
-      const refused = await failure(writer.addReviewer(connection({
-        token: () => Promise.reject(new Error("Create a personal access token for acme-studio@unity first.")),
-      }), REVIEW));
-      expect(refused.message).to.equal("Create a personal access token for acme-studio@unity first.");
-      expect(refused.uncertain).to.equal(false);
-      expect(rest.calls).to.deep.equal([]);
+    it("knows nothing was sent when cm did not start", async () => {
+      cm.answer = () => ({ code: undefined, killed: "cancelled", started: false, stderr: "", stdout: "" });
+      const cancelled = await failure(writer.addReviewer(ROOT, 312));
+      expect([ cancelled.message, cancelled.uncertain ])
+        .to.deep.equal([ "Cancelled before anything was sent.", false ]);
+      cm.answer = () => ({ code: undefined, missing: true, started: false, stderr: "", stdout: "" });
+      const missing = await failure(writer.addReviewer(ROOT, 312));
+      expect([ missing.message, missing.uncertain ]).to.deep.equal([
+        "cm wasn't found. Check the plastic-scm.cmConfiguration.cmPath setting.", false,
+      ]);
+      cm.answer = () => ({ code: undefined, started: false, stderr: "", stdout: "" });
+      const unstarted = await failure(writer.addReviewer(ROOT, 312));
+      expect([ unstarted.uncertain, unstarted.refused ]).to.deep.equal([ false, false ]);
+      expect(unstarted.message).to.contain("cm could not be started");
+      // The operating system says a missing folder the way it says a missing cm; the runner tells them apart.
+      cm.answer = () => ({ code: undefined, cwdMissing: true, started: false, stderr: "", stdout: "" });
+      const gone = await failure(writer.addReviewer(ROOT, 312));
+      expect([ gone.message, gone.uncertain, gone.refused ])
+        .to.deep.equal([ "The review workspace's folder no longer exists.", false, false ]);
     });
 
-  it("blocks concurrent duplicate sends and never resends an accepted draft", async () => {
-    const rest = new FakeRest();
-    let release!: () => void;
-    const held = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    rest.respond = call => (call.method === "POST" ? held.then(() => json(201, { id: 20001 })) : undefined);
-    const writer = new ReviewWriter(rest.transport);
-    const first = writer.send(connection(), draft, "Hello");
-    expect((await failure(writer.send(connection(), draft, "Hello"))).message)
-      .to.equal("This draft is already sending or has been sent.");
-    release();
-    await first;
-    expect((await failure(writer.send(connection(), draft, "Hello"))).message).to.contain("already");
-    expect(rest.writes()).to.have.length(1);
-  });
-
-  it("shows what an ErrorResponse or ProblemDetails says, without anything shaped like a token", () => {
-    const jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGlj";
-    expect(serverMessage(JSON.stringify({ error: { message: `Token ${jwt} is not valid.` }})))
-      .to.equal("Token [token] is not valid.");
-    expect(serverMessage(JSON.stringify({ message: "Plain synthetic-token-1 text" }), "synthetic-token-1"))
-      .to.equal("Plain [token] text");
-    expect(serverMessage(JSON.stringify({ detail: "Details", title: "  Title\nhere " }))).to.equal("Title here");
-    expect(serverMessage(JSON.stringify({ detail: "x".repeat(300) }))).to.have.length(200);
-    for (const body of [ "", "not json", "[]", "{}", JSON.stringify({ message: 5 }), JSON.stringify({ title: " " }) ]) {
-      expect(serverMessage(body), body).to.equal(undefined);
-    }
-  });
-
-  it("sends nothing when cancelled first: the https transport rejects before it opens a request", async () => {
-    const api = https as unknown as { request: unknown };
-    const original = api.request;
-    let opened = 0;
-    api.request = () => {
-      opened++;
-      throw new Error("A test tried to open a real request.");
-    };
-    const source = new CancellationTokenSource();
-    source.cancel();
-    try {
-      const writer = new ReviewWriter(httpsTransport);
-      const error = await failure(writer.addReviewer(connection(), REVIEW, source.token));
-      expect(error.message).to.equal("Cancelled before anything was changed.");
-      expect(error.uncertain).to.equal(false);
-      const direct = await failure(httpsTransport({ body: "{}", headers: {}, method: "POST",
-        url: restUrl(ORIGIN, "/api/v1/organizations/acme-studio/user") }, source.token));
-      expect(direct).to.be.instanceOf(ReviewRequestError);
-      expect(opened).to.equal(0);
-    } finally {
-      api.request = original;
+    it("hands the cancellation to the runner", async () => {
+      const source = new CancellationTokenSource();
+      let seen: unknown;
+      cm.answer = (_call, run) => {
+        seen = run.cancel;
+        return undefined;
+      };
+      await writer.addReviewer(ROOT, 312, source.token);
+      expect(seen).to.equal(source.token);
       source.dispose();
-    }
+    });
+
+    it("refuses to write without a workspace folder", async () => {
+      expect((await failure(writer.addReviewer("", 312))).message)
+        .to.equal("The review workspace is no longer available.");
+      expect(cm.calls).to.deep.equal([]);
+    });
+  });
+
+  describe("the text on Windows", () => {
+    let temp: string;
+    beforeEach(() => {
+      temp = mkdtempSync(join(tmpdir(), "writer-test-"));
+    });
+    afterEach(() => rmSync(temp, { force: true, recursive: true }));
+
+    it("hands the text to cm in a UTF-8 file with a byte order mark, and deletes it once cm has ended", async () => {
+      const windows = new ReviewWriter({
+        cmPath: () => "cm", log: message => log.push(message), platform: "win32", run: cm.run, tempDir: () => temp,
+      });
+      const text = "Looks good \u2014 na\u00efve fix \u2713\nSecond line";
+      let file = "";
+      let bytes: Buffer | undefined;
+      cm.answer = call => {
+        file = call.args.find(arg => arg.startsWith("-commentsfile="))!.substring("-commentsfile=".length);
+        bytes = readFileSync(file);
+        return undefined;
+      };
+      expect(await windows.send(ROOT, draft, text)).to.equal(commentGuid(1));
+      const [call] = cm.writes();
+      expect(call.stdin).to.equal(undefined);
+      expect(call.args).to.deep.equal([
+        "codereview", "comment", "add", "312", `-commentsfile=${file}`, "--revision=revid:42", "--line=5",
+        "--type=Comment",
+      ]);
+      expect(file.startsWith(temp)).to.equal(true);
+      expect(bytes!.subarray(0, 3)).to.deep.equal(Buffer.from([ 0xef, 0xbb, 0xbf ]));
+      expect(bytes!.subarray(3).toString("utf8")).to.equal(text);
+      expect(readdirSync(temp)).to.deep.equal([]);
+      expect(log[0]).to.equal("cm codereview comment add 312 (text in a temporary file)");
+
+      // A failed run deletes it too, and so does one that never got to cm.
+      cm.answer = () => exited(1, "", "Error: The code review 312 does not exist.");
+      await failure(windows.send(ROOT, reply, text));
+      expect(readdirSync(temp)).to.deep.equal([]);
+      await failure(windows.send("", { ...reply, key: "no-folder" }, text));
+      expect(readdirSync(temp)).to.deep.equal([]);
+    });
+
+    it("sends nothing when the file cannot be made", async () => {
+      const windows = new ReviewWriter({
+        cmPath: () => "cm", platform: "win32", run: cm.run, tempDir: () => join(temp, "missing", "deeper"),
+      });
+      const error = await failure(windows.send(ROOT, draft, "Hello"));
+      expect([ error.message, error.uncertain ]).to.deep.equal([
+        "The text could not be written to a temporary file for cm. Nothing was sent.", false,
+      ]);
+      expect(cm.writes()).to.deep.equal([]);
+    });
+  });
+
+  describe("edits and deletes", () => {
+    it("edits a comment by its GUID with the new text on stdin, and logs no text", async () => {
+      const text = "Fixed text\nwith a second line --type=Change";
+      await writer.editComment(ROOT, PARENT, text);
+      expect(cm.writes()).to.deep.equal([{
+        args: [ "codereview", "comment", "edit", PARENT, "-commentsfile=-" ], cmPath: "cm", cwd: ROOT, stdin: text,
+      }]);
+      expect(log).to.deep.equal([
+        `cm codereview comment edit ${PARENT} (text on stdin)`,
+        `cm codereview comment edit ${PARENT}: exit code 0`,
+      ]);
+    });
+
+    it("deletes a comment by its GUID, with nothing on stdin", async () => {
+      await writer.deleteComment(ROOT, PARENT);
+      expect(cm.writes()).to.deep.equal([{
+        args: [ "codereview", "comment", "delete", PARENT ], cmPath: "cm", cwd: ROOT, stdin: undefined,
+      }]);
+      expect(log).to.deep.equal([
+        `cm codereview comment delete ${PARENT}`,
+        `cm codereview comment delete ${PARENT}: exit code 0`,
+      ]);
+    });
+
+    it("refuses a GUID that is not one whole GUID, and text cm would not take, before cm runs", async () => {
+      for (const guid of [ "", "2227", `${PARENT} --repository=other`, `{${PARENT}}`, `-c=${PARENT}` ]) {
+        expect((await failure(writer.editComment(ROOT, guid, "Text"))).message, guid).to.contain("Refresh the review");
+        expect((await failure(writer.deleteComment(ROOT, guid))).message, guid).to.contain("Refresh the review");
+      }
+      for (const text of [ "", " \n", "x".repeat(64001) ]) {
+        expect((await failure(writer.editComment(ROOT, PARENT, text))).message)
+          .to.equal("Enter a comment of at most 64,000 characters.");
+      }
+      expect(cm.calls).to.deep.equal([]);
+    });
+
+    it("classifies edits and deletes as it does comments: refused, or of unknown result", async () => {
+      cm.answer = () => exited(1, "", "Error: You can only edit your own comments.");
+      const refused = await failure(writer.editComment(ROOT, PARENT, "Text"));
+      expect([ refused.message, refused.uncertain, refused.refused ])
+        .to.deep.equal([ "You can only edit your own comments.", false, true ]);
+      cm.answer = () => KILLED;
+      const lost = await failure(writer.deleteComment(ROOT, PARENT));
+      expect([ lost.message, lost.uncertain ]).to.deep.equal([
+        "cm did not finish in time. The comment may have been deleted; refresh the review before retrying.", true,
+      ]);
+      cm.answer = () => exited(1, "", "Error: The server didn't respond in time.");
+      expect((await failure(writer.editComment(ROOT, PARENT, "Text"))).message).to.equal(
+        "The server didn't respond in time. The comment may have been changed; refresh the review before retrying.");
+    });
+
+    it("does not know whether a delete happened when cm exits cleanly but reports an error", async () => {
+      cm.answer = () => exited(0, "", "Error: The comment could not be deleted.");
+      const error = await failure(writer.deleteComment(ROOT, PARENT));
+      expect([ error.message, error.uncertain ]).to.deep.equal([
+        "cm said: The comment could not be deleted. The comment may have been deleted; refresh the review to check.",
+        true,
+      ]);
+    });
+
+    it("hands an edit's text to cm in a temporary file on Windows, and deletes it", async () => {
+      const temp = mkdtempSync(join(tmpdir(), "writer-test-"));
+      try {
+        const windows = new ReviewWriter({ cmPath: () => "cm", platform: "win32", run: cm.run, tempDir: () => temp });
+        let text = "";
+        cm.answer = call => {
+          const file = call.args[4].substring("-commentsfile=".length);
+          text = readFileSync(file).subarray(3).toString("utf8");
+          return undefined;
+        };
+        await windows.editComment(ROOT, PARENT, "Naïve ✓");
+        expect(cm.writes()[0].args.slice(0, 4)).to.deep.equal([ "codereview", "comment", "edit", PARENT ]);
+        expect(cm.writes()[0].stdin).to.equal(undefined);
+        expect(text).to.equal("Naïve ✓");
+        expect(readdirSync(temp)).to.deep.equal([]);
+      } finally {
+        rmSync(temp, { force: true, recursive: true });
+      }
+    });
+  });
+
+  describe("reviewers and verdicts", () => {
+    it("adds the cm user with --users=me", async () => {
+      await writer.addReviewer(ROOT, 312);
+      expect(cm.writes()).to.deep.equal([{
+        args: [ "codereview", "reviewer", "add", "312", "--users=me" ], cmPath: "cm", cwd: ROOT, stdin: undefined,
+      }]);
+      expect(log).to.deep.equal([ "cm codereview reviewer add 312", "cm codereview reviewer add 312: exit code 0" ]);
+    });
+
+    it("maps each review status to cm's flag", async () => {
+      const flags: Array<[ReviewStatus, string]> = [
+        [ "Under review", "--under-review" ], [ "Reviewed", "--reviewed" ], [ "Rework required", "--rework-required" ],
+      ];
+      for (const [ status, flag ] of flags) {
+        await writer.setStatus(ROOT, 312, status);
+        const calls = cm.writes();
+        expect(calls[calls.length - 1]).to.deep.equal({
+          args: [ "codereview", "review", "312", flag ], cmPath: "cm", cwd: ROOT, stdin: undefined,
+        });
+      }
+    });
+
+    it("refuses an unknown status and an invalid review id before cm runs", async () => {
+      for (const status of [ "Approved", "constructor", "--re-request" ]) {
+        expect((await failure(writer.setStatus(ROOT, 312, status as ReviewStatus))).message)
+          .to.equal(`Invalid review status: ${status}`);
+      }
+      expect((await failure(writer.setStatus(ROOT, -1, "Reviewed"))).message).to.equal("Invalid review id: -1");
+      expect((await failure(writer.addReviewer(ROOT, Number.NaN))).message).to.equal("Invalid review id: NaN");
+      expect(cm.calls).to.deep.equal([]);
+    });
+
+    it("sends every add it is asked for: the caller keeps one in flight", async () => {
+      await writer.addReviewer(ROOT, 312);
+      await writer.addReviewer(ROOT, 312);
+      expect(cm.writes()).to.have.length(2);
+    });
+  });
+
+  describe("capability detection", () => {
+    it("asks cm once per path whether it has the comment commands", async () => {
+      expect(await writer.support()).to.deep.equal({ supported: true });
+      await writer.support();
+      await writer.send(ROOT, draft, "Hello");
+      await writer.addReviewer(ROOT, 312);
+      expect(cm.probes()).to.deep.equal([{
+        args: [ "codereview", "comment", "--usage" ], cmPath: "cm", cwd: undefined, stdin: undefined,
+      }]);
+      cmPath = "/opt/other/cm";
+      await writer.support();
+      expect(cm.probes().map(call => call.cmPath)).to.deep.equal([ "cm", "/opt/other/cm" ]);
+    });
+
+    it("blocks every write with an older cm, and says which client is needed", async () => {
+      const reason = "Review writes need Unity Version Control client 11.0.16.10512 or newer.";
+      for (const usage of [ exited(0, OLD_USAGE), exited(1, "", "Error: Unknown command"), exited(0, "") ]) {
+        const old = new FakeCm();
+        old.usage = usage;
+        const other = new ReviewWriter({ cmPath: () => "cm", run: old.run });
+        expect(await other.support()).to.deep.equal({ reason, supported: false });
+        expect((await failure(other.send(ROOT, draft, "Hello"))).message).to.equal(reason);
+        expect((await failure(other.addReviewer(ROOT, 312))).message).to.equal(reason);
+        expect((await failure(other.setStatus(ROOT, 312, "Reviewed"))).message).to.equal(reason);
+        expect(old.writes()).to.deep.equal([]);
+        // A no is not kept: a client upgraded in place is found the next time.
+        expect(old.probes(), "asked every time").to.have.length(4);
+        old.usage = exited(0, "    - reply\n");
+        expect(await other.support()).to.deep.equal({ supported: true });
+      }
+    });
+
+    it("forgets every answer when told to, as on a change to the cm settings", async () => {
+      expect(await writer.support()).to.deep.equal({ supported: true });
+      cm.usage = exited(0, OLD_USAGE);
+      expect(await writer.support()).to.deep.equal({ supported: true });
+      writer.forgetSupport();
+      expect((await writer.support()).supported).to.equal(false);
+      expect(cm.probes()).to.have.length(2);
+    });
+
+    it("says cm is missing, and asks again once it may be there", async () => {
+      cm.usage = { code: undefined, missing: true, started: false, stderr: "", stdout: "" };
+      const reason = "cm wasn't found. Check the plastic-scm.cmConfiguration.cmPath setting.";
+      expect(await writer.support()).to.deep.equal({ reason, supported: false });
+      const error = await failure(writer.send(ROOT, draft, "Hello"));
+      expect([ error.message, error.uncertain ]).to.deep.equal([ reason, false ]);
+      expect(cm.writes()).to.deep.equal([]);
+      cm.usage = exited(0, "Commands:\n    - add | mk\n    - reply\n");
+      expect(await writer.support()).to.deep.equal({ supported: true });
+    });
+
+    it("does not keep an answer from a cm that did not finish", async () => {
+      cm.usage = KILLED;
+      expect((await writer.support()).supported).to.equal(false);
+      cm.usage = exited(0, "    - reply\n");
+      expect(await writer.support()).to.deep.equal({ supported: true });
+    });
   });
 });

@@ -1,17 +1,8 @@
 import {
-  Disposable,
-  Event,
-  EventEmitter,
-  ThemeIcon,
-  TreeDataProvider,
-  TreeItem,
-  TreeItemCollapsibleState,
-  Uri,
-  ViewBadge,
-} from "vscode";
-import {
+  canReplyToThread,
   errorSummary,
   isGeneralThread,
+  isOwnComment,
   retryTooltip,
   themeIcon,
   threadContext,
@@ -22,6 +13,17 @@ import {
   threadTooltip,
   toneUri,
 } from "./reviewPresentation";
+import {
+  Disposable,
+  Event,
+  EventEmitter,
+  ThemeIcon,
+  TreeDataProvider,
+  TreeItem,
+  TreeItemCollapsibleState,
+  Uri,
+  ViewBadge,
+} from "vscode";
 import { IActiveReview, IReviewSessionView } from "./sessionTypes";
 import { IReviewDiscussions, IReviewThread } from "./models";
 import { compareNames } from "./reviewFileTree";
@@ -35,6 +37,17 @@ export const DISCUSSION_COMMANDS = {
   openDiscussion: "plastic-scm.reviews.openDiscussion",
   retry: "plastic-scm.reviews.retry",
 };
+
+/**
+ * What the rows need to offer review-level writes (review writes):
+ * whether posting works now, and who the cm user is.
+ */
+export interface IDiscussionWrites {
+  /** Posting works in the active workspace, as the `plastic-scm.reviews.postingEnabled` key says. */
+  enabled(): boolean;
+  /** The cm user of a workspace once `cm whoami` has answered; undefined until then. */
+  user(workspaceId: string): string | undefined;
+}
 
 export interface IDiscussionGroupNode {
   readonly kind: "group";
@@ -147,19 +160,20 @@ export function discussionsBadge(threads: readonly IReviewThread[]): ViewBadge |
 }
 
 /**
- * `3 pending · 2 questions`; with nothing pending, the applied change requests
- * take that place (`1 applied · 1 question`). Undefined when all are zero.
+ * `🟠 3 pending · ❓ 2 questions`; with nothing pending, the applied change
+ * requests take that place (`✅ 1 applied · ❓ 1 question`). Emoji keep their
+ * colours in a view description, which is otherwise drawn muted. Undefined when all are zero.
  */
 export function discussionsDescription(threads: readonly IReviewThread[]): string | undefined {
   const counts = threadCounts(threads);
   const parts: string[] = [];
   if (counts.pending) {
-    parts.push(`${counts.pending} pending`);
+    parts.push(`🟠 ${counts.pending} pending`);
   } else if (counts.applied) {
-    parts.push(`${counts.applied} applied`);
+    parts.push(`✅ ${counts.applied} applied`);
   }
   if (counts.questions) {
-    parts.push(`${counts.questions} question${counts.questions === 1 ? "" : "s"}`);
+    parts.push(`❓ ${counts.questions} question${counts.questions === 1 ? "" : "s"}`);
   }
   return parts.join(" · ") || undefined;
 }
@@ -171,9 +185,14 @@ export class DiscussionsProvider implements TreeDataProvider<DiscussionNode>, Di
   private readonly subscription: Disposable;
   private cache?: { discussions: IReviewDiscussions; prefix: string; groups: IDiscussionGroupNode[] };
 
-  public constructor(private readonly session: IReviewSessionView) {
+  public constructor(private readonly session: IReviewSessionView, private readonly writes?: IDiscussionWrites) {
     this.onDidChangeTreeData = this.changed.event;
     this.subscription = session.onDidChangeActive(() => this.changed.fire(undefined));
+  }
+
+  /** Draws the rows again: whether posting works, or who the cm user is, changed. */
+  public refresh(): void {
+    this.changed.fire(undefined);
   }
 
   public dispose(): void {
@@ -287,6 +306,10 @@ export class DiscussionsProvider implements TreeDataProvider<DiscussionNode>, Di
     }));
   }
 
+  private writeFlags(node: IDiscussionThreadNode): string {
+    return node.general && this.writes?.enabled() ? flags(node.thread, this.writes.user(node.workspaceId)) : "";
+  }
+
   private threadItem(node: IDiscussionThreadNode): TreeItem {
     const thread = node.thread;
     const item = new TreeItem(threadSummary(thread), TreeItemCollapsibleState.None);
@@ -296,10 +319,21 @@ export class DiscussionsProvider implements TreeDataProvider<DiscussionNode>, Di
     item.tooltip = threadTooltip(thread);
     // A discarded change request reads greyed out, label and icon alike.
     item.resourceUri = thread.state === "discarded" ? toneUri("disabled", node.id) : undefined;
-    item.contextValue = threadContext(thread);
+    item.contextValue = threadContext(thread) + this.writeFlags(node);
     item.command = { arguments: [node], command: DISCUSSION_COMMANDS.openDiscussion, title: "Open Discussion" };
     return item;
   }
+}
+
+/**
+ * `;reply`, `;edit` and `;delete` after a General thread's context value,
+ * for the writes posting can make on it now: a reply to its root (see
+ * `canReplyToThread`), and an edit or a delete of a comment of the cm user's
+ * in it (see `isOwnComment`). File threads are written to in their diff.
+ */
+function flags(thread: IReviewThread, user: string | undefined): string {
+  const own = thread.comments.some(comment => isOwnComment(comment, user));
+  return `${canReplyToThread(thread) ? ";reply" : ""}${own ? ";edit;delete" : ""}`;
 }
 
 function groupItem(node: IDiscussionGroupNode): TreeItem {

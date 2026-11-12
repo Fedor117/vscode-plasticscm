@@ -37,6 +37,10 @@ describe("Review links", () => {
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: "merged" }, workspaceId: "wk & co=1/2?#" },
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: { changesetId: 3699 }}, workspaceId: "wk" },
       { key: "Zm9v_-9", reviewId: 12831, target: { kind: "addMeAsReviewer" }, workspaceId: "wk" },
+      { key: "Zm9v_-9", reviewId: 12831, target: { kind: "addComment" }, workspaceId: "wk" },
+      { key: "k", reviewId: 12831, target: { action: "reply", commentId: 12915, kind: "comment" }, workspaceId: "wk" },
+      { key: "k", reviewId: 12831, target: { action: "edit", commentId: 1, kind: "comment" }, workspaceId: "wk" },
+      { key: "k", reviewId: 12831, target: { action: "delete", commentId: 77, kind: "comment" }, workspaceId: "wk" },
     ];
     for (const link of written) {
       const href = reviewLinkUri(BASE, link);
@@ -91,6 +95,14 @@ describe("Review links", () => {
       "addMeAsReviewer?workspace=d2s&review=5&key=a%2Bb",
       "addMeAsReviewer?workspace=d2s&review=5&key=k&thread=9",
       "addMeAsReviewer?workspace=d2s&review=x&key=k",
+      "addComment?workspace=d2s&review=5",
+      "addComment?workspace=d2s&review=5&key=a.b",
+      "comment?workspace=d2s&review=5&action=edit&comment=9",
+      "comment?workspace=d2s&review=5&action=apply&comment=9&key=k",
+      "comment?workspace=d2s&review=5&action=Edit&comment=9&key=k",
+      "comment?workspace=d2s&review=5&action=edit&comment=0&key=k",
+      "comment?workspace=d2s&review=5&action=edit&comment=9&key=k&thread=9",
+      "comment?workspace=d2s&review=5&action=delete&comment=9&comment=9&key=k",
     ];
     for (const path of malformed) {
       expect(parseReviewLink(Uri.parse(PREFIX + path)).kind, path).to.equal("malformed");
@@ -102,6 +114,8 @@ describe("Review links", () => {
     expect(parseReviewLink(Uri.parse(`${PREFIX}${thread}&thread=9`)).kind).to.equal("link");
     expect(parseReviewLink(Uri.parse(`${PREFIX}${changes}&file=${key}`)).kind).to.equal("link");
     expect(parseReviewLink(Uri.parse(`${PREFIX}addMeAsReviewer?workspace=d2s&review=5&key=k`)).kind).to.equal("link");
+    expect(parseReviewLink(Uri.parse(`${PREFIX}comment?workspace=d2s&review=5&action=edit&comment=9&key=k`)).kind)
+      .to.equal("link");
   });
 
   describe("on a rendered Overview", () => {
@@ -126,9 +140,11 @@ describe("Review links", () => {
       const html = render(active);
       expectWellFormed(html);
       const found = expectHandlerLinksOpen(html, active, PREFIX);
+      // Open items link the pending change request and the open question; the Conversation every thread with a line.
+      const thread = (threadId: number) => ({ kind: "thread", threadId });
       expect(found.map(link => link.target)).to.deep.equal([
-        { kind: "thread", threadId: 12907 },
-        { kind: "thread", threadId: 12915 },
+        thread(12907), thread(12915), thread(12907), thread(12915), thread(12918), thread(12919), thread(12961),
+        thread(12981),
       ]);
       expect(html).to.contain("Change request</span> GhostRunAnalyticsCollector.cs <span class=\"dim\">");
       expect(links(html).map(link => link.text)).to.include.members(["GhostRunAnalyticsCollector.cs:287"]);

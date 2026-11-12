@@ -2,12 +2,15 @@ import {
   ageInWords,
   avatarColor,
   avatarInitials,
+  canReplyToThread,
   changeKind,
   commentTypeLabel,
   firstLine,
   formatCount,
   hasLocation,
   isGeneralThread,
+  isOwnComment,
+  isOwnDescription,
   shortDateTime,
   shortOwner,
   splitCodeSpans,
@@ -65,7 +68,14 @@ export type OverviewLinkTarget =
   | { kind: "thread"; threadId: number }
   | { kind: "file"; scope: FileScope; fileKey: string }
   /** Add Me as Reviewer, on the review the page shows. */
-  | { kind: "addMeAsReviewer" };
+  | { kind: "addMeAsReviewer" }
+  /** Reply to, edit or delete a comment of the review, by its id; the description's edit names its row. */
+  | { kind: "comment"; action: CommentLinkAction; commentId: number }
+  /** A new comment on the whole review. */
+  | { kind: "addComment" };
+
+/** What a comment link does; see `OverviewLinkTarget`. */
+export type CommentLinkAction = "reply" | "edit" | "delete";
 
 export interface IOverviewOptions {
   /** The clock for relative ages. */
@@ -76,16 +86,24 @@ export interface IOverviewOptions {
   /** The cm user can be added to the reviewers: the Reviewers section links Add me as reviewer. */
   addMe?: boolean;
   /**
+   * Review writes work: review-level threads link Reply, the cm
+   * user's own comments on the whole review Edit and Delete, their
+   * description Edit description, and the end of the Conversation Add comment.
+   */
+  commentActions?: boolean;
+  /**
    * An absolute URI that opens the target, or undefined when it cannot be
    * opened. Without one the only links are the URLs people wrote.
    */
   link?: (target: OverviewLinkTarget) => string | undefined;
 }
 
-/** Newest History entries listed; older ones fold into a <details>. */
-const HISTORY_SHOWN = 8;
-/** Newest changesets listed; the Review view lists them all. */
-const CHANGESETS_SHOWN = 4;
+/**
+ * Changesets by one person this close together are one Conversation entry,
+ * as GitHub lists a push of several commits: each changeset within this long
+ * of the one before it.
+ */
+const CHANGESET_GROUP_WINDOW = 30 * 60 * 1000;
 /** Files a changeset review lists; the Review view lists them all. */
 const FILES_SHOWN = 50;
 /** The schemes the Markdown preview opens on a click (its media/index.js); a link to anything else does nothing. */
@@ -100,6 +118,24 @@ const BRANCH_ICON = "<svg class=\"icon\" width=\"14\" height=\"14\" viewBox=\"0 
   "stroke=\"currentColor\" stroke-width=\"1.2\" aria-hidden=\"true\">" +
   "<circle cx=\"4.5\" cy=\"3.5\" r=\"1.5\"/><circle cx=\"4.5\" cy=\"12.5\" r=\"1.5\"/>" +
   "<circle cx=\"11.5\" cy=\"5.5\" r=\"1.5\"/><path d=\"M4.5 5v6M11.5 7c0 2.5-3 2.5-5.6 4.4\"/></svg>";
+/** A timeline entry's kind, drawn on the line as GitHub draws a pull request's: 16px, stroked. */
+const TIMELINE_ICONS = {
+  change: "<path d=\"M3.5 1.5h6l3 3v10h-9z\"/><path d=\"M8 5.5v4M6 7.5h4M6 11.5h4\"/>",
+  check: "<path d=\"M3 8.5l3 3 7-7\"/>",
+  comment: "<path d=\"M2.5 3h11v7.5h-6L4.5 13v-2.5h-2z\"/>",
+  commit: "<circle cx=\"8\" cy=\"8\" r=\"2.5\"/><path d=\"M1 8h4.5M10.5 8H15\"/>",
+  description: "<path d=\"M3 3.5h10M3 6.5h10M3 9.5h7M3 12.5h5\"/>",
+  dot: "<circle cx=\"8\" cy=\"8\" r=\"2\" fill=\"currentColor\"/>",
+  eye: "<path d=\"M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z\"/>" +
+    "<circle cx=\"8\" cy=\"8\" r=\"2\"/>",
+  opened: "<circle cx=\"4.5\" cy=\"3.5\" r=\"1.5\"/><circle cx=\"4.5\" cy=\"12.5\" r=\"1.5\"/>" +
+    "<circle cx=\"11.5\" cy=\"12.5\" r=\"1.5\"/><path d=\"M4.5 5v6M11.5 11V6.5a2 2 0 0 0-2-2H7M8.5 3 7 4.5 8.5 6\"/>",
+  pencil: "<path d=\"M11 2.5 13.5 5l-8 8H3v-2.5z\"/>",
+  person: "<circle cx=\"8\" cy=\"5.5\" r=\"2.5\"/><path d=\"M3 14c0-2.8 2.2-4.5 5-4.5s5 1.7 5 4.5\"/>",
+  question: "<circle cx=\"8\" cy=\"8\" r=\"6\"/><path d=\"M6.2 6.3a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.4\"/>" +
+    "<circle cx=\"8\" cy=\"11.6\" r=\".5\" fill=\"currentColor\" stroke=\"none\"/>",
+};
+type TimelineIcon = keyof typeof TIMELINE_ICONS;
 /** A closing bracket and the one that opens it, for `trimUrl`. */
 const BRACKETS: { [close: string]: string } = { ")": "(", "]": "[", "}": "{" };
 
@@ -124,6 +160,7 @@ interface IPage {
   readonly now: number;
   readonly whoami?: string;
   readonly addMe: boolean;
+  readonly commentActions: boolean;
   readonly isViewed?: (file: IChangesetFileChange) => boolean;
   /** The caller's link builder, limited to URIs the preview opens. */
   readonly link: (target: OverviewLinkTarget) => string | undefined;
@@ -134,8 +171,15 @@ interface IPage {
   readonly cards: readonly IReviewer[];
   /** People removed from the reviewers who have no row now. */
   readonly removed: readonly string[];
-  /** The verdict threads the reviewer cards print, by thread id (the verdict row's id). */
-  readonly verdictThreads: ReadonlyMap<number, IReviewThread>;
+}
+
+/** One entry of the Conversation: oldest first, then by `rank`, then by `id`, so equal times keep one order. */
+interface ITimelineItem {
+  readonly time: number;
+  /** 0 the review's creation, 1 changesets and notes about them, 2 discussions and review events. */
+  readonly rank: number;
+  readonly id: number;
+  readonly html: string;
 }
 
 export function renderOverview(active: IActiveReview, options: IOverviewOptions): string {
@@ -143,18 +187,11 @@ export function renderOverview(active: IActiveReview, options: IOverviewOptions)
   const reviewers = discussions ? reviewerStates(discussions.timeline, active.review) : [];
   // A self-request of the author's (Plastic writes one when some reviews are created) is not a review.
   const cards = reviewers.filter(reviewer => !reviewer.author || hasVerdict(reviewer));
-  const threads = new Map((discussions?.threads ?? []).map(thread => [ thread.id, thread ]));
-  const verdictThreads = new Map<number, IReviewThread>();
-  for (const reviewer of cards) {
-    const thread = reviewer.verdict && threads.get(reviewer.verdict.id);
-    if (thread) {
-      verdictThreads.set(thread.id, thread);
-    }
-  }
   const page: IPage = {
     active,
     addMe: !!options.addMe,
     cards,
+    commentActions: !!options.commentActions,
     discussions,
     isViewed: options.isViewed,
     link: target => {
@@ -164,18 +201,18 @@ export function renderOverview(active: IActiveReview, options: IOverviewOptions)
     now: options.now,
     removed: discussions ? removedReviewers(discussions.timeline, active.review) : [],
     reviewers,
-    verdictThreads,
     whoami: options.whoami,
   };
-  // The artboards: a changeset review reads its comment and files first, a branch review its changesets last.
+  // As a GitHub pull request reads: where it stands, then the whole conversation in order, then the files.
+  const changesetReview = active.review.targetType === "changeset";
   const lines = [
     "<div class=\"plastic-review\">",
     ...header(page),
     ...summary(page),
-    ...(active.review.targetType === "changeset" ? [ ...changesetComment(page), ...filesSection(page) ] : []),
-    ...discussionSections(page),
-    ...(active.review.targetType === "branch" ? changesetsSection(page) : []),
-    ...historySection(page),
+    ...(discussions ? [ ...reviewersSection(page), ...openItemsSection(page) ] : []),
+    ...(changesetReview ? changesetComment(page) : []),
+    ...conversationSection(page),
+    ...(changesetReview ? filesSection(page) : []),
     "</div>",
   ];
   return `${lines.join("\n")}\n`;
@@ -205,10 +242,6 @@ function header(page: IPage): string[] {
   }
   if (files?.branchDeleted) {
     lines.push("<p class=\"notice\">The branch no longer exists. Discussions still open their original context.</p>");
-  }
-  const lead = [ title.rest, description(page) ].filter(Boolean).map(richText).join("");
-  if (lead) {
-    lines.push(`<div class="lead">${lead}</div>`);
   }
   return lines;
 }
@@ -240,10 +273,18 @@ function chips(page: IPage): string[] {
   return [ chip(`${BRANCH_ICON}${escapeHtml(files.branch.name)}${hidden}`), ...sides ];
 }
 
-/** The latest `[description]` row's text; empty when there is none or it was cleared. */
-function description(page: IPage): string {
+function latestDescription(page: IPage): IReviewTimelineEvent | undefined {
   const descriptions = (page.discussions?.timeline ?? []).filter(event => event.kind === "description");
-  return descriptions.length ? descriptions[descriptions.length - 1].text : "";
+  return descriptions[descriptions.length - 1];
+}
+
+/** Edit description, when the latest description is the cm user's own; see `isOwnDescription`. */
+function descriptionEdit(page: IPage): string {
+  const latest = latestDescription(page);
+  if (!page.commentActions || !isOwnDescription(latest, page.whoami)) {
+    return "";
+  }
+  return actionLink(page, { action: "edit", commentId: latest.id, kind: "comment" }, "Edit description");
 }
 
 function summary(page: IPage): string[] {
@@ -309,7 +350,7 @@ function standing(page: IPage): { headline: string; facts: string } {
   if (again.length && !named) {
     facts.push(`${names(page, again)} ${again.length === 1 ? "was" : "were"} asked to look again.`);
   }
-  // Back after a verdict of their own, which their card quotes: they are not without one.
+  // Back after a verdict of their own, which the Conversation quotes: they are not without one.
   const rejoined = waiting.filter(reviewer => reviewer.state === "reviewing" && reviewer.verdict);
   for (const status of [ "Reviewed", "Rework required" ]) {
     const back = rejoined.filter(reviewer => reviewer.verdict!.status === status);
@@ -432,21 +473,6 @@ function stageTile(key: string, stage: Stage<unknown>): string {
     : tile(key, "loading…", "", { tone: "dim" });
 }
 
-function discussionSections(page: IPage): string[] {
-  const stage = page.active.discussions;
-  if (!page.discussions) {
-    return [stageNote(stage, "the discussions")];
-  }
-  const general = page.discussions.threads.filter(isGeneralThread).sort(byRootDate);
-  return [
-    ...(page.discussions.message ? [`<p class="stage dim">${escapeHtml(page.discussions.message)}</p>`] : []),
-    ...reviewersSection(page),
-    ...openItemsSection(page),
-    ...conversationSection(page, general),
-    ...otherDiscussions(page, general),
-  ];
-}
-
 /** The reviewer cards, and Add me as reviewer when the page offers it and can link it. */
 function reviewersSection(page: IPage): string[] {
   const heading = `<h2>Reviewers ${countBadge(page.cards.length)}</h2>`;
@@ -461,18 +487,14 @@ function reviewersSection(page: IPage): string[] {
   ];
 }
 
-/** A reviewer's state; a verdict's replies sit under its quote, the only place the page prints that thread. */
+/** A reviewer's state and when they reached it; their verdict's text and replies are in the Conversation. */
 function reviewerCard(page: IPage, reviewer: IReviewer): string {
   const [ label, tone ] = REVIEWER_PILLS[reviewer.state];
   const tags = [ isMe(page, reviewer.user) && "you", reviewer.author && "author", reviewer.assignee && "assignee" ]
     .filter(Boolean).map(tag => `<span class="tag">${tag}</span>`);
-  const verdict = reviewer.verdict;
-  const thread = verdict && page.verdictThreads.get(verdict.id);
   const row = [ name(reviewer.user, "name"), ...tags, `<span class="pill ${tone}">${label}</span>` ].join(" ");
   return `<li class="person">${avatar(reviewer.user)}<div class="body"><div class="row">${row}</div>` +
-    `<div class="when">${escapeHtml(whenLine(page, reviewer))}</div>` +
-    `${verdict?.text ? `<blockquote class="quote">${richText(verdict.text)}</blockquote>` : ""}` +
-    `${thread ? replyList(page, thread.comments.slice(1)) : ""}</div></li>`;
+    `<div class="when">${escapeHtml(whenLine(page, reviewer))}</div></div></li>`;
 }
 
 function whenLine(page: IPage, reviewer: IReviewer): string {
@@ -497,7 +519,7 @@ function whenLine(page: IPage, reviewer: IReviewer): string {
   }
 }
 
-/** `marked it Reviewed` or `asked for rework`, as History says it. */
+/** `marked it Reviewed` or `asked for rework`, as the Conversation says it. */
 function verdictWords(verdict: IReviewTimelineEvent): string {
   return verdict.status === "Reviewed" ? "marked it Reviewed" : "asked for rework";
 }
@@ -507,26 +529,22 @@ function hasVerdict(reviewer: IReviewer): boolean {
   return reviewer.state === "reviewed" || reviewer.state === "reworkRequired";
 }
 
-/** Pending change requests and open questions: change requests first, then the oldest first. */
+/**
+ * Pending change requests and open questions, one line each, change requests
+ * first, then the oldest first: what is left to do, while the Conversation
+ * below has every discussion in full. Left out when nothing is open, as the
+ * summary says.
+ */
 function openItemsSection(page: IPage): string[] {
-  const threads = page.discussions!.threads;
-  const open = threads.filter(thread => isPendingChange(thread) || isOpenQuestion(thread))
+  const open = page.discussions!.threads.filter(thread => isPendingChange(thread) || isOpenQuestion(thread))
     .sort((a, b) => Number(isPendingChange(b)) - Number(isPendingChange(a)) || byRootDate(a, b));
-  const hint = discussionsHint(threads);
-  if (!open.length && !hint) {
-    // The summary says that nothing is open; as on the Changeset artboard, the section is left out.
+  if (!open.length) {
     return [];
   }
-  const lines = [`<h2>Open items ${countBadge(open.length)}</h2>`];
-  if (open.length) {
-    lines.push("<ul class=\"items\">", ...open.map(thread => openItem(page, thread)), "</ul>");
-  } else {
-    lines.push("<p class=\"empty dim\">Nothing open.</p>");
-  }
-  if (hint) {
-    lines.push(`<p class="hint dim">${hint}</p>`);
-  }
-  return lines;
+  return [
+    `<h2>Open items ${countBadge(open.length)}</h2>`,
+    "<ul class=\"items\">", ...open.map(thread => openItem(page, thread)), "</ul>",
+  ];
 }
 
 function openItem(page: IPage, thread: IReviewThread): string {
@@ -557,108 +575,313 @@ function location(page: IPage, thread: IReviewThread): string {
     return "";
   }
   const path = thread.path;
+  const folder = path ? posix.dirname(path).replace(/^\/+/, "") : "";
+  return ` ${fileReference(page, thread)}${folder ? ` <span class="dim">${escapeHtml(folder)}</span>` : ""}`;
+}
+
+/** `File.cs:18`, linked to the discussion on its line when it has one; see `location`. */
+function fileReference(page: IPage, thread: IReviewThread): string {
+  const path = thread.path;
   const located = hasLocation(thread);
   const line = located ? `:${thread.anchor.location + 1}` : "";
   const label = path ? `${posix.basename(path) || path}${line}` : `revision ${thread.anchor.revisionId}${line}`;
-  const folder = path ? posix.dirname(path).replace(/^\/+/, "") : "";
   const text = escapeHtml(label);
-  const reference = located ? linkTo(page, { kind: "thread", threadId: thread.id }, text) : text;
-  return ` ${reference}${folder ? ` <span class="dim">${escapeHtml(folder)}</span>` : ""}`;
+  return located ? linkTo(page, { kind: "thread", threadId: thread.id }, text) : text;
 }
 
 /**
- * `1 applied and 1 discarded change requests, and 2 comments are in
- * Discussions.`: the file threads the list above leaves out. The change
- * requests always carry their noun, so what follows them is not read as applied.
+ * The Conversation, as on a GitHub pull request: the description first, then
+ * everything that happened, oldest first. The review's creation, its
+ * changesets (a branch review's), every discussion in full (on the whole
+ * review or on a file's line) and every review event, merged by date; equal
+ * dates keep one order (creation, changesets, then by comment id). Add
+ * comment ends it while posting works.
  */
-function discussionsHint(threads: readonly IReviewThread[]): string {
-  const inFiles = threads.filter(thread => !isGeneralThread(thread));
-  const counts = threadCounts(inFiles);
-  const answered = inFiles.filter(thread => thread.kind === "question" && !isOpenQuestion(thread)).length;
-  const comments = inFiles.filter(thread => thread.kind === "comment").length;
-  const resolved: string[] = [];
-  if (counts.applied) {
-    resolved.push(`${formatCount(counts.applied)} applied`);
+function conversationSection(page: IPage): string[] {
+  const lines = ["<h2>Conversation</h2>"];
+  if (!page.discussions) {
+    lines.push(stageNote(page.active.discussions, "the discussions"));
+  } else if (page.discussions.message) {
+    lines.push(`<p class="stage dim">${escapeHtml(page.discussions.message)}</p>`);
   }
-  if (counts.discarded) {
-    resolved.push(`${formatCount(counts.discarded)} discarded`);
+  const items = [ ...discussionItems(page), ...changesetItems(page) ]
+    .sort((a, b) => a.time - b.time || a.rank - b.rank || a.id - b.id);
+  const opening = openingCard(page);
+  const rows = [ ...(opening ? [opening] : []), ...items.map(item => item.html) ];
+  if (rows.length) {
+    lines.push("<ul class=\"timeline\">", ...rows, "</ul>");
   }
-  const parts: string[] = [];
-  if (resolved.length) {
-    const changes = counts.applied + counts.discarded;
-    parts.push(`${joinWords(resolved)} ${changes === 1 ? "change request" : "change requests"}`);
+  if (page.commentActions && page.discussions) {
+    lines.push(...composer(page));
   }
-  if (answered) {
-    parts.push(count(answered, "answered question"));
+  return lines;
+}
+
+/**
+ * Where the Conversation ends: under a rule that closes the timeline, the cm
+ * user's avatar and a card with one button, which opens the input box that
+ * writes a comment on the whole review. The preview has no text field, and
+ * nothing here looks like one: the text is typed at the top of the window.
+ */
+function composer(page: IPage): string[] {
+  const href = page.link({ kind: "addComment" });
+  if (!href) {
+    return [];
   }
-  if (comments) {
-    parts.push(count(comments, "comment"));
-  }
-  if (!parts.length) {
+  const link = escapeHtml(href);
+  const me = page.whoami ? avatar(page.whoami) : "<span class=\"av anon\" aria-hidden=\"true\"></span>";
+  return [
+    `<div class="composer">${me}<div class="card"><div class="card-top"><strong>Add a comment</strong></div>` +
+      "<div class=\"body compose\"><p class=\"dim\">Write it in the input box at the top of the window.</p>" +
+      `<a class="button primary" href="${link}">Write a comment…</a></div></div></div>`,
+  ];
+}
+
+/**
+ * The rest of the title and the latest description, as the comment that
+ * opens the Conversation, with Edit description when it is the cm user's and
+ * the replies people wrote to it.
+ */
+function openingCard(page: IPage): string {
+  const review = page.active.review;
+  const title = splitReviewTitle(review, ready(page.active.files)?.branch?.name);
+  const latest = latestDescription(page);
+  const lead = [ title.rest, latest?.text ?? "" ].filter(Boolean).map(richText).join("");
+  const edit = descriptionEdit(page);
+  if (!lead && !edit) {
     return "";
   }
-  const total = counts.applied + counts.discarded + answered + comments;
-  // `1 applied and 1 discarded change requests, and 2 comments`: a comma keeps the two "and"s apart.
-  const list = resolved.length > 1 && parts.length > 1
-    ? `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}` : joinWords(parts);
-  return `${list} ${total === 1 ? "is" : "are"} in Discussions.`;
-}
-
-function conversationSection(page: IPage, general: readonly IReviewThread[]): string[] {
-  const conversation = general.filter(thread => thread.kind === "conversation");
-  if (!conversation.length) {
-    return [];
-  }
-  return [
-    `<h2>Conversation ${countBadge(conversation.length)}</h2>`,
-    "<ul class=\"comments\">",
-    ...conversation.map(thread => commentCard(page, thread)),
-    "</ul>",
-  ];
+  // The title's rest is the author's, from when the review was opened.
+  const by = latest?.text ? latest : { date: review.date, owner: review.owner };
+  const head = `<div class="head">${avatar(by.owner, true)}${name(by.owner, "name")} ` +
+    `<span class="kind">Description</span>${stamp(page, by.date)}</div>`;
+  const thread = latest?.text ? page.discussions?.threads.find(candidate => candidate.id === latest.id) : undefined;
+  return `<li class="tl-item tl-comment opening">${timelineMark("description", "blue")}` +
+    `<div class="card"><div class="body">${head}` +
+    `${lead ? `<div class="lead">${lead}</div>` : NO_TEXT}${edit ? `<p class="comment-actions">${edit}</p>` : ""}` +
+    `${thread ? replyList(page, thread.comments.slice(1)) : ""}</div></div></li>`;
 }
 
 /**
- * The General threads printed nowhere else, in full: Discussions opens this
- * page for every General thread. A timeline row without replies is fully
- * told by its History line, and a verdict a reviewer card quotes sits there.
+ * The review's creation, its timeline rows as `reviewHistory` tells them (one entry
+ * for a request written twice, a self-request folded into the verdict that
+ * follows it) and every other discussion. The first description is the
+ * opening card's, so only later edits are entries. A row someone replied to
+ * carries the replies; a thread on a row the history leaves out is a card of
+ * its own.
  */
-function otherDiscussions(page: IPage, general: readonly IReviewThread[]): string[] {
-  const others = general.filter(thread => thread.kind !== "conversation" && !page.verdictThreads.has(thread.id) &&
-    !(thread.event && thread.comments.length === 1));
-  if (!others.length) {
+function discussionItems(page: IPage): ITimelineItem[] {
+  const review = page.active.review;
+  const discussions = page.discussions;
+  const opened: ReviewHistoryEntry[] = isNaN(Date.parse(review.date)) ? []
+    : [{ date: review.date, kind: "opened", owner: review.owner, requested: [] }];
+  const entries = discussions ? reviewHistory(discussions.timeline, review) : opened;
+  const threads = new Map((discussions?.threads ?? []).map(thread => [ thread.id, thread ]));
+  // The description the opening card prints, with its replies.
+  const opening = latestDescription(page)?.text ? latestDescription(page)!.id : undefined;
+  const told = new Set<number>();
+  let described = false;
+  const items: ITimelineItem[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "opened") {
+      items.push({ html: eventItem(page, entry), id: 0, rank: 0, time: instant(entry.date) });
+      continue;
+    }
+    const event = entry.event;
+    if (event.kind === "description" && !described) {
+      described = true;
+      if (event.id === opening) {
+        told.add(event.id);
+      }
+      continue;
+    }
+    told.add(event.id);
+    const thread = event.id === opening ? undefined : threads.get(event.id);
+    // Text the line does not say: a verdict's, an unknown row's, and that of a row people replied to.
+    const quoted = !!event.text && (event.kind === "status" || event.kind === "other" ||
+      (!!thread && event.kind !== "renamed"));
+    items.push({ html: eventItem(page, entry, thread, quoted), id: event.id, rank: 2, time: instant(event.date) });
+  }
+  for (const thread of discussions?.threads ?? []) {
+    if (!thread.event || !told.has(thread.id)) {
+      items.push({ html: threadItem(page, thread), id: thread.id, rank: 2, time: instant(thread.comments[0]?.date) });
+    }
+  }
+  return items;
+}
+
+function eventItem(page: IPage, entry: ReviewHistoryEntry, thread?: IReviewThread, quoted = false): string {
+  const [ tone, text, icon ] = historyText(entry, page.active.review);
+  const date = entry.kind === "opened" ? entry.date : entry.event.date;
+  const owner = entry.kind === "opened" ? entry.owner : entry.event.owner;
+  const quote = quoted && entry.kind === "event"
+    ? `<blockquote class="quote">${richText(entry.event.text)}</blockquote>` : "";
+  const replies = thread ? replyList(page, thread.comments.slice(1)) : "";
+  return `<li class="tl-item tl-event">${timelineMark(icon, tone)}` +
+    `<div class="tl-body"><p class="tl-line">${avatar(owner, true)}${text}${stamp(page, date)}</p>` +
+    `${quote}${replies}</div></li>`;
+}
+
+/**
+ * A discussion that is not a timeline row's: a comment on the whole review
+ * as a card with its replies and links, or a thread on a file headed by its
+ * kind and state and by `File.cs:18`, which opens the discussion at its line.
+ * Applied and discarded change requests are drawn as resolved.
+ */
+function threadItem(page: IPage, thread: IReviewThread): string {
+  const root = thread.comments[0];
+  const general = isGeneralThread(thread);
+  // A file thread is answered here too, as in the desktop app's overview: cm puts a reply on its parent's line.
+  const reply = page.commentActions && canReplyToThread(thread)
+    ? actionLink(page, { action: "reply", commentId: root.id, kind: "comment" }, "Reply") : "";
+  const actions = commentActions(page, root, reply);
+  const label = !general || thread.kind === "conversation" ? "" : threadTypeLabel(thread);
+  const top = general ? "" : `<div class="row card-top">${threadPill(thread)}${location(page, thread)}</div>`;
+  const resolved = thread.state === "applied" || thread.state === "discarded" ? " resolved" : "";
+  return `<li class="tl-item tl-comment${general ? "" : " on-file"}${resolved}">${threadMark(thread)}` +
+    `<div class="card">${top}<div class="body">${commentHead(page, root, label)}` +
+    `<div class="text">${richText(root.text) || NO_TEXT}</div>${actions}` +
+    `${replyList(page, thread.comments.slice(1))}</div></div></li>`;
+}
+
+/** A thread's mark on the line: its kind, coloured while it waits on someone as its pill is. */
+function threadMark(thread: IReviewThread): string {
+  if (thread.kind === "change") {
+    const tone = thread.state === "pending" ? "orange" : thread.state === "applied" ? "green" : "grey";
+    return timelineMark("change", tone);
+  }
+  if (thread.kind === "question") {
+    return timelineMark("question", isOpenQuestion(thread) ? "blue" : "green");
+  }
+  return timelineMark("comment", "grey");
+}
+
+/** A file thread's kind and state: `Change request · applied in cs:3673`, `Question · answered`… */
+function threadPill(thread: IReviewThread): string {
+  let tone = "grey";
+  let label = threadTypeLabel(thread);
+  if (thread.kind === "change") {
+    tone = thread.state === "pending" ? "orange" : thread.state === "applied" ? "green" : "grey";
+  } else if (thread.kind === "question") {
+    const open = isOpenQuestion(thread);
+    tone = open ? "blue" : "green";
+    label = open ? "Question" : "Question · answered";
+  }
+  return `<span class="pill ${tone}">${escapeHtml(label)}</span>`;
+}
+
+/**
+ * A branch review's changesets, oldest first: one entry per run of
+ * changesets by one person, each within `CHANGESET_GROUP_WINDOW` of the one
+ * before it, as GitHub lists a push. While the changesets load or after they
+ * failed, a note stands first in their place.
+ */
+function changesetItems(page: IPage): ITimelineItem[] {
+  if (page.active.review.targetType !== "branch") {
     return [];
   }
-  return [
-    `<h2>Other discussions ${countBadge(others.length)}</h2>`,
-    "<ul class=\"comments\">",
-    ...others.map(thread => commentCard(page, thread, threadTypeLabel(thread))),
-    "</ul>",
-  ];
+  const stage = page.active.changesets;
+  if (stage.state !== "ready") {
+    return [{ html: `<li class="tl-item tl-note">${stageNote(stage, "the changesets")}</li>`, id: 0, rank: 1,
+      time: -Infinity }];
+  }
+  const changesets = stage.value.items.slice().sort((a, b) => instant(a.date) - instant(b.date) || a.id - b.id);
+  const applied = appliedChanges(page);
+  const items = groupChangesets(changesets).map(group => ({
+    html: changesetGroup(page, group, applied), id: group[0].id, rank: 1, time: instant(group[0].date),
+  }));
+  if (stage.value.hasMore && changesets.length) {
+    items.push({
+      html: "<li class=\"tl-item tl-note\"><p class=\"stage dim\">Older changesets are in the Review view.</p></li>",
+      id: 0, rank: 1, time: instant(changesets[0].date),
+    });
+  }
+  return items;
 }
 
-function commentCard(page: IPage, thread: IReviewThread, label = ""): string {
-  const root = thread.comments[0];
-  return `<li class="comment">${avatar(root.owner)}<div class="body">${commentHead(page, root, label)}` +
-    `<div class="text">${richText(root.text) || NO_TEXT}</div>${replyList(page, thread.comments.slice(1))}</div></li>`;
+/** Consecutive changesets by one person, each within `CHANGESET_GROUP_WINDOW` of the previous one. */
+export function groupChangesets<T extends Pick<IReviewChangeset, "owner" | "date">>(changesets: readonly T[]): T[][] {
+  const groups: T[][] = [];
+  for (const changeset of changesets) {
+    const group = groups[groups.length - 1];
+    const last = group?.[group.length - 1];
+    if (last && sameUser(last.owner, changeset.owner) &&
+        Math.abs(instant(changeset.date) - instant(last.date)) <= CHANGESET_GROUP_WINDOW) {
+      group.push(changeset);
+    } else {
+      groups.push([changeset]);
+    }
+  }
+  return groups;
 }
 
-function replyList(page: IPage, replies: readonly IReviewComment[]): string {
+/** The change requests applied in each changeset, by changeset id. */
+function appliedChanges(page: IPage): Map<number, IReviewThread[]> {
+  const applied = new Map<number, IReviewThread[]>();
+  for (const thread of page.discussions?.threads ?? []) {
+    const id = thread.comments[0]?.appliedInChangesetId ?? -1;
+    if (thread.kind === "change" && thread.state === "applied" && id > 0) {
+      applied.set(id, [ ...(applied.get(id) ?? []), thread ]);
+    }
+  }
+  return applied;
+}
+
+function changesetGroup(page: IPage, group: readonly IReviewChangeset[], applied: Map<number, IReviewThread[]>):
+    string {
+  const what = group.length === 1 ? `cs:${group[0].id}` : count(group.length, "changeset");
+  const line = `${avatar(group[0].owner, true)}${name(group[0].owner)} checked in ${what}${stamp(page, group[0].date)}`;
+  const rows = group.map(changeset => changesetRow(page, changeset, applied.get(changeset.id) ?? []));
+  return `<li class="tl-item tl-changesets">${timelineMark("commit", "grey")}` +
+    `<div class="tl-body"><p class="tl-line">${line}</p><ul class="cs-list">${rows.join("")}</ul></div></li>`;
+}
+
+/**
+ * The links under a comment while posting works: `first` (a thread's
+ * Reply), then Edit and Delete on a comment of the cm user's own. Each goes
+ * through the extension's URI handler, which asks for the text or a
+ * confirmation before cm writes anything.
+ */
+function commentActions(page: IPage, comment: IReviewComment, first = ""): string {
+  const links = first ? [first] : [];
+  if (page.commentActions && isOwnComment(comment, page.whoami)) {
+    links.push(
+      actionLink(page, { action: "edit", commentId: comment.id, kind: "comment" }, "Edit"),
+      actionLink(page, { action: "delete", commentId: comment.id, kind: "comment" }, "Delete"));
+  }
+  const shown = links.filter(Boolean);
+  return shown.length ? `<p class="comment-actions">${shown.join(" · ")}</p>` : "";
+}
+
+/** A link that only exists as a link: without a URI to open, the action is left out. */
+function actionLink(page: IPage, target: OverviewLinkTarget, text: string): string {
+  const href = page.link(target);
+  return href ? `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>` : "";
+}
+
+/** Replies, each with Edit and Delete when it is the cm user's and `actions` allows them. */
+function replyList(page: IPage, replies: readonly IReviewComment[], actions = true): string {
   if (!replies.length) {
     return "";
   }
   const items = replies.map(reply => {
     const type = commentTypeLabel(reply);
     return `<li class="reply">${commentHead(page, reply, type === "Comment" ? "" : type)}` +
-      `<div class="text">${richText(reply.text) || NO_TEXT}</div></li>`;
+      `<div class="text">${richText(reply.text) || NO_TEXT}</div>${actions ? commentActions(page, reply) : ""}</li>`;
   });
   return `<ul class="replies">${items.join("")}</ul>`;
 }
 
 function commentHead(page: IPage, comment: IReviewComment, label: string): string {
-  const date = shortDateTime(comment.date, page.now);
   const kind = label ? ` <span class="kind">${escapeHtml(label)}</span>` : "";
-  const when = date ? ` <span class="dim">· ${date}</span>` : "";
-  return `<div class="head">${name(comment.owner, "name")}${kind}${when}</div>`;
+  return `<div class="head">${avatar(comment.owner, true)}${name(comment.owner, "name")}${kind}` +
+    `${stamp(page, comment.date)}</div>`;
+}
+
+/** ` · 3 Feb 14:49, 2 hours ago`: when, both as a date and as an age; empty for a date cm did not give. */
+function stamp(page: IPage, date: string | Date): string {
+  const at = shortDateTime(date, page.now);
+  return at ? ` <span class="when">· ${at}, ${escapeHtml(ageInWords(date, page.now))}</span>` : "";
 }
 
 /**
@@ -720,31 +943,8 @@ function statusTone(status: FileChangeStatus): string {
   return status & FileChangeStatus.Changed ? "changed" : "moved";
 }
 
-function changesetsSection(page: IPage): string[] {
-  const stage = page.active.changesets;
-  if (stage.state !== "ready") {
-    return [ "<h2>Changesets</h2>", stageNote(stage, "the changesets") ];
-  }
-  const { items, hasMore } = stage.value;
-  if (!items.length) {
-    return [];
-  }
-  const lines = [
-    `<h2>Changesets ${countBadge(items.length, hasMore)}</h2>`,
-    "<ul class=\"list changesets\">",
-    ...items.slice(0, CHANGESETS_SHOWN).map(changeset => changesetRow(page, changeset)),
-  ];
-  const older = Math.max(0, items.length - CHANGESETS_SHOWN);
-  if (older || hasMore) {
-    const many = older !== 1 || hasMore;
-    const changesets = `${formatCount(older)}${hasMore ? "+" : ""} older changeset${many ? "s are" : " is"}`;
-    lines.push(`<li class="more dim">${changesets} in the Review view.</li>`);
-  }
-  lines.push("</ul>");
-  return lines;
-}
-
-function changesetRow(page: IPage, changeset: IReviewChangeset): string {
+/** `cs:3715 Clamp the stack size`, a merge marked and where it came from, and the change requests it applied. */
+function changesetRow(page: IPage, changeset: IReviewChangeset, applied: readonly IReviewThread[]): string {
   // A merge's comment is Plastic's own "Merge from …"; where it came from says it already.
   const branch = changeset.mergeSourceBranch;
   const source = branch ? ` <span class="dim">from ${escapeHtml(branch)}</span>` : "";
@@ -752,98 +952,63 @@ function changesetRow(page: IPage, changeset: IReviewChangeset): string {
   const none = APPLIED_CHANGE.test(changeset.comment) ? "(applied a change request)" : "(no comment)";
   const what = changeset.isMerge ? `<span class="pill purple">Merge</span>${source}`
     : comment ? inlineText(comment) : `<span class="dim">${none}</span>`;
-  const by = [ name(changeset.owner), shortDateTime(changeset.date, page.now) ].filter(Boolean).join(" · ");
-  return `<li class="li"><code>cs:${changeset.id}</code> <span class="what">${what}</span> ` +
-    `<span class="dim">${by}</span></li>`;
-}
-
-/** Newest first; past the newest few, the rest fold into a <details>, which the preview keeps open across refreshes. */
-function historySection(page: IPage): string[] {
-  if (!page.discussions) {
-    return [];
-  }
-  const entries = reviewHistory(page.discussions.timeline, page.active.review).reverse();
-  if (!entries.length) {
-    return [];
-  }
-  const lines = [
-    "<h2>History</h2>",
-    "<ul class=\"tl\">",
-    ...entries.slice(0, HISTORY_SHOWN).map(entry => historyLine(page, entry)),
-    "</ul>",
-  ];
-  const earlier = entries.slice(HISTORY_SHOWN);
-  if (earlier.length) {
-    lines.push(
-      "<details class=\"earlier\">",
-      `<summary>${count(earlier.length, "earlier event")}</summary>`,
-      "<ul class=\"tl\">",
-      ...earlier.map(entry => historyLine(page, entry)),
-      "</ul>",
-      "</details>");
-  }
-  return lines;
-}
-
-function historyLine(page: IPage, entry: ReviewHistoryEntry): string {
-  const date = shortDateTime(entry.kind === "opened" ? entry.date : entry.event.date, page.now);
-  const [ tone, text ] = historyText(entry, page.active.review);
-  return `<li><span class="dot ${tone}" aria-hidden="true"></span><span class="date">${date}</span> ` +
-    `<span class="what">${text}</span></li>`;
+  const on = applied.map(thread => fileReference(page, thread));
+  const changes = on.length ? ` <span class="applied dim">· applied the change request${on.length === 1 ? "" : "s"} ` +
+    `on</span> ${on.join(", ")}` : "";
+  return `<li class="cs"><code>cs:${changeset.id}</code> <span class="what">${what}</span>${changes}</li>`;
 }
 
 /**
- * The dot's colour (verdict colours; grey for the rest) and the line:
+ * The marker's colour (verdict colours; grey for the rest) and the line:
  * `priya.nair joined and marked it Reviewed`. A line is one line of text:
- * the reviewer card or Discussions has the full comment.
+ * a verdict's or an unknown row's text is quoted under it.
  */
-function historyText(entry: ReviewHistoryEntry, review: IReview): [ string, string ] {
+function historyText(entry: ReviewHistoryEntry, review: IReview): [ string, string, TimelineIcon ] {
   if (entry.kind === "opened") {
     const requested = entry.requested.map(user => name(user));
     const also = requested.length ? ` and requested ${joinWords(requested)}` : "";
-    return [ "grey", `${name(entry.owner)} opened the review${also}` ];
+    return [ "grey", `${name(entry.owner)} opened the review${also}`, "opened" ];
   }
   const event = entry.event;
   const actor = name(event.owner);
   const user = event.user ? name(event.user) : "someone";
-  const text = event.text ? `: ${inlineText(oneLine(event.text))}` : "";
   const joined = entry.joined ? "joined and " : "";
   switch (event.kind) {
   case "status":
     switch (event.status) {
     case "Reviewed":
-      return [ "green", `${actor} ${joined}marked it <strong>Reviewed</strong>${text}` ];
+      return [ "green", `${actor} ${joined}marked it <strong>Reviewed</strong>`, "check" ];
     case "Rework required":
-      return [ "orange", `${actor} ${joined}asked for <strong>rework</strong>${text}` ];
+      return [ "orange", `${actor} ${joined}asked for <strong>rework</strong>`, "change" ];
     case "Under review":
-      return [ "blue", `${actor} moved it back to <strong>Under review</strong>${text}` ];
+      return [ "blue", `${actor} moved it back to <strong>Under review</strong>`, "eye" ];
     default:
-      return [ "grey", `${actor} changed the status${text}` ];
+      return [ "grey", `${actor} changed the status`, "eye" ];
     }
   case "reviewRequested":
     if (event.user && sameUser(event.user, event.owner)) {
-      return [ "grey", entry.again ? `${actor} joined again` : `${actor} joined as a reviewer` ];
+      return [ "grey", entry.again ? `${actor} joined again` : `${actor} joined as a reviewer`, "person" ];
     }
     if (entry.again) {
       // A request for someone who has given a verdict is Plastic's other way of asking them to look again.
-      return [ "grey", `${actor} asked ${user} to look again` ];
+      return [ "grey", `${actor} asked ${user} to look again`, "eye" ];
     }
-    return [ "grey", `${actor} requested a review from ${user}` ];
+    return [ "grey", `${actor} requested a review from ${user}`, "eye" ];
   case "reviewReRequested":
-    return [ "grey", `${actor} asked ${user} to look again` ];
+    return [ "grey", `${actor} asked ${user} to look again`, "eye" ];
   case "reviewRequestRemoved":
-    return [ "grey", `${actor} removed ${user} from the reviewers` ];
+    return [ "grey", `${actor} removed ${user} from the reviewers`, "person" ];
   case "renamed":
     if (event.previous && droppedPrefix(review, event.previous, event.text)) {
-      return [ "grey", `${actor} renamed it to drop the generated prefix` ];
+      return [ "grey", `${actor} renamed it to drop the generated prefix`, "pencil" ];
     }
     return [ "grey", event.previous
       ? `${actor} renamed it from “${linkify(oneLine(event.previous))}” to “${linkify(oneLine(event.text))}”`
-      : `${actor} renamed it to “${linkify(oneLine(event.text))}”` ];
+      : `${actor} renamed it to “${linkify(oneLine(event.text))}”`, "pencil" ];
   case "description":
-    return [ "grey", `${actor} edited the description` ];
+    return [ "grey", `${actor} edited the description`, "pencil" ];
   default:
-    return [ "grey", event.text ? `${actor}${text}` : `${actor} updated the review` ];
+    return [ "grey", `${actor} updated the review`, "dot" ];
   }
 }
 
@@ -888,9 +1053,16 @@ function statusPill(status: string): string {
     `${escapeHtml(status || "Unknown status")}</span>`;
 }
 
-function avatar(user: string): string {
-  return `<span class="av" style="background-color: ${avatarColor(user)}" aria-hidden="true">` +
+/** A person's initials in their colour; `small` beside their name in a line. */
+function avatar(user: string, small = false): string {
+  return `<span class="av${small ? " sm" : ""}" style="background-color: ${avatarColor(user)}" aria-hidden="true">` +
     `${escapeHtml(avatarInitials(user))}</span>`;
+}
+
+/** A timeline entry's kind on the line: a circle with its icon, in `tone`. */
+function timelineMark(icon: TimelineIcon, tone: string): string {
+  return `<span class="tl-mark ${tone}" aria-hidden="true"><svg class="icon" width="16" height="16" ` +
+    `viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">${TIMELINE_ICONS[icon]}</svg></span>`;
 }
 
 /** A short name; the full address only in its `title`. Names are never links. */
@@ -1006,8 +1178,8 @@ function escapeHtml(text: string): string {
     .replace(/\r\n|\r|\n/g, "&#10;");
 }
 
-function countBadge(value: number, more = false): string {
-  return `<span class="count">${formatCount(value)}${more ? "+" : ""}</span>`;
+function countBadge(value: number): string {
+  return `<span class="count">${formatCount(value)}</span>`;
 }
 
 function count(value: number, singular: string, plural = `${singular}s`): string {
@@ -1022,14 +1194,16 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.substring(1);
 }
 
+/** A date as an instant, 0 when it is not one: cm's dates carry offsets that change with daylight saving. */
+function instant(date: string | Date | undefined): number {
+  const time = date === undefined ? NaN : typeof date === "string" ? Date.parse(date) : date.getTime();
+  return isNaN(time) ? 0 : time;
+}
+
 function ready<T>(stage: Stage<T>): T | undefined {
   return stage.state === "ready" ? stage.value : undefined;
 }
 
 function byRootDate(a: IReviewThread, b: IReviewThread): number {
-  const time = (thread: IReviewThread) => {
-    const value = Date.parse(thread.comments[0]?.date ?? "");
-    return isNaN(value) ? 0 : value;
-  };
-  return time(a) - time(b) || a.id - b.id;
+  return instant(a.comments[0]?.date) - instant(b.comments[0]?.date) || a.id - b.id;
 }

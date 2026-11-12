@@ -64,7 +64,8 @@ export function parseTimelineEvent(comment: IReviewComment): IReviewTimelineEven
     return event("renamed", rest.substring(separator + RENAME_SEPARATOR.length), previous ? { previous } : {});
   }
   if (marker === "description") {
-    return event("description", rest);
+    // Edit Description… changes this row, by its GUID.
+    return event("description", rest, comment.guid.trim() ? { guid: comment.guid.trim() } : {});
   }
   return event("other", comment.text);
 }

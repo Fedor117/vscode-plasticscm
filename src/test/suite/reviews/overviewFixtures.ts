@@ -13,8 +13,11 @@ export const HANDLER = "vscode://plastic.test/open";
 export const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/;
 
 export function testLink(target: OverviewLinkTarget): string {
-  if (target.kind === "addMeAsReviewer") {
-    return `${HANDLER}?addMeAsReviewer`;
+  if (target.kind === "addMeAsReviewer" || target.kind === "addComment") {
+    return `${HANDLER}?${target.kind}`;
+  }
+  if (target.kind === "comment") {
+    return `${HANDLER}?${target.action}=${target.commentId}`;
   }
   return target.kind === "thread"
     ? `${HANDLER}?thread=${target.threadId}`
@@ -123,7 +126,7 @@ export function headings(html: string): string[] {
 
 /** Every link's decoded href and text. */
 export function links(html: string): Array<{ href: string; text: string }> {
-  const pattern = /<a href="([^"]*)">([\s\S]*?)<\/a>/g;
+  const pattern = /<a (?:class="[^"]*" )?href="([^"]*)">([\s\S]*?)<\/a>/g;
   const result: Array<{ href: string; text: string }> = [];
   for (let match = pattern.exec(html); match; match = pattern.exec(html)) {
     result.push({ href: decode(match[1]), text: visible(match[2]) });

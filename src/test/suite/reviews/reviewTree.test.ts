@@ -121,7 +121,8 @@ describe("Review view", () => {
 
   it("shows the update row first, only while the server has changes", () => {
     expect(roots().map(item => item.kind)).to.not.include("updates");
-    session.active = readyReview(scenario, { updates: { newComments: 2, newHead: 3733, removedComments: 0 }});
+    const pending = { comments: [], newComments: 2, newHead: 3733, removedComments: 0 };
+    session.active = readyReview(scenario, { updates: pending });
     expect(roots()[0].kind).to.equal("updates");
     const updates = provider.getTreeItem(roots()[0]);
     expect(label(updates)).to.equal("Review updated");
@@ -159,7 +160,7 @@ describe("Review view", () => {
     expect(item.resourceUri?.toString()).to.equal(right.toString());
     expect(item.id).to.equal(`active/wk/12831/changes/${LAP_TIMER_PATH}@12804`);
     expect(label(item)).to.equal("LapTimer.cs");
-    expect(item.description).to.equal("3 discussions");
+    expect(item.description).to.equal("💬 3");
     expect(item.checkboxState).to.deep.equal({
       accessibilityInformation: { label: "Mark LapTimer.cs as viewed" },
       state: TreeItemCheckboxState.Unchecked,
@@ -171,7 +172,7 @@ describe("Review view", () => {
     expect(lapTimer.group.scope).to.equal("changes");
     expect(lapTimer.group.comparison).to.equal(scenario.files.final);
     const analytics = provider.getTreeItem(node(ANALYTICS_PATH));
-    expect(plain(analytics.tooltip)).to.contain("1 discussion (1 pending change request)");
+    expect(plain(analytics.tooltip)).to.contain("💬 1 discussion: 🟠 1 pending change request");
     expect((analytics.tooltip as MarkdownString).isTrusted).to.not.equal(true);
     expect(provider.getTreeItem(node(MOVED_PATH)).description).to.equal("← TyreSet_Soft_Test.asset");
 
@@ -305,7 +306,7 @@ describe("Review view", () => {
     expect(provider.getParent(inChangeset.parent!)).to.equal(changesets[0]);
     // The head has this revision too, so the row follows the Changes row's checkbox and says why.
     const sameItem = provider.getTreeItem(inChangeset);
-    expect(sameItem.description).to.equal("3 discussions · same revision as head");
+    expect(sameItem.description).to.equal("💬 3 · same revision as head");
     expect(plain(sameItem.tooltip)).to.contain("Same revision as the review head: viewed together with Changes.");
 
     session.changesetStages.set(3477, { message: "diff failed", state: "error" });
@@ -384,7 +385,7 @@ describe("Review view", () => {
     const list = provider.getChildren(root("changes"));
     expect(list.every(item => item.kind === "file")).to.equal(true);
     expect(list.map(item => (item as ReviewFileNode).file.path)).to.deep.equal(order);
-    expect(provider.getTreeItem(list[1]).description).to.equal("Assets/Code/Laps · 3 discussions");
+    expect(provider.getTreeItem(list[1]).description).to.equal("💬 3 · Assets/Code/Laps");
     expect(provider.navigationOrder("changes").map(item => item.path)).to.deep.equal(order);
     expect(provider.getParent(list[0])).to.equal(root("changes"));
   });

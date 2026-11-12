@@ -4,9 +4,11 @@ import * as path from "path";
 import {
   CancellationTokenSource,
   commands,
+  CommentThread,
   env,
   Memento,
   OutputChannel,
+  Range,
   TabInputTextDiff,
   TextDocument,
   Uri,
@@ -32,12 +34,9 @@ import { INimbusScenario, IOverviewTarget, ME, nimbusRepository } from "./synthe
 import { IReviewLink, parseReviewLink } from "../../../reviews/reviewLinks";
 import { ISyntheticComment, ISyntheticDiffRow, ISyntheticReview, SyntheticPlasticServer } from "./syntheticServer";
 import { label, NOW } from "./viewFixtures";
-import { memorySecrets, nativeThread, until } from "./editorFixtures";
+import { nativeThread, threadsOn, until } from "./editorFixtures";
 import { noDiffMessage, reviewPickItems } from "../../../reviews/reviewPresentation";
-import { CONSENT_MESSAGE } from "../../../reviews/reviewTokens";
 import { expect } from "chai";
-import { FakeRest } from "./restFixtures";
-import { FakeTokenCm } from "./tokenFixtures";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { renderOverview } from "../../../reviews/reviewOverview";
 import { reviewDiff } from "../../../reviews/reviewEditors";
@@ -45,7 +44,6 @@ import { ReviewListQuery } from "../../../reviews/commands";
 import { ReviewService } from "../../../reviews/reviewService";
 import { ReviewSession } from "../../../reviews/reviewSession";
 import { ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
-import { ReviewWriter } from "../../../reviews/reviewWriter";
 import { splitLines } from "../../../reviews/anchors";
 
 /**
@@ -459,6 +457,8 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       channel,
       extensionId: EXTENSION_ID,
       globalState: memento(),
+      // Writes are on by default; these tests read, and the ones that write turn them on themselves.
+      posting: { setting: () => false },
       secrets: undefined,
       session: {
         createService: wk => synthetic(wk.id, wk.path),
@@ -798,7 +798,7 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       .to.include.members(Array.from(requested).filter(user => !removed.has(user)));
     expect(reviewers, "requested and not removed since").to.deep.equal(currentRequests(id));
     const overview = session().overview(WORKSPACE_ID, id);
-    expect(overview).to.include("<h2>Reviewers ").and.include("<h2>History</h2>");
+    expect(overview).to.include("<h2>Reviewers ").and.include("<h2>Conversation</h2>");
   });
 
   it("loads the hidden branch review with its files, changesets and discussions", async () => {
@@ -1054,111 +1054,224 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
     expect(opened, "links dispatched through the handler").to.be.greaterThan(0);
   });
 
-  it("adds the cm user as a reviewer through a fake REST API, with a token from a fake cm, and the Overview shows them",
-    async () => {
-      const REVIEW_ID = 312;
-      const refused: string[] = [];
-      const asked: string[] = [];
-      let added: number | undefined;
-      // The Server REST API in memory: it knows review 312 of Nimbus and adds one reviewer to it, once; any other write
-      // it refuses. As the service would, the add puts a request row in the review's timeline.
-      const rest = new FakeRest();
-      rest.repositories = ["Nimbus"];
-      rest.reviews = new Set([REVIEW_ID]);
-      rest.respond = call => {
-        if (call.method !== "GET" &&
-          (added !== undefined || !call.path.endsWith(`/codereview/${REVIEW_ID}/reviewers`))) {
-          refused.push(`${call.method} ${call.path}`);
-          return Promise.reject(new Error("the fake REST API refuses every other write"));
-        }
-        return undefined;
-      };
-      rest.onWrite = call => {
-        const [user] = (call.body as { reviewers: string[] }).reviewers;
-        added = server.addTimeline(REVIEW_ID, user, "2026-09-22T17:30:00+01:00", `[requested-review-from]${user}`);
-      };
-      // cm for tokens, in memory as well: the review services' cm path cannot exist, and neither is the real cm run.
-      const cm = new FakeTokenCm();
-      const statuses: string[] = [];
-      reviews.dispose();
-      reviews = new PlasticReviews({
-        ...host,
-        posting: { setting: () => true, trusted: () => true, writer: new ReviewWriter(rest.transport) },
-        secrets: memorySecrets(),
-        session: {
-          ...host.session,
-          ui: {
-            ...host.session?.ui,
-            cancellable: (_title, task) => task(new CancellationTokenSource().token),
-            // The one question: whether to create the first token for the organization.
-            choose: message => {
-              asked.push(message);
-              return Promise.resolve("Create Token and Add");
-            },
-            status: message => {
-              statuses.push(message);
-            },
+  it("adds the cm user as a reviewer with the synthetic one-shot cm, and the Overview shows them", async () => {
+    const REVIEW_ID = 312;
+    const asked: string[] = [];
+    const statuses: string[] = [];
+    const rows = server.comments.length;
+    const written = server.writes.length;
+    reviews.dispose();
+    // The review services' cm path cannot exist, and neither is the real cm run: the one-shot cm is the server's.
+    reviews = new PlasticReviews({
+      ...host,
+      cm: server.oneShot(),
+      posting: { setting: () => true, trusted: () => true },
+      session: {
+        ...host.session,
+        ui: {
+          ...host.session?.ui,
+          cancellable: (_title, task) => task(new CancellationTokenSource().token),
+          choose: message => {
+            asked.push(message);
+            return Promise.resolve(undefined);
+          },
+          status: message => {
+            statuses.push(message);
           },
         },
-        tokenCm: cm,
-      });
-      const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
-      const needsMe = () => session().group("needsMyReview");
-      /** The Reviewers section's lines, from its heading to the next heading. */
-      const reviewersSection = (html: string) => {
-        const rows = textLines(html);
-        const next = /^(?:Open items|Conversation|Other discussions|Changesets|History)\b/;
-        const start = rows.findIndex(line => /^Reviewers \d+$/.test(line));
-        return rows.slice(start, rows.findIndex((line, index) => index > start && next.test(line)));
-      };
-      const myCard = (html: string) => reviewersSection(html).filter(line => /^dana\.kim you\b/.test(line));
-      try {
-        session().expandGroup("needsMyReview");
-        await settle(until(() => needsMe().loadedOnce && needsMe().stage.state === "ready"), "Needs My Review");
-        expect(needsMe().reviews.map(review => review.id)).to.not.include(REVIEW_ID);
-        await activate(REVIEW_ID);
-        expect(await settle(service().whoami(), "cm whoami")).to.equal(ME);
-        // Requested once, then removed: the cm user is not a reviewer, so the Review view and the Overview offer it.
-        await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true), "the Add Me as Reviewer key");
-        const before = session().overview(WORKSPACE_ID, REVIEW_ID);
-        expectWellFormed(before);
-        expect(links(before).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
-        expect(myCard(before)).to.deep.equal([]);
-
-        await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer");
-        expect(asked).to.deep.equal([CONSENT_MESSAGE]);
-        expect(cm.calls.map(call => call.slice(0, 2).join(" "))).to.deep.equal([
-          "getconfig organization", "accesstoken create", "accesstoken reveal",
-        ]);
-        expect(refused, "writes the fake refused").to.deep.equal([]);
-        expect(added, "the request row the fake REST API wrote").to.be.a("number");
-        expect(rest.writes().map(call => call.path))
-          .to.deep.equal([`/api/v1/organizations/acme-studio/repos/Nimbus/codereview/${REVIEW_ID}/reviewers`]);
-        expect(rest.calls.every(call => call.token === cm.revealed[0])).to.equal(true);
-        await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false), "the key after the add");
-        await settle(until(() => myCard(session().overview(WORKSPACE_ID, REVIEW_ID)).length > 0), "the reviewer card");
-        const after = session().overview(WORKSPACE_ID, REVIEW_ID);
-        expectWellFormed(after);
-        // The service writes the request row as the cm user's own, and a self-request reads as Reviewing.
-        expect(myCard(after)).to.deep.equal(["dana.kim you Reviewing"]);
-        expect(links(after).filter(link => link.text === "Add me as reviewer")).to.deep.equal([]);
-        expect(readyDiscussions().reviewers.map(user => user.toLowerCase())).to.include(ME);
-        expect(statuses).to.include(`$(person-add) Added you as a reviewer on review #${REVIEW_ID}`);
-        await settle(until(() => needsMe().reviews.some(review => review.id === REVIEW_ID)), "Needs My Review after");
-        expect(needsMe().reviews.map(review => review.id)).to.deep.equal(needsMyReview());
-
-        // Run again, it sends nothing and asks nothing: the cm user is a reviewer now.
-        await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer again");
-        expect([ rest.writes().length, asked.length, cm.count("create") ]).to.deep.equal([ 1, 1, 1 ]);
-        expect(errors, "errors shown").to.deep.equal([]);
-        expect(output.join("\n")).to.not.contain(cm.revealed[0]);
-      } finally {
-        const row = server.comments.findIndex(comment => comment.id === added);
-        if (row >= 0) {
-          server.comments.splice(row, 1);
-        }
-        reviews.dispose();
-        reviews = new PlasticReviews(host);
-      }
+      },
     });
+    const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
+    const needsMe = () => session().group("needsMyReview");
+    const writes = () => server.writes.slice(written).filter(call => call.args[2] !== "--usage");
+    /** The Reviewers section's lines, from its heading to the next heading. */
+    const reviewersSection = (html: string) => {
+      const sectionRows = textLines(html);
+      const next = /^(?:Open items|Conversation|Files)\b/;
+      const start = sectionRows.findIndex(line => /^Reviewers \d+$/.test(line));
+      return sectionRows.slice(start, sectionRows.findIndex((line, index) => index > start && next.test(line)));
+    };
+    const myCard = (html: string) => reviewersSection(html).filter(line => /^dana\.kim you\b/.test(line));
+    try {
+      session().expandGroup("needsMyReview");
+      await settle(until(() => needsMe().loadedOnce && needsMe().stage.state === "ready"), "Needs My Review");
+      expect(needsMe().reviews.map(review => review.id)).to.not.include(REVIEW_ID);
+      await activate(REVIEW_ID);
+      expect(await settle(service().whoami(), "cm whoami")).to.equal(ME);
+      // Requested once, then removed: the cm user is not a reviewer, so the Review view and the Overview offer it.
+      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true), "the Add Me as Reviewer key");
+      const before = session().overview(WORKSPACE_ID, REVIEW_ID);
+      expectWellFormed(before);
+      expect(links(before).filter(link => link.text === "Add me as reviewer")).to.have.length(1);
+      expect(myCard(before)).to.deep.equal([]);
+
+      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer");
+      expect(asked, "nothing is asked: cm is signed in already").to.deep.equal([]);
+      expect(writes()).to.deep.equal([{
+        args: [ "codereview", "reviewer", "add", String(REVIEW_ID), "--users=me" ], cwd: root, stdin: undefined,
+      }]);
+      expect(server.unrecognised, "commands the synthetic server does not know").to.deep.equal([]);
+      await settle(until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false), "the key after the add");
+      await settle(until(() => myCard(session().overview(WORKSPACE_ID, REVIEW_ID)).length > 0), "the reviewer card");
+      const after = session().overview(WORKSPACE_ID, REVIEW_ID);
+      expectWellFormed(after);
+      // cm writes the request row as the cm user's own, and a self-request reads as Reviewing.
+      expect(myCard(after)).to.deep.equal(["dana.kim you Reviewing"]);
+      expect(links(after).filter(link => link.text === "Add me as reviewer")).to.deep.equal([]);
+      expect(readyDiscussions().reviewers.map(user => user.toLowerCase())).to.include(ME);
+      expect(statuses).to.include(`$(person-add) Added you as a reviewer on review #${REVIEW_ID}`);
+      await settle(until(() => needsMe().reviews.some(review => review.id === REVIEW_ID)), "Needs My Review after");
+      expect(needsMe().reviews.map(review => review.id)).to.deep.equal(needsMyReview());
+
+      // Run again, it runs no cm and asks nothing: the cm user is a reviewer now.
+      await settle(commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"), "Add Me as Reviewer again");
+      expect([ writes().length, asked.length ]).to.deep.equal([ 1, 0 ]);
+
+      // A requested reviewer now: Set Review Status… gives their own verdict with cm, and the row is theirs.
+      const plan = await session().statusPlan(WORKSPACE_ID, session().active!.review);
+      expect(plan).to.include({ add: false, kind: "personal" });
+      await settle(session().setStatus(WORKSPACE_ID, session().active!.review, "Rework required", plan), "verdict");
+      expect(writes()[1]).to.deep.equal({
+        args: [ "codereview", "review", String(REVIEW_ID), "--rework-required" ], cwd: root, stdin: undefined,
+      });
+      expect(server.calls.filter(call => call.command === "codereview"), "review status writes").to.deep.equal([]);
+      expect(server.comments[server.comments.length - 1]).to.include({
+        owner: ME, review: REVIEW_ID, text: "[status-rework-required]", type: "timeline",
+      });
+      expect(statuses).to.include(`Your status on review #${REVIEW_ID}: Rework required`);
+      expect(errors, "errors shown").to.deep.equal([]);
+    } finally {
+      server.comments.splice(rows);
+      reviews.dispose();
+      reviews = new PlasticReviews(host);
+    }
+  });
+
+  it("posts a comment and a reply with the synthetic one-shot cm, and shows each as the server has it", async () => {
+    const { id: reviewId, branch } = scenario.branchReview;
+    const confirms: string[] = [];
+    const rows = server.comments.length;
+    const written = server.writes.length;
+    reviews.dispose();
+    reviews = new PlasticReviews({
+      ...host,
+      cm: server.oneShot(),
+      posting: {
+        confirm: (message, detail) => {
+          confirms.push(`${message} ${detail.split("\n")[0]}`);
+          return Promise.resolve(true);
+        },
+        notify: message => {
+          errors.push(message);
+        },
+        setting: () => true,
+        trusted: () => true,
+      },
+    });
+    const keys = (reviews as unknown as { keys: Map<string, unknown> }).keys;
+    const writes = () => server.writes.slice(written).filter(call => call.args[2] !== "--usage");
+    const local = (comment: { contextValue?: string }) => (comment.contextValue ?? "").startsWith("reviewLocal-");
+    try {
+      await activate(reviewId);
+      await settle(until(() => keys.get(CONTEXT_KEYS.postingEnabled) === true), "posting enabled");
+      const files = readyFiles();
+      const head = server.head(branch);
+      const row = samples(byKey(server.branchDiff(branch, true)).values())
+        .find(candidate => candidate.statuses.has("C"))!;
+      const file = files.final.files.find(candidate => fileKey(candidate) === keyOf(row))!;
+      await closeAllEditors();
+      await settle(commands.executeCommand("plastic-scm.reviews.openChanges", tree().fileNode("changes", file)),
+        `open ${row.path}`);
+      const diff = await activeDiff();
+      const line = 1;
+      const text = "Is this still needed?\n  It reads \"twice\" & costs $(nothing).";
+
+      // The gutter "+": VS Code hands the command an empty thread on the line.
+      const controller = (reviews.editors as unknown as {
+        controller: { createCommentThread(uri: Uri, range: Range, comments: []): CommentThread };
+      }).controller;
+      const started = controller.createCommentThread(diff.right.uri, new Range(line, 0, line, 0), []);
+      await settle(reviews.posting.postComment({ text, thread: started }), "Post Comment");
+      expect(confirms).to.deep.equal([
+        `Post this comment to review #${reviewId}? Destination: ${server.repositoryServer} through cm, as the user ` +
+        "cm is signed in as",
+      ]);
+      expect(writes()).to.deep.equal([{
+        args: [
+          "codereview", "comment", "add", String(reviewId), "-commentsfile=-", `--revision=revid:${row.revid}`,
+          `--line=${line + 1}`, "--type=Comment",
+        ],
+        cwd: root,
+        stdin: text,
+      }]);
+      const posted = server.comments[server.comments.length - 1];
+      expect(posted).to.include({
+        changeset: -1, location: line, owner: ME, parent: -1, review: reviewId, revision: row.revid, text,
+        type: "comment",
+      });
+      expect(server.revision(row.revid).changeset, "the commented revision is the review's head one")
+        .to.be.at.most(head);
+
+      // The discussions loaded again by themselves: the server's row is the thread, and nothing local is left.
+      const atLine = () => threadsOn(reviews.editors, diff.right.uri)
+        .filter(thread => thread.range.start.line === line);
+      // The threads the user started with the gutter "+", which the editors keep until the review shows them itself.
+      const startedThreads = () => Array.from((reviews.editors as unknown as {
+        adopted: Map<string, Set<CommentThread>>;
+      }).adopted.get(diff.right.uri.toString()) ?? []);
+      await settle(until(() => !!nativeThread(reviews.editors, posted.id) && !startedThreads().length, 10000),
+        "the posted comment's thread");
+      const native = nativeThread(reviews.editors, posted.id)!;
+      expect([ native.uri.toString(), native.range.start.line ]).to.deep.equal([ diff.right.uri.toString(), line ]);
+      expect(native.comments).to.have.length(1);
+      expect(atLine().filter(thread => thread.comments.some(local))).to.deep.equal([]);
+      // The thread the user started is gone with its local comment: the server's row shows the comment now.
+      expect(startedThreads()).to.deep.equal([]);
+      expect(readyDiscussions().threads.find(thread => thread.id === posted.id)?.comments[0].guid)
+        .to.equal(server.commentGuid(posted.id));
+
+      // A reply in that thread goes to the comment's GUID, and comes back as the thread's second comment.
+      await settle(reviews.posting.postReply({ text: "Never mind, I see why.", thread: native }), "Post Reply");
+      expect(writes()[1]).to.deep.equal({
+        args: [ "codereview", "comment", "reply", server.commentGuid(posted.id), "-commentsfile=-" ], cwd: root,
+        stdin: "Never mind, I see why.",
+      });
+      expect(server.comments[server.comments.length - 1]).to.include({
+        owner: ME, parent: posted.id, review: reviewId, text: "Never mind, I see why.",
+      });
+      const replied = () => nativeThread(reviews.editors, posted.id)?.comments ?? [];
+      await settle(until(() => replied().length === 2 && !replied().some(local), 10000), "the reply in the thread");
+      expect(replied().filter(local)).to.deep.equal([]);
+      expect(server.unrecognised, "commands the synthetic server does not know").to.deep.equal([]);
+      expect(errors, "errors shown").to.deep.equal([]);
+      // The output channel names the commands, never the text.
+      expect(output.join("\n")).to.contain(`cm codereview comment add ${reviewId} (text on stdin)`)
+        .and.not.contain("Is this still needed?").and.not.contain("Never mind");
+
+      // The left side shows the changed file's base revision, which cm takes no comment on: no "+", nothing sent.
+      expect(reviews.editors.provideCommentingRanges(diff.left)).to.deep.equal([]);
+      const left = controller.createCommentThread(diff.left.uri, new Range(line, 0, line, 0), []);
+      await settle(reviews.posting.postComment({ text: "On the base?", thread: left }), "Post Comment on the left");
+      expect(errors).to.deep.equal(["New comments go on the right side: cm takes the left side's revision only for " +
+        "a deleted file."]);
+      expect(writes()).to.have.length(2);
+      // The synthetic cm refuses it as cm would, should anything send it.
+      const refused = await server.oneShot()("cm", {
+        args: [
+          "codereview", "comment", "add", String(reviewId), "-commentsfile=-", `--revision=revid:${row.base}`,
+          `--line=${line + 1}`, "--type=Comment",
+        ],
+        cwd: root,
+        stdin: "On the base?",
+      });
+      expect([ refused.code, refused.stderr ]).to.deep.equal([ 1, `Error: The revision revid:${row.base} is not ` +
+        `one the diff of the code review ${reviewId} comments on.\n` ]);
+      errors.length = 0;
+    } finally {
+      server.comments.splice(rows);
+      await closeAllEditors();
+      reviews.dispose();
+      reviews = new PlasticReviews(host);
+    }
+  });
 });

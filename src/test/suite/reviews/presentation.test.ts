@@ -8,10 +8,13 @@ import {
   cleanReviewTitle,
   commentTypeLabel,
   contentKind,
+  discussionMarks,
+  discussionMarksText,
   exactReviewPick,
   fileTooltip,
   formatCount,
   formatDate,
+  hasNews,
   isGeneralThread,
   noDiffMessage,
   openableReviewNumber,
@@ -43,6 +46,7 @@ import {
   toneColor,
   toneUri,
   unnamedBranchId,
+  updateNotice,
   updateSummary,
 } from "../../../reviews/reviewPresentation";
 import { BRANCH_NAME, comment, file } from "./fixtures";
@@ -435,6 +439,21 @@ describe("Review presentation", () => {
       expect(counts).to.deep.equal({ applied: 1, discarded: 0, pending: 1, questions: 1, total: 4 });
     });
 
+    it("marks discussions with emoji: every thread, pending change requests and open questions", () => {
+      const answered = thread({ owner: "asker", type: "question" },
+        [{ owner: "Author", text: "Because", type: "comment" }]);
+      const followUp = thread({ owner: "asker", type: "question" },
+        [{ owner: "ASKER ", text: "Any news?", type: "comment" }]);
+      const threads = [
+        thread({ type: "change" }), thread({ appliedInChangesetId: 3, type: "change" }), answered, followUp,
+      ];
+      expect(discussionMarks(threads)).to.equal("💬 4  🟠 1  ❓ 1");
+      expect(discussionMarksText(threads)).to.equal("💬 4 discussions: 🟠 1 pending change request, ❓ 1 open question");
+      expect(discussionMarks([answered])).to.equal("💬 1");
+      expect(discussionMarksText([answered])).to.equal("💬 1 discussion");
+      expect(discussionMarks([])).to.equal("");
+    });
+
     it("puts the whole thread in an untrusted tooltip, with where it is and what a click opens", () => {
       const discarded = thread(
         { owner: "priya.nair@example.com", text: "Use `List<Sprite>`\nhere", type: "change" },
@@ -475,11 +494,73 @@ describe("Review presentation", () => {
   });
 
   it("summarises updates", () => {
-    expect(updateSummary({ newComments: 2, newHead: 3733, removedComments: 0, status: "Rework required" }))
+    const all = { comments: [], newComments: 2, newHead: 3733, removedComments: 0, status: "Rework required" };
+    expect(updateSummary(all))
       .to.equal("branch moved to cs:3733 · 2 new comments · status: Rework required");
-    expect(updateSummary({ newComments: 1, newHead: -1, removedComments: 1 }))
+    expect(updateSummary({ comments: [], newComments: 1, newHead: -1, removedComments: 1 }))
       .to.equal("branch deleted · 1 new comment · 1 comment removed");
-    expect(updateSummary({ newComments: 0, removedComments: 0 })).to.equal("changes available");
+    expect(updateSummary({ comments: [], newComments: 0, removedComments: 0 })).to.equal("changes available");
+  });
+
+  describe("update notices", () => {
+    const ANA = "ana@example.com";
+    const BO = "bo@example.com";
+    const ME = "kim@example.com";
+    const by = (...owners: string[]) => ({
+      comments: owners.map((owner, index) => ({ id: 500 + index, owner })),
+      newComments: owners.length,
+      removedComments: 0,
+    });
+    const message = (...args: Parameters<typeof updateNotice>) => updateNotice(...args)?.message;
+
+    it("words comments, changesets and status, singular and plural", () => {
+      expect(message(312, by(ANA))).to.equal("Review #312: 1 new comment from ana@example.com");
+      expect(message(312, by(ANA, ANA))).to.equal("Review #312: 2 new comments from ana@example.com");
+      expect(message(312, { ...by(ANA, ANA), newHead: 3733, status: "Reviewed" })).to.equal(
+        "Review #312: 2 new comments from ana@example.com; new changesets on the branch; status is now Reviewed");
+      expect(message(312, { ...by(), newHead: 3733 })).to.equal("Review #312: new changesets on the branch");
+      expect(message(312, { ...by(), newHead: -1 })).to.equal("Review #312: the branch was deleted");
+      expect(message(312, { ...by(), status: "Rework required" }))
+        .to.equal("Review #312: status is now Rework required");
+      expect(message(312, { ...by(), removedComments: 1 })).to.equal("Review #312: 1 comment removed");
+      expect(message(312, { ...by(ANA), removedComments: 2, status: "Reviewed" })).to.equal(
+        "Review #312: 1 new comment from ana@example.com; 2 comments removed; status is now Reviewed");
+    });
+
+    it("names each author once, in order, and counts the ones it leaves out", () => {
+      expect(message(312, by(BO, ANA, "ANA@example.com"))).to.equal(
+        "Review #312: 3 new comments from ana@example.com and bo@example.com");
+      expect(message(312, by("cy@example.com", BO, ANA))).to.equal(
+        "Review #312: 3 new comments from ana@example.com, bo@example.com and 1 other");
+      expect(message(312, by("di@example.com", "cy@example.com", BO, ANA))).to.equal(
+        "Review #312: 4 new comments from ana@example.com, bo@example.com and 2 others");
+      expect(message(312, by(""))).to.equal("Review #312: 1 new comment");
+    });
+
+    it("leaves out the user's own comments, whatever the case of their name", () => {
+      expect(updateNotice(312, by(ME), " KIM@Example.com ")).to.equal(undefined);
+      const notice = updateNotice(312, { ...by(ME, ANA, ME), status: "Reviewed" }, ME)!;
+      expect(notice.message).to.equal("Review #312: 1 new comment from ana@example.com; status is now Reviewed");
+      expect(notice.comments).to.deep.equal([501]);
+      expect(updateNotice(312, { ...by(ME), newHead: 3733 }, ME)!.message)
+        .to.equal("Review #312: new changesets on the branch");
+      // Without a known user, every comment counts.
+      expect(message(312, by(ME))).to.equal("Review #312: 1 new comment from kim@example.com");
+    });
+
+    it("has news only when something was not reported yet", () => {
+      const first = updateNotice(312, by(ANA))!;
+      expect(hasNews(first)).to.equal(true);
+      expect(hasNews(first, first)).to.equal(false);
+      expect(hasNews(updateNotice(312, by(ANA, BO))!, first)).to.equal(true);
+      expect(hasNews(updateNotice(312, { ...by(ANA), status: "Reviewed" })!, first)).to.equal(true);
+      expect(hasNews(updateNotice(312, { ...by(ANA), newHead: 3733 })!, first)).to.equal(true);
+      expect(hasNews(updateNotice(312, { ...by(ANA), removedComments: 1 })!, first)).to.equal(true);
+      const all = updateNotice(312, { ...by(ANA, BO), newHead: 3733, removedComments: 2, status: "Reviewed" })!;
+      expect(hasNews(updateNotice(312, { ...by(ANA), newHead: 3733, removedComments: 1 })!, all)).to.equal(false);
+      expect(hasNews(updateNotice(312, { ...by(ANA), newHead: 3734 })!, all)).to.equal(true);
+      expect(hasNews(updateNotice(312, { ...by(ANA), status: "Rework required" })!, all)).to.equal(true);
+    });
   });
 
   it("offers a retry in error tooltips and colours rows through tone URIs", () => {
@@ -565,7 +646,7 @@ describe("Review presentation", () => {
       expect(text).to.contain("/Assets/Data/New.asset");
       expect(text).to.contain("Moved and changed · revision 12411 · base revision 11242");
       expect(text).to.contain("Moved from /Assets/Data/Old.asset");
-      expect(text).to.contain("2 discussions (1 pending change request)");
+      expect(text).to.contain("💬 2 discussions: 🟠 1 pending change request");
       const binary = plain(fileTooltip(file({ revisionType: RevisionType.BinaryFile })));
       expect(binary).to.contain("Binary file: no text diff");
       expect(changeKind(file({ status: FileChangeStatus.Deleted }))).to.equal("Deleted");

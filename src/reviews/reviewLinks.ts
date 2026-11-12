@@ -1,12 +1,14 @@
+import { CommentLinkAction, OverviewLinkTarget } from "./reviewOverview";
 import { fileKey, repositoryName, repositoryServer } from "./models";
 import { FileScope } from "./sessionTypes";
-import { OverviewLinkTarget } from "./reviewOverview";
 import { Uri } from "vscode";
 
 /**
  * The Overview's links to discussions and files: `vscode://<extension id>/thread?…`
- * and `/file?…` URIs, which the extension's URI handler opens, and
- * `/addMeAsReviewer?…`, which runs Add Me as Reviewer. The Markdown
+ * and `/file?…` URIs, which the extension's URI handler opens, and the
+ * links that write: `/addMeAsReviewer?…`, which runs Add Me as Reviewer, and
+ * `/comment?…` and `/addComment?…`, which reply to, edit or delete a comment
+ * or add one to the whole review (review writes). The Markdown
  * preview opens only http(s), mailto and vscode(-insiders) links, and a click
  * and a Cmd/Ctrl+click on one both reach the handler.
  *
@@ -16,13 +18,18 @@ import { Uri } from "vscode";
  * base64url for the workspace id and the file key, and the key as it is.
  */
 
-/** A thread or a file row of one review, or Add Me as Reviewer on it. */
+/** A thread or a file row of one review, or a write on it: Add Me as Reviewer or a comment's. */
 export interface IReviewLink {
   workspaceId: string;
   reviewId: number;
   target: OverviewLinkTarget;
-  /** Add Me as Reviewer only: the session's `linkKey`, which tells the Overview's own link from any other. */
+  /** Links that write only: the session's `linkKey`, which tells the Overview's own link from any other. */
   key?: string;
+}
+
+/** The targets whose links write, and so carry the session's `linkKey`. */
+export function isWriteTarget(target: OverviewLinkTarget): boolean {
+  return target.kind === "addMeAsReviewer" || target.kind === "comment" || target.kind === "addComment";
 }
 
 /** Where the links point: the product's URI scheme (`vscode.env.uriScheme`) and the extension's id. */
@@ -39,15 +46,20 @@ export type ParsedReviewLink =
   | { kind: "unknown" };
 
 const PATHS: { [kind in OverviewLinkTarget["kind"]]: string } = {
+  addComment: "/addComment",
   addMeAsReviewer: "/addMeAsReviewer",
+  comment: "/comment",
   file: "/file",
   thread: "/thread",
 };
 const PARAMETERS: { [kind in OverviewLinkTarget["kind"]]: readonly string[] } = {
+  addComment: [ "workspace", "review", "key" ],
   addMeAsReviewer: [ "workspace", "review", "key" ],
+  comment: [ "workspace", "review", "action", "comment", "key" ],
   file: [ "workspace", "review", "scope", "file" ],
   thread: [ "workspace", "review", "thread" ],
 };
+const ACTIONS: readonly CommentLinkAction[] = [ "reply", "edit", "delete" ];
 const ID = /^[1-9]\d{0,14}$/;
 const TOKEN = /^[A-Za-z0-9_-]{1,4096}$/;
 const CHANGESET_SCOPE = /^cs([1-9]\d{0,14})$/;
@@ -60,6 +72,9 @@ export function reviewLinkUri(base: IReviewLinkBase, link: IReviewLink): string 
   } else if (target.kind === "file") {
     query.push(`scope=${scopeName(target.scope)}`, `file=${encode(target.fileKey)}`);
   } else {
+    if (target.kind === "comment") {
+      query.push(`action=${target.action}`, `comment=${target.commentId}`);
+    }
     query.push(`key=${link.key ?? ""}`);
   }
   return `${base.scheme}://${base.authority}${PATHS[target.kind]}?${query.join("&")}`;
@@ -115,11 +130,20 @@ export function parseReviewLink(uri: Uri): ParsedReviewLink {
   if (workspaceId === undefined || reviewId === undefined) {
     return malformed(workspaceId === undefined ? "a malformed workspace" : "a malformed review id");
   }
-  if (kind === "addMeAsReviewer") {
+  if (kind === "addMeAsReviewer" || kind === "addComment" || kind === "comment") {
     const key = values.get("key")!;
-    return TOKEN.test(key)
-      ? { kind: "link", link: { key, reviewId, target: { kind }, workspaceId }}
-      : malformed("a malformed key");
+    if (!TOKEN.test(key)) {
+      return malformed("a malformed key");
+    }
+    if (kind !== "comment") {
+      return { kind: "link", link: { key, reviewId, target: { kind }, workspaceId }};
+    }
+    const action = ACTIONS.find(name => name === values.get("action"));
+    const commentId = id(values.get("comment")!);
+    if (!action || commentId === undefined) {
+      return malformed(action ? "a malformed comment id" : "an unknown action");
+    }
+    return { kind: "link", link: { key, reviewId, target: { action, commentId, kind }, workspaceId }};
   }
   if (kind === "thread") {
     const threadId = id(values.get("thread")!);

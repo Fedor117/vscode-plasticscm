@@ -36,9 +36,8 @@ import {
   window,
   workspace,
 } from "vscode";
-import { CONSENT_MESSAGE, ITokenCm, tokenKey } from "../../../reviews/reviewTokens";
 import { CONTEXT_KEYS, PlasticReviews } from "../../../reviews/plasticReviews";
-import { FakeTokenCm, syntheticJwt, tokenId } from "./tokenFixtures";
+import { exited, FakeCm, OLD_USAGE } from "./cmFixtures";
 import {
   isOverviewTab,
   MARKDOWN_PREVIEW_EDITOR,
@@ -47,11 +46,12 @@ import {
   reviewScheme,
 } from "../../../reviews/reviewEditors";
 import { layoutTarget, REVIEW_COMMAND_PREFIX, REVIEW_COMMANDS, statusItems } from "../../../reviews/reviewActions";
-import { memorySecrets, numberedText, until } from "./editorFixtures";
+import { NOTIFY_UPDATES_SETTING, UPDATE_INTERVAL_SETTING, updateCheckInterval } from "../../../reviews/reviewSession";
+import { numberedText, until } from "./editorFixtures";
 import { ReviewTreeNode, ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
+import { CmRunner } from "../../../reviews/cmRunner";
 import { DiscussionsProvider } from "../../../reviews/discussionsProvider";
 import { expect } from "chai";
-import { FakeRest } from "./restFixtures";
 import { fileKey } from "../../../reviews/models";
 import { IReviewPickItem } from "../../../reviews/reviewPresentation";
 import { IReviewPostingOptions } from "../../../reviews/reviewPosting";
@@ -59,7 +59,6 @@ import { OverviewLinkTarget } from "../../../reviews/reviewOverview";
 import { review as reviewFixture } from "./viewFixtures";
 import { reviewLinkUri } from "../../../reviews/reviewLinks";
 import { ReviewService } from "../../../reviews/reviewService";
-import { ReviewWriter } from "../../../reviews/reviewWriter";
 
 interface IMenuEntry {
   command: string;
@@ -202,6 +201,7 @@ describe("Plastic Reviews contributions", () => {
     ]);
     expect(Object.keys(contributes.configuration.properties)).to.include.members([
       "plastic-scm.reviews.fileLayout",
+      "plastic-scm.reviews.commentWrites",
       "plastic-scm.reviews.experimentalPosting",
     ]);
     const palette = new Map(contributes.menus.commandPalette.map(entry => [ entry.command, entry.when ]));
@@ -216,6 +216,16 @@ describe("Plastic Reviews contributions", () => {
     for (const view of contributes.views["plastic-scm-reviews"]) {
       expect(view.when, view.id).to.equal("plastic-scm.active");
     }
+  });
+
+  it("contributes the update check settings under the keys the session reads", () => {
+    const properties = contributes.configuration.properties;
+    expect(properties[UPDATE_INTERVAL_SETTING])
+      .to.include({ default: 60, minimum: 0, scope: "window", type: "number" });
+    expect(properties[NOTIFY_UPDATES_SETTING]).to.include({ default: true, scope: "window", type: "boolean" });
+    // The default the manifest declares is the one the code falls back on.
+    expect(updateCheckInterval((properties[UPDATE_INTERVAL_SETTING] as { default: number }).default)).to.equal(60000);
+    expect(updateCheckInterval(undefined)).to.equal(60000);
   });
 
   it("puts Find Review… in the Reviews title bar where Open Review by ID… was, which stays a palette command", () => {
@@ -247,7 +257,7 @@ describe("Plastic Reviews contributions", () => {
     expect(manifest.activationEvents).to.include(`onFileSystem:${reviewScheme}`);
   });
 
-  it("contributes Add Me as Reviewer to the Review view's title, the Reviews rows and the palette, all experimental",
+  it("contributes Add Me as Reviewer to the Review view's title, the Reviews rows and the palette",
     () => {
       const id = "plastic-scm.reviews.addMeAsReviewer";
       expect(contributes.commands.find(entry => entry.command === id)).to.deep.equal({
@@ -258,7 +268,7 @@ describe("Plastic Reviews contributions", () => {
       });
       const entries = (menu: string) => contributes.menus[menu].filter(entry => entry.command === id)
         .map(entry => ({ group: entry.group, when: entry.when }));
-      const setting = "config.plastic-scm.reviews.experimentalPosting";
+      const setting = CONTEXT_KEYS.writesOn;
       expect(entries("view/title")).to.deep.equal([{
         group: "navigation@2",
         when: `view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview && ${setting} && ` +
@@ -273,7 +283,40 @@ describe("Plastic Reviews contributions", () => {
       expect(entries("editor/title")).to.deep.equal([]);
     });
 
-  it("offers Open in Unity Version Control whatever the setting, and Revoke Review Access Token only with it", () => {
+  it("offers comment edits, deletes, replies and review-level comments only where posting works", () => {
+    const posting = CONTEXT_KEYS.postingEnabled;
+    const entries = (menu: string, name: string) => (contributes.menus[menu] ?? [])
+      .filter(entry => entry.command === REVIEW_COMMAND_PREFIX + name)
+      .map(entry => `${entry.group ?? ""} | ${entry.when ?? ""}`);
+    const own = "commentController == plastic-scm.reviews && comment == reviewComment-own";
+    expect(entries("comments/comment/title", "editComment")).to.deep.equal([`inline@1 | ${own} && ${posting}`]);
+    expect(entries("comments/comment/title", "deleteComment")).to.deep.equal([`inline@2 | ${own} && ${posting}`]);
+    expect(entries("comments/comment/context", "saveComment")).to.deep.equal([`inline@1 | ${own}`]);
+    expect(entries("comments/comment/context", "cancelEdit")).to.deep.equal([`inline@2 | ${own}`]);
+    const row = (flag: string) =>
+      `view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;${flag}(;|$)/ && ${posting}`;
+    expect(entries("view/item/context", "replyToDiscussion"))
+      .to.deep.equal([ `inline@1 | ${row("reply")}`, `2_write@1 | ${row("reply")}` ]);
+    expect(entries("view/item/context", "editDiscussionComment")).to.deep.equal([`2_write@2 | ${row("edit")}`]);
+    expect(entries("view/item/context", "deleteComment")).to.deep.equal([`2_write@3 | ${row("delete")}`]);
+    expect(entries("view/title", "addReviewComment")).to.deep.equal([
+      `navigation@1 | view == plastic-scm.reviews.discussions && plastic-scm.reviews.hasActiveReview && ${posting}`,
+    ]);
+    expect(entries("commandPalette", "addReviewComment"))
+      .to.deep.equal([` | plastic-scm.reviews.hasActiveReview && ${posting}`]);
+    for (const name of [ "replyToDiscussion", "editDiscussionComment", "editComment", "deleteComment", "saveComment",
+      "cancelEdit" ]) {
+      expect(entries("commandPalette", name), name).to.deep.equal([" | false"]);
+    }
+    const command = (name: string) =>
+      contributes.commands.find(entry => entry.command === REVIEW_COMMAND_PREFIX + name);
+    expect([ "addReviewComment", "replyToDiscussion", "editDiscussionComment", "editComment", "deleteComment" ]
+      .map(name => command(name)?.title)).to.deep.equal([
+      "Add Comment to Review…", "Reply…", "Edit…", "Edit", "Delete",
+    ]);
+  });
+
+  it("offers Open in Unity Version Control whatever the setting, and no command for a token", () => {
     const command = (name: string) =>
       contributes.commands.find(entry => entry.command === REVIEW_COMMAND_PREFIX + name);
     expect(command("openInDesktop")).to.deep.equal({
@@ -282,11 +325,8 @@ describe("Plastic Reviews contributions", () => {
       icon: "$(link-external)",
       title: "Open in Unity Version Control",
     });
-    expect(command("revokeAccessToken")).to.deep.equal({
-      category: "Plastic Reviews",
-      command: "plastic-scm.reviews.revokeAccessToken",
-      title: "Revoke Review Access Token",
-    });
+    expect(command("revokeAccessToken")).to.equal(undefined);
+    expect(JSON.stringify(contributes)).to.not.contain("revokeAccessToken").and.not.contain("hasAccessToken");
     expect([ command("configurePosting"), command("forgetPosting") ]).to.deep.equal([ undefined, undefined ]);
     const entries = (menu: string, name: string) => contributes.menus[menu]
       .filter(entry => entry.command === REVIEW_COMMAND_PREFIX + name)
@@ -298,18 +338,18 @@ describe("Plastic Reviews contributions", () => {
     }]);
     expect(entries("commandPalette", "openInDesktop"))
       .to.deep.equal([{ group: undefined, when: "plastic-scm.reviews.hasActiveReview" }]);
-    const setting = "config.plastic-scm.reviews.experimentalPosting";
-    expect(entries("view/title", "revokeAccessToken")).to.deep.equal([{
-      group: "8_experimental@1",
-      when: `view == plastic-scm.reviews.list && ${setting} && ${CONTEXT_KEYS.hasAccessToken}`,
-    }]);
-    expect(entries("commandPalette", "revokeAccessToken"))
-      .to.deep.equal([{ group: undefined, when: `${setting} && ${CONTEXT_KEYS.hasAccessToken}` }]);
-    const posting = contributes.configuration.properties["plastic-scm.reviews.experimentalPosting"] as {
-      markdownDescription: string;
+    const writes = contributes.configuration.properties["plastic-scm.reviews.commentWrites"] as {
+      default: boolean; markdownDescription: string;
     };
-    expect(posting.markdownDescription).to.contain("personal access token").and.contain("with cm")
-      .and.contain("Unity Version Control Server REST API").and.not.contain("hosted API");
+    expect(writes.default).to.equal(true);
+    expect(writes.markdownDescription).to.contain("`cm`").and.contain("11.0.16.10512")
+      .and.contain("trusted workspace").and.not.contain("REST").and.not.contain("xperimental");
+    const legacy = contributes.configuration.properties["plastic-scm.reviews.experimentalPosting"] as {
+      markdownDeprecationMessage: string;
+    };
+    expect(legacy.markdownDeprecationMessage).to.contain("plastic-scm.reviews.commentWrites");
+    // The effective value is not a config value, so no when-clause may read the old setting.
+    expect(JSON.stringify(contributes.menus)).to.not.contain("experimentalPosting");
   });
 
   it("puts the review's actions on the Overview's tab, scoped to the active review's Overview", () => {
@@ -418,16 +458,15 @@ describe("Plastic Reviews contributions", () => {
           globalState?: Memento;
           workspaceState?: Memento;
           posting?: IReviewPostingOptions;
-          secrets?: ReturnType<typeof memorySecrets>;
-          tokenCm?: ITokenCm;
+          cm?: CmRunner;
         } = {}) {
       const workspaces = options.workspaces ?? [WORKSPACE];
       return new PlasticReviews({
         channel,
+        cm: options.cm,
         extensionId: EXTENSION_ID,
         globalState: options.globalState ?? memento(),
         posting: options.posting,
-        secrets: options.secrets,
         session: {
           createService: wk => {
             const service = new ReviewService(wk.id, wk.path, channel, SHELL_CONFIG, shell);
@@ -446,7 +485,6 @@ describe("Plastic Reviews contributions", () => {
           },
         },
         shellConfig: () => SHELL_CONFIG,
-        tokenCm: options.tokenCm,
         workspaceState: options.workspaceState ?? memento(),
         workspaces: () => workspaces,
       });
@@ -472,6 +510,21 @@ describe("Plastic Reviews contributions", () => {
       reviews = undefined;
       const after = new Set(await commands.getCommands(true));
       expect(reviewCommands.filter(id => after.has(id))).to.deep.equal([]);
+    });
+
+    it("checks the open review at the interval setting, and follows a change to it without a reload", async () => {
+      const config = workspace.getConfiguration();
+      await reviews!.session.activate("wk", BRANCH_REVIEW_ID);
+      expect(reviews!.session.checkingEvery).to.equal(60 * 1000);
+      try {
+        await config.update(UPDATE_INTERVAL_SETTING, 30, ConfigurationTarget.Global);
+        await until(() => reviews!.session.checkingEvery === 30 * 1000);
+        await config.update(UPDATE_INTERVAL_SETTING, 0, ConfigurationTarget.Global);
+        await until(() => reviews!.session.checkingEvery === undefined);
+      } finally {
+        await config.update(UPDATE_INTERVAL_SETTING, undefined, ConfigurationTarget.Global);
+      }
+      await until(() => reviews!.session.checkingEvery === 60 * 1000);
     });
 
     it("ignores and logs a row command run with the wrong argument", async () => {
@@ -1212,18 +1265,15 @@ describe("Plastic Reviews contributions", () => {
       }
     });
 
-    describe("Add Me as Reviewer, Open in Unity Version Control and the access token", () => {
+    describe("Add Me as Reviewer and Open in Unity Version Control", () => {
       const SAM = "sam.rivera@example.com";
-      const SERVER = "acme-studio@unity";
-      const REVIEWERS = "/api/v1/organizations/acme-studio/repos/Nimbus%2FNimbus/codereview/12831/reviewers";
+      const ADD = [ "codereview", "reviewer", "add", "12831", "--users=me" ];
       const LINK = "plastic://acme-studio@unity/repos/Nimbus/Nimbus/code-reviews/12831";
       /** The scenario's comment rows without those that request the cm user; their verdicts stay. */
       const UNREQUESTED = SCENARIO_COMMENTS.filter(row => !/^\[requested-review-from/.test(row.text));
-      /** The writes the fake REST API received. */
-      const requests: Array<{ path: string; body: unknown }> = [];
-      /** The cm that makes tokens, and the token saved for the server before the test. */
-      let cm: FakeTokenCm;
-      let saved: string;
+      /** The arguments of each write the one-shot cm was run for. */
+      const requests: string[][] = [];
+      let cm: FakeCm;
       let comments = UNREQUESTED;
       let people = { assignee: SAM, owner: AUTHOR };
       let setting = true;
@@ -1243,36 +1293,25 @@ describe("Plastic Reviews contributions", () => {
         });
       }
 
-      /** What cm was asked about tokens: the `accesstoken` subcommands. */
-      const tokenWork = () => cm.calls.filter(call => call[0] === "accesstoken").map(call => call[1]);
-
       /**
-       * A PlasticReviews with experimental posting on a fake cm and a fake REST API, which adds the cm user as the
-       * service would; `connected`, a token for the server is saved already. `organization` is what
-       * `cm getconfig organization` prints, by default an organization on a documented region.
+       * A PlasticReviews with experimental posting on a fake one-shot cm, which adds the cm user as the server
+       * would. `old`, the cm is one from before the review write commands.
        */
-      function withPosting(connected = true, organization?: string): PlasticReviews {
+      function withPosting(old = false): PlasticReviews {
         reviews?.dispose();
-        cm = new FakeTokenCm();
-        cm.organization = organization ?? cm.organization;
-        const rest = new FakeRest();
-        rest.onWrite = () => {
-          comments = comments.concat(marker(13001, "requested-review-from"));
-        };
-        const writer = new ReviewWriter((call, cancel) => {
-          if (call.method !== "GET") {
-            requests.push({ body: JSON.parse(call.body ?? "null") as unknown, path: call.url.pathname });
+        cm = new FakeCm();
+        if (old) {
+          cm.usage = exited(0, OLD_USAGE);
+        }
+        cm.answer = call => {
+          expect(call.cwd, "cm runs in the workspace's folder").to.equal(WORKSPACE_ROOT);
+          requests.push(call.args);
+          if (call.args[1] === "reviewer") {
+            comments = comments.concat(marker(13001, "requested-review-from"));
           }
-          return rest.transport(call, cancel);
-        });
-        saved = syntheticJwt(Math.floor(Date.now() / 1000) + 60 * 60);
-        cm.tokens.set(tokenId(1), 0);
-        const secret = JSON.stringify({ expiresAt: Date.now() + 60 * 60 * 1000, id: tokenId(1), token: saved });
-        reviews = create({
-          posting: { setting: () => setting, trusted: () => true, writer },
-          secrets: memorySecrets(connected ? { [tokenKey(SERVER, ME)]: secret } : {}),
-          tokenCm: cm,
-        });
+          return undefined;
+        };
+        reviews = create({ cm: cm.run, posting: { setting: () => setting, trusted: () => true }});
         return reviews;
       }
 
@@ -1362,82 +1401,56 @@ describe("Plastic Reviews contributions", () => {
         expect(requests).to.deep.equal([]);
       });
 
-      it("adds the cm user to the active review once with the saved token, then shows them and stops offering itself",
+      it("adds the cm user to the active review once with cm, then shows them and stops offering itself",
         async () => {
           withPosting();
           const keys = await opened();
           await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === true);
           await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer");
-          expect(requests).to.deep.equal([{ body: { reviewers: [ME] }, path: REVIEWERS }]);
+          expect(requests).to.deep.equal([ADD]);
           await until(() => keys.get(CONTEXT_KEYS.canAddMeAsReviewer) === false);
           const active = reviews!.session.active!;
           expect(active.discussions.state === "ready" && active.discussions.value.reviewers).to.include(ME);
           expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
-          expect(lines.join("\n")).to.not.contain(saved);
-          expect(tokenWork()).to.deep.equal([]);
+          expect(lines).to.include("Plastic Reviews: cm codereview reviewer add 12831: exit code 0");
         });
 
       it("adds the cm user to a Reviews row's review, which need not be open", async () => {
         withPosting();
         await commands.executeCommand("plastic-scm.reviews.addMeAsReviewer", await reviewRow(BRANCH_REVIEW_ID));
-        expect(requests.map(request => request.path.replace(/^.*\/codereview\//, "")))
-          .to.deep.equal(["12831/reviewers"]);
+        expect(requests).to.deep.equal([ADD]);
         expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
       });
 
-      it("offers the setting while it is off, asks before creating a token, and sends nothing", async () => {
+      it("offers the setting while it is off, and runs no cm", async () => {
         setting = false;
         withPosting();
         await opened();
         const settingOff = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
         expect(settingOff).to.deep.equal([
-          "Add Me as Reviewer is experimental. Turn on the plastic-scm.reviews.experimentalPosting setting to use it.",
+          "Review writes are off. Turn on the plastic-scm.reviews.commentWrites setting to use Add Me as Reviewer.",
         ]);
-        setting = true;
-        withPosting(false);
-        await opened();
-        expect(await warned(undefined, () => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer")))
-          .to.deep.equal([CONSENT_MESSAGE]);
-        expect(requests).to.deep.equal([]);
-        expect(tokenWork()).to.deep.equal([]);
-        // Declining either offer stops there: nothing fails for want of a token.
+        expect(cm.calls).to.deep.equal([]);
         expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
       });
 
-      it("says why Add Me as Reviewer can't work where the region is not a documented server, and sends nothing",
+      it("says which client Add Me as Reviewer needs where cm is older than the review write commands",
         async () => {
-          withPosting(true, "acme-studio|unity|-1|plastic.example.test");
-          await opened();
+          withPosting(true);
+          const keys = await opened();
           const shown = await informed(() => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
-          expect(shown).to.deep.equal(["The Unity Version Control Server REST API documents no server for " +
-            "acme-studio@unity, whose region is \"plastic.example.test\"."]);
+          expect(shown).to.deep.equal(["Review writes need Unity Version Control client 11.0.16.10512 or newer."]);
           expect(requests).to.deep.equal([]);
-          expect(tokenWork()).to.deep.equal([]);
+          expect(keys.get(CONTEXT_KEYS.postingEnabled)).to.equal(false);
           expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
         });
 
-      it("creates a token with cm once the user agrees, adds, and offers Revoke Review Access Token", async () => {
-        withPosting(false);
-        const keys = await opened();
-        expect(keys.get(CONTEXT_KEYS.hasAccessToken)).to.equal(false);
-        const shown = await warned("Create Token and Add",
-          () => commands.executeCommand("plastic-scm.reviews.addMeAsReviewer"));
-        expect(shown).to.deep.equal([CONSENT_MESSAGE]);
-        expect(tokenWork()).to.deep.equal([ "create", "reveal" ]);
-        expect(requests.map(request => request.path)).to.deep.equal([REVIEWERS]);
-        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === true);
-        expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
-      });
-
-      it("revokes the saved token with cm, and then stops offering Revoke Review Access Token", async () => {
+      it("enables posting once cm has said it has the review write commands", async () => {
         withPosting();
         const keys = await opened();
-        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === true);
-        const shown = await informed(() => commands.executeCommand("plastic-scm.reviews.revokeAccessToken"));
-        expect(shown).to.deep.equal(["Revoked the review access token for acme-studio@unity."]);
-        expect(cm.calls[cm.calls.length - 1]).to.deep.equal([ "accesstoken", "revoke", tokenId(1), SERVER ]);
-        await until(() => keys.get(CONTEXT_KEYS.hasAccessToken) === false);
-        expect(requests).to.deep.equal([]);
+        await until(() => keys.get(CONTEXT_KEYS.postingEnabled) === true);
+        expect(cm.probes().map(call => call.args)).to.deep.equal([[ "codereview", "comment", "--usage" ]]);
+        expect(Object.values(CONTEXT_KEYS)).to.not.include("plastic-scm.reviews.hasAccessToken");
       });
 
       it("opens a review in Unity Version Control from its row or the Review view, with the setting off", async () => {
@@ -1448,7 +1461,6 @@ describe("Plastic Reviews contributions", () => {
         await commands.executeCommand("plastic-scm.reviews.openInDesktop");
         expect(external).to.deep.equal([ LINK, LINK ]);
         expect(requests).to.deep.equal([]);
-        expect(tokenWork()).to.deep.equal([]);
       });
 
       it("starts Set Review Status…'s picker from the user's own verdict, then adds them and sends it", async () => {
@@ -1465,10 +1477,7 @@ describe("Plastic Reviews contributions", () => {
         // The scenario's last verdict of the cm user is Rework required; the review itself is Under review.
         expect(placeholder).to.equal("Set your status on review #12831 (currently Rework required)");
         expect(labels).to.deep.equal([ "Under review", "Current", "Rework required", "Reviewed" ]);
-        expect(requests).to.deep.equal([
-          { body: { reviewers: [ME] }, path: REVIEWERS },
-          { body: { status: "Under review" }, path: `${REVIEWERS}/${encodeURIComponent(ME)}/status` },
-        ]);
+        expect(requests).to.deep.equal([ ADD, [ "codereview", "review", "12831", "--under-review" ]]);
         expect(lines.filter(line => line.startsWith("error"))).to.deep.equal([]);
       });
 
@@ -1500,6 +1509,127 @@ describe("Plastic Reviews contributions", () => {
         expect(own).to.deep.equal([]);
         expect([ ran(calls), requests.length ]).to.deep.equal([ 1, 1 ]);
         expect(shown).to.deep.equal([`You're already a reviewer on review #${BRANCH_REVIEW_ID}.`]);
+      });
+    });
+
+    describe("comment writes", () => {
+      const OWN = "0a1b2c3d-1111-4222-8333-000000000101";
+      const OTHER = "0a1b2c3d-1111-4222-8333-000000000102";
+      const DESCRIBED = "0a1b2c3d-1111-4222-8333-000000000103";
+      const general = (overrides: Parameters<typeof comment>[0]) => comment({
+        changesetId: -1, date: "2026-09-22T17:00:00+01:00", location: -1, reviewId: BRANCH_REVIEW_ID,
+        revisionId: -1, type: "conversation", ...overrides,
+      });
+      const ROWS = SCENARIO_COMMENTS.concat(
+        general({ guid: OTHER, id: 14001, owner: AUTHOR, text: "Please look at the reset first." }),
+        general({ guid: OWN, id: 14002, owner: ME, parentId: 14001, text: "On it.", type: "comment" }),
+        general({ date: "2026-09-22T17:30:00+01:00", guid: DESCRIBED, id: 14003, owner: ME,
+          text: "[description]Fixes lap splits.", type: "timeline" }));
+      let cm: FakeCm;
+      let inputs: Array<{ title?: string; value?: string }>;
+      let inputAnswer: string | undefined;
+      let confirms: string[];
+      let confirmAnswer: boolean;
+      let notices: string[];
+      let warnings: string[];
+
+      beforeEach(async () => {
+        shell.answer = (command, args) =>
+          (args[0] === "changereviewcomment" ? commentsXml(ROWS) : scenarioAnswer(command, args));
+        inputs = [];
+        inputAnswer = undefined;
+        confirms = [];
+        confirmAnswer = true;
+        notices = [];
+        warnings = [];
+        reviews?.dispose();
+        cm = new FakeCm();
+        reviews = create({ cm: cm.run, posting: {
+          confirm: message => {
+            confirms.push(message);
+            return Promise.resolve(confirmAnswer);
+          },
+          input: options => {
+            inputs.push({ title: options.title, value: options.value });
+            return Promise.resolve(inputAnswer);
+          },
+          notify: message => notices.push(message),
+          progress: (_title, task) => task(),
+          setting: () => true,
+          trusted: () => true,
+          warn: message => warnings.push(message),
+        }});
+        await commands.executeCommand("plastic-scm.reviews.open", "wk", BRANCH_REVIEW_ID);
+        const session = reviews.session;
+        await until(() => session.active?.discussions.state === "ready" && reviews!.posting.enabled &&
+          session.service("wk")?.knownUser !== undefined);
+      });
+
+      /** The Discussions row of a General thread, as the view hands it to a command. */
+      function row(id: number) {
+        const stage = reviews!.session.active!.discussions;
+        const thread = stage.state === "ready" ? stage.value.threads.find(candidate => candidate.id === id) : undefined;
+        expect(thread, `thread ${id}`).to.not.equal(undefined);
+        return { general: true, kind: "thread", reviewId: BRANCH_REVIEW_ID, thread, workspaceId: "wk" };
+      }
+
+      function commentLink(key: string, action: "reply" | "edit" | "delete", commentId: number): Uri {
+        return Uri.parse(reviewLinkUri({ authority: EXTENSION_ID, scheme: env.uriScheme }, {
+          key, reviewId: BRANCH_REVIEW_ID, target: { action, commentId, kind: "comment" }, workspaceId: "wk",
+        }));
+      }
+
+      const writes = () => cm.writes().map(call => [ ...call.args, call.stdin ?? "" ].join(" "));
+
+      it("replies, edits and deletes from Discussions rows, and adds a comment to the review", async () => {
+        inputAnswer = "Thanks.";
+        await commands.executeCommand("plastic-scm.reviews.replyToDiscussion", row(14001));
+        inputAnswer = "On it, see cs:3718.";
+        await commands.executeCommand("plastic-scm.reviews.editDiscussionComment", row(14001));
+        await commands.executeCommand("plastic-scm.reviews.deleteComment", row(14001));
+        inputAnswer = "Ready for another look.";
+        await commands.executeCommand("plastic-scm.reviews.addReviewComment");
+        expect(writes()).to.deep.equal([
+          `codereview comment reply ${OTHER} -commentsfile=- Thanks.`,
+          `codereview comment edit ${OWN} -commentsfile=- On it, see cs:3718.`,
+          `codereview comment delete ${OWN} `,
+          `codereview comment add ${BRANCH_REVIEW_ID} -commentsfile=- Ready for another look.`,
+        ]);
+        expect(inputs.map(input => input.value)).to.deep.equal([ undefined, "On it.", undefined ]);
+        expect(confirms).to.deep.equal(["Delete this comment? This can't be undone."]);
+        expect([ notices, warnings ]).to.deep.equal([[], []]);
+      });
+
+      it("deletes nothing when the modal is declined, and explains a refusal or an unknown result", async () => {
+        confirmAnswer = false;
+        await commands.executeCommand("plastic-scm.reviews.deleteComment", row(14001));
+        expect(cm.writes()).to.deep.equal([]);
+        confirmAnswer = true;
+        cm.answer = () => exited(1, "", "Error: The comment does not exist.");
+        await commands.executeCommand("plastic-scm.reviews.deleteComment", row(14001));
+        cm.answer = () => ({ code: undefined, killed: "timeout", started: true, stderr: "", stdout: "" });
+        inputAnswer = "Edited";
+        await commands.executeCommand("plastic-scm.reviews.editDiscussionComment", row(14001));
+        expect(notices).to.deep.equal(["The comment does not exist."]);
+        expect(warnings).to.have.length(1);
+        expect(warnings[0]).to.match(/^Result unknown: .*refresh the review/);
+      });
+
+      it("follows the Overview's comment links with this window's key only", async () => {
+        inputAnswer = "Fixes lap splits and resets.";
+        const shown = await informed(async () => {
+          await reviews!.actions.handleUri(commentLink("c29tZW9uZSBlbHNl", "edit", 14002));
+          await reviews!.actions.handleUri(commentLink(reviews!.session.linkKey, "edit", 14003));
+          await reviews!.actions.handleUri(commentLink(reviews!.session.linkKey, "reply", 14002));
+        });
+        expect(shown[0]).to.contain("did not come from the review's Overview");
+        expect(shown[1]).to.equal("This discussion can't be replied to from here.");
+        // The description keeps its marker: cm adds it back, so only the text goes.
+        expect(inputs).to.deep.equal([{ title: `Edit the description on review #${BRANCH_REVIEW_ID}`,
+          value: "Fixes lap splits." }]);
+        expect(writes()).to.deep.equal([
+          `codereview comment edit ${DESCRIBED} -commentsfile=- Fixes lap splits and resets.`,
+        ]);
       });
     });
   });

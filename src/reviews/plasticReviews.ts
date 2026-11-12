@@ -12,17 +12,24 @@ import {
   workspace,
 } from "vscode";
 import { DiscussionNode, DiscussionsProvider, discussionsViewId } from "./discussionsProvider";
-import { execFileCm, ITokenCm, ReviewTokens } from "./reviewTokens";
-import { FILE_LAYOUT_SETTING, IReviewSessionOptions, IReviewWorkspace, ReviewSession } from "./reviewSession";
+import {
+  FILE_LAYOUT_SETTING,
+  IReviewSessionOptions,
+  IReviewWorkspace,
+  ReviewSession,
+  UPDATE_INTERVAL_SETTING,
+} from "./reviewSession";
 import { fileKey, IReviewComparison } from "./models";
 import { IReviewFileAt, isOverviewTab, overviewTabReview, overviewViewId, ReviewEditors } from "./reviewEditors";
 import { IReviewPostingOptions, ReviewPosting } from "./reviewPosting";
 import { ReviewListNode, ReviewListProvider, reviewListViewId } from "./reviewListProvider";
 import { ReviewTreeNode, ReviewTreeProvider, reviewTreeViewId, scopeKey } from "./reviewTreeProvider";
+import { CmRunner } from "./cmRunner";
 import { IShellConfig } from "../config";
 import { ReviewActions } from "./reviewActions";
 import { ReviewDecorations } from "./reviewDecorations";
 import { reviewLinkUri } from "./reviewLinks";
+import { ReviewWriter } from "./reviewWriter";
 
 /** Every context key Plastic Reviews sets; package.json `when` clauses may use no other `plastic-scm.reviews.*` key. */
 export const CONTEXT_KEYS = {
@@ -30,18 +37,19 @@ export const CONTEXT_KEYS = {
   activeEditorIsReviewFile: "plastic-scm.reviews.activeEditorIsReviewFile",
   activeFileViewed: "plastic-scm.reviews.activeFileViewed",
   canAddMeAsReviewer: "plastic-scm.reviews.canAddMeAsReviewer",
-  hasAccessToken: "plastic-scm.reviews.hasAccessToken",
   hasActiveReview: "plastic-scm.reviews.hasActiveReview",
   hasUpdates: "plastic-scm.reviews.hasUpdates",
   isBranchReview: "plastic-scm.reviews.isBranchReview",
   multipleWorkspaces: "plastic-scm.reviews.multipleWorkspaces",
   postingEnabled: "plastic-scm.reviews.postingEnabled",
+  writesOn: "plastic-scm.reviews.writesOn",
 } as const;
 
 /** What Plastic Reviews needs from the extension. */
 export interface IPlasticReviewsHost {
   readonly channel: OutputChannel;
-  readonly secrets?: SecretStorage;
+  /** Only to delete the bearer token 0.4.0 stored; nothing is stored or read any more. */
+  readonly secrets?: Pick<SecretStorage, "delete">;
   /** The extension's id, as its context names it; the Overview's links address the URI handler with it. */
   readonly extensionId: string;
   readonly globalState: Memento;
@@ -50,10 +58,10 @@ export interface IPlasticReviewsHost {
   shellConfig(): IShellConfig;
   /** Test injection: fake services, a UI that answers by itself. */
   readonly session?: Partial<IReviewSessionOptions>;
-  /** Test injection: the experimental setting, trust and a writer on a fake transport. */
+  /** Test injection: the writes setting, trust and the confirmation before a send. */
   readonly posting?: IReviewPostingOptions;
-  /** Test injection: the cm that makes access tokens; by default the configured cm, through `execFile`. */
-  readonly tokenCm?: ITokenCm;
+  /** Test injection: what runs cm once for a review write; by default the configured cm, as a child process. */
+  readonly cm?: CmRunner;
 }
 
 /** Comparisons whose decorations stay registered, so tabs opened before a reload keep their letters. */
@@ -62,7 +70,7 @@ const MAX_DECORATED = 16;
 /**
  * The composition root of Plastic Reviews: the session, the three tree views
  * of the Plastic Reviews container, the review editors and their decorations,
- * experimental posting, the commands and the URI handler behind the Overview's
+ * review writes, the commands and the URI handler behind the Overview's
  * links. It keeps the views' badges, titles and descriptions and the
  * `plastic-scm.reviews.*` context keys in step with the session and the active
  * editor, and reveals a newly active review file in the Review view.
@@ -90,6 +98,7 @@ export class PlasticReviews implements Disposable {
   public constructor(host: IPlasticReviewsHost) {
     this.editors = new ReviewEditors({
       overview: (workspaceId, reviewId) => this.session.overview(workspaceId, reviewId),
+      repository: workspaceId => this.session.repository(workspaceId),
       resolveService: workspaceId => this.session.service(workspaceId),
     });
     const links = { authority: host.extensionId, scheme: env.uriScheme };
@@ -98,11 +107,11 @@ export class PlasticReviews implements Disposable {
       editors: this.editors,
       globalState: host.globalState,
       overviewLink: link => reviewLinkUri(links, link),
-      // Experimental posting is created below; it only answers once the session asks.
+      // Review writes are created below; it only answers once the session asks.
       reviewers: {
         access: workspaceId => this.posting.access(workspaceId),
         add: (workspaceId, reviewId, cancel) => this.posting.addReviewer(workspaceId, reviewId, cancel),
-        consent: workspaceId => this.posting.consent(workspaceId),
+        enabled: () => this.posting.enabled,
         setStatus: (workspaceId, reviewId, status) => this.posting.setMyStatus(workspaceId, reviewId, status),
         settingOn: () => this.posting.settingOn(),
       },
@@ -112,17 +121,24 @@ export class PlasticReviews implements Disposable {
       ...host.session,
     });
     this.decorations = new ReviewDecorations();
-    // Never the shared cm shell: it logs what cm prints, and `cm accesstoken reveal` prints the token.
-    const tokens = host.secrets && new ReviewTokens(host.secrets, host.globalState,
-      host.tokenCm ?? execFileCm(() => host.shellConfig().cmPath));
-    this.posting = new ReviewPosting(tokens, {
+    // Never the shared cm shell: it logs every command line, and a comment's text goes to cm on stdin.
+    const writer = new ReviewWriter({
+      cmPath: () => host.shellConfig().cmPath,
+      log: message => host.channel.appendLine(`Plastic Reviews: ${message}`),
+      run: host.cm,
+    });
+    this.posting = new ReviewPosting(writer, {
+      reloadDiscussions: (workspaceId, reviewId) => this.session.reloadDiscussions(workspaceId, reviewId),
       repository: workspaceId => this.session.repository(workspaceId),
-      user: workspaceId => this.session.service(workspaceId)?.whoami() ??
-        Promise.reject(new Error("The review workspace is no longer available.")),
-    }, this.editors, host.posting);
+      root: workspaceId => this.session.root(workspaceId),
+      user: workspaceId => this.session.service(workspaceId)?.knownUser,
+    }, this.editors, { secrets: host.secrets, ...host.posting });
     this.listProvider = new ReviewListProvider(this.session);
     this.treeProvider = new ReviewTreeProvider(this.session);
-    this.discussionsProvider = new DiscussionsProvider(this.session);
+    this.discussionsProvider = new DiscussionsProvider(this.session, {
+      enabled: () => this.posting.enabled,
+      user: workspaceId => this.posting.user(workspaceId),
+    });
     this.listView = window.createTreeView(reviewListViewId, { treeDataProvider: this.listProvider });
     // No Collapse All on the Review and Discussions views: their headers carry the review's own actions only.
     this.treeView = window.createTreeView(reviewTreeViewId, {
@@ -157,6 +173,9 @@ export class PlasticReviews implements Disposable {
       workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration(FILE_LAYOUT_SETTING)) {
           this.treeProvider.refresh();
+        }
+        if (event.affectsConfiguration(UPDATE_INTERVAL_SETTING)) {
+          this.session.applySettings();
         }
       }));
 
@@ -221,6 +240,7 @@ export class PlasticReviews implements Disposable {
     this.syncDecorations();
     this.checkProgress(false);
     this.updateEditorKeys();
+    this.askUser();
   }
 
   private onViewedChanged(): void {
@@ -230,7 +250,7 @@ export class PlasticReviews implements Disposable {
 
   /**
    * Whether the Review view offers Add Me as Reviewer. Only asked of the
-   * session while the experimental setting is on, since the first ask runs
+   * session while the writes setting is on, since the first ask runs
    * `cm whoami`; `onDidChangeCanAddMe` brings the answer, and hides the button
    * while an add is in flight.
    */
@@ -241,12 +261,31 @@ export class PlasticReviews implements Disposable {
   /** The keys follow, and so does the Overview, which offers Add me as reviewer only while the setting is on. */
   private onPostingChanged(): void {
     this.setKey(CONTEXT_KEYS.postingEnabled, this.posting.enabled);
-    this.setKey(CONTEXT_KEYS.hasAccessToken, this.posting.hasToken);
+    this.setKey(CONTEXT_KEYS.writesOn, this.posting.settingOn());
     this.updateReviewerKey();
     const active = this.session.active;
     if (active) {
       this.editors.refreshOverview(active.workspaceId, active.review.id);
     }
+    this.discussionsProvider.refresh();
+    this.askUser();
+  }
+
+  /**
+   * While posting works, asks cm who its user is (once per workspace), so
+   * that the user's own comments offer Edit and Delete; Discussions and the
+   * Overview are drawn again when it answers.
+   */
+  private askUser(): void {
+    const active = this.session.active;
+    const service = active && this.posting.enabled ? this.session.service(active.workspaceId) : undefined;
+    if (!active || !service || service.knownUser !== undefined) {
+      return;
+    }
+    service.whoami().then(() => {
+      this.discussionsProvider.refresh();
+      this.editors.refreshOverview(active.workspaceId, active.review.id);
+    }, () => undefined);
   }
 
   /**
@@ -274,8 +313,8 @@ export class PlasticReviews implements Disposable {
 
   /**
    * Keys for the editor title actions; returns the active tab's file when it
-   * belongs to the active review. Whether the Overview is on screen also
-   * decides whether the active review is polled for updates.
+   * belongs to the active review. The session is told whether the Overview
+   * is on screen, as it is told about the views.
    */
   private updateEditorKeys(): IReviewFileAt | undefined {
     const active = this.session.active;

@@ -176,10 +176,10 @@ describe("Review file tree", () => {
       oldPath: "/Other/New.cs", path: "/Code/New.cs", status: FileChangeStatus.Moved | FileChangeStatus.Changed,
     });
     expect(fileDescription(renamed, "tree")).to.equal("← Old.cs");
-    expect(fileDescription(moved, "tree", 2)).to.equal("2 discussions · moved");
-    expect(fileDescription(moved, "tree", 1, true)).to.equal("1 discussion · same revision as head · moved");
-    expect(fileDescription(file({ revisionType: RevisionType.BinaryFile }), "tree", 1))
-      .to.equal("1 discussion · binary");
+    expect(fileDescription(moved, "tree", "💬 2")).to.equal("💬 2 · moved");
+    expect(fileDescription(moved, "tree", "💬 1", true)).to.equal("💬 1 · same revision as head · moved");
+    expect(fileDescription(file({ revisionType: RevisionType.BinaryFile }), "tree", "💬 1"))
+      .to.equal("💬 1 · binary");
     expect(fileDescription(file({ baseRevisionId: -1, parentRevisionId: -1 }), "list"))
       .to.equal("Code · no content change");
     expect(noDiffReason(file({ baseRevisionId: -1, parentRevisionId: -1 }))).to.equal("No content change recorded");

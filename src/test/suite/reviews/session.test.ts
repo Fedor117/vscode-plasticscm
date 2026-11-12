@@ -1,9 +1,11 @@
 import {
+  AUTHOR,
   BRANCH_ID,
   BRANCH_NAME,
   BRANCH_REVIEW_ID,
   branchRowXml,
   CHANGESET_REVIEW_ID,
+  commentsXml,
   EMPTY_QUERY,
   HEAD,
   ME,
@@ -11,25 +13,25 @@ import {
   REPOSITORY,
   ReviewShell,
   reviewsXml,
+  SCENARIO_COMMENTS,
   scenarioAnswer,
   WORKSPACE_ROOT,
 } from "./fixtures";
+import { ConfigurationTarget, OutputChannel, TabInputText, TabInputTextDiff, window, workspace } from "vscode";
 import {
   errorText,
   IReviewSessionUi,
   IReviewWorkspace,
   LAST_REVIEW_KEY,
+  LOAD_UPDATES,
+  NOTIFY_UPDATES_SETTING,
   ReviewSession,
+  SHOW_DISCUSSIONS,
+  updateCheckInterval,
 } from "../../../reviews/reviewSession";
-import { IReviewChangesets, scopeRows, viewableRows } from "../../../reviews/models";
-import {
-  IReviewEditorContext,
-  overviewViewId,
-  ReviewEditors,
-  reviewOverviewUri,
-} from "../../../reviews/reviewEditors";
+import { IReviewChangesets, IReviewComment, scopeRows, viewableRows } from "../../../reviews/models";
+import { IReviewEditorContext, ReviewEditors, reviewOverviewUri } from "../../../reviews/reviewEditors";
 import { NOW, review as reviewRow } from "./viewFixtures";
-import { OutputChannel, TabInputText, TabInputTextDiff, window } from "vscode";
 import { ReviewListProvider, reviewListViewId } from "../../../reviews/reviewListProvider";
 import { discussionsViewId } from "../../../reviews/discussionsProvider";
 import { expect } from "chai";
@@ -73,6 +75,11 @@ interface IHarness {
     statuses: string[];
     progress: string[];
     answer: boolean;
+    /** The update notifications shown, and the action the user picks in the next one. */
+    notices: Array<{ message: string; actions: readonly string[] }>;
+    pick?: string;
+    /** Load Updates and Show Discussions, as the notification's actions ran them. */
+    ran: string[];
   };
   workspaceState: IMemento;
   globalState: IMemento;
@@ -88,11 +95,18 @@ function harness(options: {
   workspaceState?: IMemento;
   globalState?: IMemento;
   now?: () => number;
+  pollInterval?: number | (() => number);
+  notifyUpdates?: () => boolean;
+  notify?: IReviewSessionUi["notify"];
+  /** Read the update check settings from VS Code, as the extension does, instead of injecting them. */
+  settings?: boolean;
 } = {}): IHarness {
   channel = channel ?? window.createOutputChannel("Review session tests");
   const shell = new ReviewShell();
   shell.answer = options.answer ?? scenarioAnswer;
-  const log: IHarness["ui"] = { answer: false, confirms: [], errors: [], progress: [], statuses: [] };
+  const log: IHarness["ui"] = {
+    answer: false, confirms: [], errors: [], notices: [], progress: [], ran: [], statuses: [],
+  };
   const ui: Partial<IReviewSessionUi> = {
     confirm: (message, detail) => {
       log.confirms.push({ detail, message });
@@ -101,9 +115,19 @@ function harness(options: {
     error: message => {
       log.errors.push(message);
     },
+    loadUpdates: () => {
+      log.ran.push(LOAD_UPDATES);
+    },
+    notify: options.notify ?? ((message, actions) => {
+      log.notices.push({ actions, message });
+      return Promise.resolve(log.pick);
+    }),
     progress: (viewId, task) => {
       log.progress.push(viewId);
       return task();
+    },
+    showDiscussions: () => {
+      log.ran.push(SHOW_DISCUSSIONS);
     },
     status: message => {
       log.statuses.push(message);
@@ -118,9 +142,10 @@ function harness(options: {
     editors: options.editors,
     fileLayout: () => "tree",
     globalState,
+    notifyUpdates: options.settings ? undefined : options.notifyUpdates ?? (() => true),
     now: options.now ?? (() => NOW),
     overviewLink: options.overviewLink,
-    pollInterval: 60 * 60 * 1000,
+    pollInterval: options.settings ? undefined : options.pollInterval ?? 60 * 60 * 1000,
     shellConfig: () => CONFIG,
     ui,
     workspaceState,
@@ -481,7 +506,9 @@ describe("Review session", () => {
     comments = comments.replace("Appreciate the quick look!", "Appreciate the very quick look!");
     await session.poll();
     expect(test.shell.calls.length).to.be.greaterThan(calls);
-    expect(session.active!.updates).to.deep.equal({ newComments: 1, removedComments: 0 });
+    expect(session.active!.updates).to.deep.equal({
+      comments: [{ id: 12926, owner: AUTHOR }], newComments: 1, removedComments: 0,
+    });
     // The pinned stages did not change; Load Updates reloads them and clears the row.
     await session.reload();
     expect(session.active!.updates).to.equal(undefined);
@@ -988,22 +1015,390 @@ describe("Review session", () => {
     }));
     await test.session.activate("wk", BRANCH_REVIEW_ID);
     const html = test.session.overview("wk", BRANCH_REVIEW_ID);
-    expect(written).to.deep.equal([
-      { reviewId: BRANCH_REVIEW_ID, target: { kind: "thread", threadId: 12907 }, workspaceId: "wk" },
-      { reviewId: BRANCH_REVIEW_ID, target: { kind: "thread", threadId: 12915 }, workspaceId: "wk" },
-    ]);
+    // Open items, then the Conversation's threads with a line, oldest first.
+    expect(written.map(link => link.target)).to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
+      .map(threadId => ({ kind: "thread", threadId })));
+    expect(written.every(link => link.reviewId === BRANCH_REVIEW_ID && link.workspaceId === "wk")).to.equal(true);
     expect(html).to.contain("<a href=\"vscode://plastic.test/link2\">SaveSystem.cs:154</a>");
   });
 
-  it("polls the active review while only its Overview is on screen", async () => {
-    const test = track(harness());
-    await test.session.activate("wk", BRANCH_REVIEW_ID);
-    test.shell.calls.length = 0;
-    await test.session.poll();
-    expect(test.shell.calls).to.deep.equal([]);
-    test.session.setViewVisible(overviewViewId, true);
-    await test.session.poll();
-    expect(test.shell.queries("review")).to.have.length(1);
-    test.session.setViewVisible(overviewViewId, false);
+  describe("update checks", () => {
+    const ANA = "ana.artist@example.com";
+    const BO = "bo.builder@example.com";
+
+    /** The scenario, with comments, a branch head and a status the test changes as another user would. */
+    function server(): {
+      rows: IReviewComment[];
+      head: number;
+      status: string;
+      fail?: string;
+      add(id: number, owner: string, text?: string): void;
+      answer(command: string, args: string[]): string;
+      } {
+      const state = {
+        add: (id: number, owner: string, text = "One more thing.") => {
+          state.rows = state.rows.concat([{ ...SCENARIO_COMMENTS[8], id, owner, text }]);
+        },
+        answer: (command: string, args: string[]) => {
+          if (state.fail && command === "find" && args[0] === "review") {
+            throw new Error(state.fail);
+          }
+          if (command === "find" && args[0] === "changereviewcomment" && args[1].includes("reviewid")) {
+            return commentsXml(state.rows);
+          }
+          if (command === "find" && args[0] === "branch" && args[1] === `where id = ${BRANCH_ID}`) {
+            return branchRowXml(BRANCH_ID, BRANCH_NAME, state.head);
+          }
+          if (command === "find" && args[0] === "review" && args[1].includes(`id = ${BRANCH_REVIEW_ID}`)) {
+            const title = "Lap Timer Accuracy";
+            return reviewsXml([{ assignee: ME, id: BRANCH_REVIEW_ID, status: state.status, title }]);
+          }
+          return scenarioAnswer(command, args);
+        },
+        fail: undefined as string | undefined,
+        head: HEAD,
+        rows: SCENARIO_COMMENTS.slice(),
+        status: "Under review",
+      };
+      return state;
+    }
+
+    async function opened(options: Parameters<typeof harness>[0] = {}): Promise<IHarness & {
+      remote: ReturnType<typeof server>;
+    }> {
+      const remote = server();
+      const test = track(harness({ answer: (command, args) => remote.answer(command, args), ...options }));
+      await test.session.activate("wk", BRANCH_REVIEW_ID);
+      return { ...test, remote };
+    }
+
+    it("reads the interval setting in seconds, with a minimum, and 0 as off", () => {
+      expect(updateCheckInterval(60)).to.equal(60000);
+      expect(updateCheckInterval(15)).to.equal(15000);
+      expect(updateCheckInterval(1)).to.equal(15000);
+      expect(updateCheckInterval(0)).to.equal(0);
+      expect(updateCheckInterval(-5)).to.equal(0);
+      expect(updateCheckInterval(undefined)).to.equal(60000);
+      expect(updateCheckInterval("30")).to.equal(60000);
+      expect(updateCheckInterval(NaN)).to.equal(60000);
+      expect(updateCheckInterval(1e9)).to.equal(24 * 60 * 60 * 1000);
+    });
+
+    it("polls the open review with every view hidden, and stops when it is closed", async () => {
+      const test = track(harness({ pollInterval: 5 }));
+      const session = test.session;
+      expect(session.checkingEvery).to.equal(undefined);
+      await session.activate("wk", BRANCH_REVIEW_ID);
+      expect(session.checkingEvery).to.equal(5);
+      // A loaded queue group, which a poll would query again if the Reviews view were on screen.
+      session.expandGroup("needsMyReview");
+      await until(() => session.group("needsMyReview").loadedOnce);
+      test.shell.calls.length = 0;
+      await until(() => test.shell.queries("changereviewcomment").length > 1);
+      // The queue is not polled: the Reviews view is not on screen. Only the open review is asked for.
+      expect(test.shell.queries("review")).to.not.deep.equal([]);
+      expect(test.shell.queries("review").every(where => where === `where id = ${BRANCH_REVIEW_ID}`))
+        .to.equal(true);
+
+      session.close();
+      expect(session.checkingEvery).to.equal(undefined);
+      await session.poll();
+      test.shell.calls.length = 0;
+      await new Promise(resolve => setTimeout(resolve, 40));
+      expect(test.shell.calls).to.deep.equal([]);
+
+      // A view on screen polls the queue again; a review that comes back, the review.
+      session.setViewVisible(reviewListViewId, true);
+      expect(session.checkingEvery).to.equal(5);
+      session.setViewVisible(reviewListViewId, false);
+      expect(session.checkingEvery).to.equal(undefined);
+      await session.activate("wk", BRANCH_REVIEW_ID);
+      expect(session.checkingEvery).to.equal(5);
+      session.dispose();
+      expect(session.checkingEvery).to.equal(undefined);
+      session.setViewVisible(reviewListViewId, true);
+      expect(session.checkingEvery).to.equal(undefined);
+    });
+
+    it("starts checking when a review is restored, and keeps the queue's visible-only rule", async () => {
+      const first = track(harness());
+      await first.session.activate("wk", BRANCH_REVIEW_ID);
+      const restored = track(harness({ workspaceState: first.workspaceState }));
+      expect(restored.session.checkingEvery).to.equal(undefined);
+      await restored.session.restore();
+      expect(restored.session.checkingEvery).to.equal(60 * 60 * 1000);
+
+      restored.session.expandGroup("needsMyReview");
+      await until(() => restored.session.group("needsMyReview").loadedOnce);
+      restored.shell.calls.length = 0;
+      await restored.session.poll();
+      expect(restored.shell.calls.map(call => call.args[0]))
+        .to.deep.equal([ "review", "branch", "changereviewcomment" ]);
+      restored.session.setViewVisible(reviewListViewId, true);
+      restored.shell.calls.length = 0;
+      await restored.session.poll();
+      expect(restored.shell.queries("review").length).to.be.greaterThan(1);
+    });
+
+    it("turns the checks off at interval 0 and follows a changed interval without a reload", async () => {
+      let interval = 0;
+      const test = track(harness({ pollInterval: () => interval }));
+      const session = test.session;
+      await session.activate("wk", BRANCH_REVIEW_ID);
+      session.setViewVisible(reviewTreeViewId, true);
+      expect(session.checkingEvery).to.equal(undefined);
+      test.shell.calls.length = 0;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(test.shell.calls).to.deep.equal([]);
+
+      interval = 5;
+      session.applySettings();
+      expect(session.checkingEvery).to.equal(5);
+      await until(() => test.shell.queries("changereviewcomment").length > 0);
+      interval = 7;
+      session.applySettings();
+      expect(session.checkingEvery).to.equal(7);
+      interval = 0;
+      session.applySettings();
+      expect(session.checkingEvery).to.equal(undefined);
+    });
+
+    it("never runs two polls at once, and only logs a poll that fails", async () => {
+      const test = await opened();
+      test.shell.calls.length = 0;
+      await Promise.all([ test.session.poll(), test.session.poll(), test.session.poll() ]);
+      expect(test.shell.queries("review")).to.have.length(1);
+
+      test.remote.fail = "The server is not reachable.";
+      await test.session.poll();
+      expect(test.ui.errors).to.deep.equal([]);
+      expect(test.ui.notices).to.deep.equal([]);
+      test.remote.fail = undefined;
+      test.remote.add(13001, ANA);
+      await test.session.poll();
+      expect(test.ui.notices).to.have.length(1);
+    });
+
+    it("notifies once per distinct update state, and again about a further change", async () => {
+      const test = await opened();
+      const session = test.session;
+      await session.poll();
+      expect(test.ui.notices).to.deep.equal([]);
+
+      test.remote.add(13001, ANA);
+      await session.poll();
+      expect(test.ui.notices).to.deep.equal([{
+        actions: [ LOAD_UPDATES, SHOW_DISCUSSIONS ],
+        message: `Review #${BRANCH_REVIEW_ID}: 1 new comment from ${ANA}`,
+      }]);
+      // The same pending updates say nothing again.
+      await session.poll();
+      await session.poll();
+      expect(test.ui.notices).to.have.length(1);
+
+      test.remote.add(13002, BO);
+      test.remote.head = 3733;
+      await session.poll();
+      expect(test.ui.notices[1]).to.deep.equal({
+        actions: [ LOAD_UPDATES, SHOW_DISCUSSIONS ],
+        message: `Review #${BRANCH_REVIEW_ID}: 2 new comments from ${ANA} and ${BO}; new changesets on the branch`,
+      });
+      test.remote.status = "Reviewed";
+      await session.poll();
+      expect(test.ui.notices[2].message).to.equal(`Review #${BRANCH_REVIEW_ID}: 2 new comments from ${ANA} and ` +
+        `${BO}; new changesets on the branch; status is now Reviewed`);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(3);
+    });
+
+    it("offers Show Discussions only for comment changes", async () => {
+      const test = await opened();
+      test.remote.status = "Rework required";
+      await test.session.poll();
+      expect(test.ui.notices).to.deep.equal([{
+        actions: [LOAD_UPDATES],
+        message: `Review #${BRANCH_REVIEW_ID}: status is now Rework required`,
+      }]);
+      test.remote.rows = test.remote.rows.filter(row => row.id !== 12926);
+      await test.session.poll();
+      expect(test.ui.notices[1]).to.deep.equal({
+        actions: [ LOAD_UPDATES, SHOW_DISCUSSIONS ],
+        message: `Review #${BRANCH_REVIEW_ID}: 1 comment removed; status is now Rework required`,
+      });
+    });
+
+    it("says nothing about the user's own comments, which still count as updates", async () => {
+      const test = await opened();
+      const session = test.session;
+      test.remote.add(13001, ME.toUpperCase());
+      await session.poll();
+      expect(test.ui.notices).to.deep.equal([]);
+      expect(session.active!.updates).to.deep.equal({
+        comments: [{ id: 13001, owner: ME.toUpperCase() }], newComments: 1, removedComments: 0,
+      });
+      // cm was asked who the user is, once.
+      await session.poll();
+      expect(test.shell.calls.filter(call => call.command === "whoami")).to.have.length(1);
+
+      test.remote.add(13002, ANA);
+      await session.poll();
+      expect(test.ui.notices.map(notice => notice.message))
+        .to.deep.equal([`Review #${BRANCH_REVIEW_ID}: 1 new comment from ${ANA}`]);
+      expect(session.active!.updates!.newComments).to.equal(2);
+    });
+
+    it("says nothing about updates a reload started while cm was asked who the user is", async () => {
+      const held = () => {
+        let release!: () => void;
+        const promise = new Promise<void>(resolve => {
+          release = resolve;
+        });
+        return { promise, release };
+      };
+      const whoami = held();
+      const reread = held();
+      let whoamiAsked = false;
+      let holdReview = false;
+      const remote = server();
+      const test = track(harness({
+        answer: (command, args) => {
+          if (command === "whoami") {
+            whoamiAsked = true;
+            return whoami.promise.then(() => remote.answer(command, args));
+          }
+          if (holdReview && command === "find" && args[0] === "review") {
+            // Refresh Review reads the review again behind cm's answer to whoami, as the cm shell's queue would.
+            return reread.promise.then(() => remote.answer(command, args));
+          }
+          return remote.answer(command, args);
+        },
+      }));
+      await test.session.activate("wk", BRANCH_REVIEW_ID);
+      remote.add(13001, ANA);
+      const polling = test.session.poll();
+      await until(() => whoamiAsked);
+      // Refresh Review starts before cm answers, and will load the new comment.
+      holdReview = true;
+      const reloading = test.session.reload();
+      whoami.release();
+      await polling;
+      expect(test.ui.notices).to.deep.equal([]);
+      holdReview = false;
+      reread.release();
+      await reloading;
+      await test.session.poll();
+      expect(test.ui.notices).to.deep.equal([]);
+      expect(test.session.active!.updates).to.equal(undefined);
+    });
+
+    it("shows no notification with notifyUpdates off, and still reports the updates", async () => {
+      let notify = false;
+      const test = await opened({ notifyUpdates: () => notify });
+      test.remote.add(13001, ANA);
+      await test.session.poll();
+      expect(test.ui.notices).to.deep.equal([]);
+      expect(test.session.active!.updates!.newComments).to.equal(1);
+      // Turned on later, it starts with the next change, not with what was pending all along.
+      notify = true;
+      await test.session.poll();
+      expect(test.ui.notices).to.deep.equal([]);
+      test.remote.add(13002, BO);
+      await test.session.poll();
+      expect(test.ui.notices).to.have.length(1);
+    });
+
+    it("reads notifyUpdates from VS Code on every check", async () => {
+      const config = workspace.getConfiguration();
+      const test = await opened({ settings: true });
+      try {
+        await config.update(NOTIFY_UPDATES_SETTING, false, ConfigurationTarget.Global);
+        test.remote.add(13001, ANA);
+        await test.session.poll();
+        expect(test.ui.notices).to.deep.equal([]);
+        expect(test.session.active!.updates!.newComments).to.equal(1);
+      } finally {
+        await config.update(NOTIFY_UPDATES_SETTING, undefined, ConfigurationTarget.Global);
+      }
+      test.remote.add(13002, BO);
+      await test.session.poll();
+      expect(test.ui.notices.map(notice => notice.message))
+        .to.deep.equal([`Review #${BRANCH_REVIEW_ID}: 2 new comments from ${ANA} and ${BO}`]);
+    });
+
+    it("runs the picked action, on the review the notification was about only", async () => {
+      const test = await opened();
+      const session = test.session;
+      test.ui.pick = LOAD_UPDATES;
+      test.remote.add(13001, ANA);
+      await session.poll();
+      await until(() => test.ui.ran.length === 1);
+      test.ui.pick = SHOW_DISCUSSIONS;
+      test.remote.add(13002, BO);
+      await session.poll();
+      await until(() => test.ui.ran.length === 2);
+      expect(test.ui.ran).to.deep.equal([ LOAD_UPDATES, SHOW_DISCUSSIONS ]);
+
+      // Answered after the review was closed, the notification does nothing.
+      let answer!: (choice: string) => void;
+      const closing = track(harness({
+        answer: (command, args) => test.remote.answer(command, args),
+        notify: () => new Promise<string>(resolve => {
+          answer = resolve;
+        }),
+      }));
+      await closing.session.activate("wk", BRANCH_REVIEW_ID);
+      test.remote.add(13003, ANA);
+      await closing.session.poll();
+      closing.session.close();
+      answer(LOAD_UPDATES);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(closing.ui.ran).to.deep.equal([]);
+    });
+
+    it("starts afresh after Load Updates, Refresh Review, a discussions reload and another review", async () => {
+      const test = await opened();
+      const session = test.session;
+      test.remote.add(13001, ANA);
+      test.remote.head = 3733;
+      await session.poll();
+      expect(test.ui.notices).to.have.length(1);
+
+      // Load Updates and Refresh Review reload the review: what was reported is on screen, and says nothing again.
+      await session.reload();
+      expect(session.active!.updates).to.equal(undefined);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(1);
+
+      // A comment the extension posted reloads the discussions: it is not an update, and not news.
+      test.remote.add(13002, ME);
+      test.remote.add(13003, BO);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(2);
+      test.remote.status = "Reviewed";
+      await session.poll();
+      expect(test.ui.notices).to.have.length(3);
+      test.remote.add(13004, ME, "Posted from here.");
+      await session.reloadDiscussions("wk", BRANCH_REVIEW_ID);
+      expect(session.active!.updates).to.deep.equal({
+        comments: [], newComments: 0, removedComments: 0, status: "Reviewed",
+      });
+      await session.poll();
+      expect(session.active!.updates).to.deep.equal({
+        comments: [], newComments: 0, removedComments: 0, status: "Reviewed",
+      });
+      expect(test.ui.notices).to.have.length(3);
+
+      // Another review, then this one again: nothing pending is announced twice, a new change is.
+      await session.activate("wk", CHANGESET_REVIEW_ID);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(3);
+      await session.activate("wk", BRANCH_REVIEW_ID);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(3);
+      test.remote.add(13005, ANA);
+      await session.poll();
+      expect(test.ui.notices).to.have.length(4);
+      expect(test.ui.notices[3].message).to.equal(`Review #${BRANCH_REVIEW_ID}: 1 new comment from ${ANA}`);
+    });
   });
 });

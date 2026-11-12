@@ -110,15 +110,15 @@ describe("Discussions view", () => {
 
   it("badges pending change requests only and describes pending, or applied, and questions", () => {
     expect(provider.badge()).to.deep.equal({ tooltip: "1 pending change request", value: 1 });
-    expect(provider.description()).to.equal("1 pending · 1 question");
+    expect(provider.description()).to.equal("🟠 1 pending · ❓ 1 question");
     const none: IReviewThread[] = groupReviewThreads([comment({ type: "question" })]);
     expect(discussionsBadge(none)).to.equal(undefined);
-    expect(discussionsDescription(none)).to.equal("1 question");
+    expect(discussionsDescription(none)).to.equal("❓ 1 question");
     const applied = groupReviewThreads([
       comment({ appliedInChangesetId: 3718, id: 1, type: "change" }),
       comment({ id: 2, type: "question" }),
     ]);
-    expect(discussionsDescription(applied)).to.equal("1 applied · 1 question");
+    expect(discussionsDescription(applied)).to.equal("✅ 1 applied · ❓ 1 question");
     expect(discussionsDescription([])).to.equal(undefined);
     session.active = readyReview(scenario, { discussions: { state: "loading" }});
     expect(provider.badge()).to.equal(undefined);
@@ -184,5 +184,53 @@ describe("Discussions view", () => {
     const grouped = groupDiscussions(groupReviewThreads([ description, reply ]), "p");
     expect(grouped.map(group => [ group.label, group.threads.map(item => item.id) ]))
       .to.deep.equal([[ "General", [3]]]);
+  });
+
+  it("flags General rows with the writes posting can make on them, only while it works", () => {
+    const me = "sam.okafor@example.com";
+    const guid = (n: number) => `0a1b2c3d-1111-4222-8333-${String(n).padStart(12, "0")}`;
+    const general = (overrides: Parameters<typeof comment>[0]) =>
+      comment({ location: -1, revisionId: -1, type: "conversation", ...overrides });
+    const rows = groupReviewThreads([
+      // Someone else's conversation with the user's reply: reply to it, and edit or delete the reply.
+      general({ guid: guid(1), id: 1, owner: "jordan.lee@example.com" }),
+      general({ guid: guid(2), id: 2, owner: me.toUpperCase(), parentId: 1, type: "comment" }),
+      // Someone else's, without replies: reply only.
+      general({ guid: guid(3), id: 3, owner: "jordan.lee@example.com" }),
+      // The user's own verdict: a timeline row takes neither a reply nor an edit from here.
+      general({ guid: guid(4), id: 4, owner: me, text: "[status-reviewed]Fine by me.", type: "timeline" }),
+      // A root without a GUID cannot be replied to.
+      general({ guid: "", id: 5, owner: "jordan.lee@example.com" }),
+      // A file thread is written to in its diff.
+      comment({ guid: guid(6), id: 6, owner: me, revisionId: 11, type: "comment" }),
+    ]);
+    rows.find(thread => thread.id === 6)!.path = "/Code/Test.cs";
+    session.active = { ...session.active!, discussions: { state: "ready", value: {
+      reviewers: [], threads: rows, timeline: [],
+    }}};
+    let enabled = false;
+    const writes = new DiscussionsProvider(session, { enabled: () => enabled, user: () => me });
+    const contexts = () => (writes.getChildren() as IDiscussionGroupNode[])
+      .flatMap(group => writes.getChildren(group) as IDiscussionThreadNode[])
+      .map(node => [ node.thread.id, writes.getTreeItem(node).contextValue ]);
+    expect(contexts()).to.deep.equal([
+      [ 6, "thread;comment;none" ],
+      [ 1, "thread;conversation;none" ],
+      [ 3, "thread;conversation;none" ],
+      [ 4, "thread;status;none" ],
+      [ 5, "thread;conversation;none" ],
+    ]);
+    enabled = true;
+    expect(contexts()).to.deep.equal([
+      [ 6, "thread;comment;none" ],
+      [ 1, "thread;conversation;none;reply;edit;delete" ],
+      [ 3, "thread;conversation;none;reply" ],
+      [ 4, "thread;status;none" ],
+      [ 5, "thread;conversation;none" ],
+    ]);
+    // The menus match the flags anywhere after the thread's kind and state.
+    expect(/^thread;.*;reply(;|$)/.test("thread;conversation;none;reply;edit;delete")).to.equal(true);
+    expect(/^thread;.*;delete(;|$)/.test("thread;conversation;none;reply")).to.equal(false);
+    writes.dispose();
   });
 });

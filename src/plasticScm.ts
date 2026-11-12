@@ -29,8 +29,9 @@ import { ShowOutputCommand } from "./commands/showOutput";
 import { Workspace } from "./workspace";
 import { WorkspaceOperations } from "./workspaceOperations";
 
-/** What the extension context lends Plastic SCM: the posting credentials, the two mementos and the extension's id. */
+/** What the extension context lends Plastic SCM: its secret storage, the two mementos and the extension's id. */
 export interface IExtensionStorage {
+  /** Nothing is kept here any more; Plastic Reviews only deletes the token 0.4.0 stored. */
   readonly secrets: SecretStorage;
   /** Viewed review files, shared by every window. */
   readonly globalState: Memento;

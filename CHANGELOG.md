@@ -6,47 +6,114 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-12
+
 ### Added
 
-- **Add Me as Reviewer** (experimental, behind `plastic-scm.reviews.experimentalPosting`, cloud
-  repositories only) adds the `cm whoami` user to a review's reviewers through the Unity Version
-  Control Server REST API. It is in the Review view's title bar, a review's context menu, the
-  Command Palette and the Overview. The title bar and the Overview offer it only when you are not
-  the review's author, its assignee or already requested; the context menu and the Command Palette
-  say why when you can't be added. When `cm` refuses to create a token, it says what an organization
-  admin can do and offers **Open in Unity Version Control**, from the first attempt on.
-- With the setting on, **Set Review Status…** sets your own status as a reviewer through the REST
-  API, adding you as a reviewer first when you could be added. The review's author and assignee,
-  anyone who chooses **Set Status Without Adding**, and anyone without token access still set the
-  review's status with `cm codereview`. A missing token never blocks that: when `cm` refuses to
-  create one during the action, the dialog offers the `cm` route. With the setting off, nothing
-  changes.
-- Experimental review writes use a personal access token that the extension creates with
-  `cm accesstoken create` after asking once per server and user, keeps in VS Code's secret storage,
-  and reveals again with `cm accesstoken reveal` when it expires. An organization admin has to allow
-  tokens first (`cm accesstoken admin allowlist add`). **Revoke Review Access Token** revokes it
-  with `cm accesstoken revoke`. Not yet verified against the live service: that the REST API
-  accepts a revealed token as a bearer token, the organization name it expects for Unity
-  organizations, how a repository name with `/` is encoded, and the line encoding of inline
-  comments.
+- **Add Me as Reviewer** (behind `plastic-scm.reviews.commentWrites`) adds the
+  user `cm` is signed in as to a review's reviewers with `cm codereview reviewer add`. It is in the
+  Review view's title bar, a review's context menu, the Command Palette and the Overview. The title
+  bar and the Overview offer it only when you are not the review's author, its assignee or already
+  requested; the context menu and the Command Palette say why when you can't be added.
+- With review writes on, **Set Review Status…** sets your own status as a reviewer with
+  `cm codereview review`, adding you as a reviewer first when you could be added. The review's
+  author and assignee, and everyone while review writes are not available, still set the review's
+  status with `cm codereview -e --status`. When the add fails, **Set Status Without Adding** sets
+  the review's status instead, and so does **Set the Review's Status** when `cm` refuses your own.
+  With writes off, nothing changes.
 - **Open in Unity Version Control** opens a review in the desktop app through a `plastic://`
   code-review link. It is on a review's context menu and the Review view's `…` menu, and does not
-  need the experimental setting.
+  need the writes setting.
+- A notification says when a check finds something new in the open review: new or changed comments
+  and who wrote them, removed comments, new changesets on the branch and a new status. **Load
+  Updates** loads them and **Show Discussions** brings the Discussions view to the front. Each
+  change is announced once, and comments by the user `cm` is signed in as, including those posted
+  from the extension, are not announced. `plastic-scm.reviews.notifyUpdates` turns the
+  notifications off.
+- `plastic-scm.reviews.updateCheckInterval` sets the seconds between two checks for changes
+  (default 60, at least 15; `0` turns the checks off). It applies without a window reload.
+- **Edit** and **Delete** on your own review comments (behind
+  `plastic-scm.reviews.commentWrites`), with `cm codereview comment edit` and
+  `cm codereview comment delete`. In a review diff they are on each comment written by the user
+  `cm` is signed in as; Edit switches the comment to an editor with **Save** and **Cancel**, and
+  Delete always asks first. Timeline rows offer neither.
+- Comments on the whole review: **Reply…**, **Edit…** and **Delete** on General
+  threads in the Discussions view, **Add Comment to Review…** in its title bar and the Command
+  Palette, and the same as links in the Overview, which also links **Edit description** under your
+  own description. They take their text from a one-line input box; longer text with line breaks is
+  best written in the desktop app. The discussions reload after every write, and a result `cm`
+  could not confirm says so.
 
 ### Changed
 
-- Experimental comment and reply posting goes to the Unity Version Control Server REST API on the
-  organization's regional server, with the same personal access token. The confirmation names
-  `<server> through the Unity Version Control REST API` as the destination.
+- Review writes are no longer experimental and are on by default. The setting is now
+  `plastic-scm.reviews.commentWrites` (default on) and the "(Experimental)" labels are gone.
+  `plastic-scm.reviews.experimentalPosting` is deprecated but still honoured where `commentWrites`
+  is not set, so a user who turned it off stays off.
+- Opening a discussion or a file shows that it is loading: a progress bar on the Discussions or
+  Review view and "Opening LoginManager.cs:638…" in the status bar while `cm` reads the diff and
+  places its discussions; past half a second a notification says so too.
+- A discussion's header in the diff starts with its state, as in the trees: 🟠 a pending change
+  request, ✅ an applied one or an answered question, ⚪ a discarded request, ❓ an open question.
+  An answered question is resolved and collapsed, as Plastic has it.
+- The Overview offers **Reply** on threads on files too, and **Edit** and **Delete** on your own
+  comments and replies there, as the desktop app's review overview does.
+- File and folder rows in the Review view mark their discussions with coloured symbols instead of
+  "N discussions": 💬 for every thread, 🟠 for pending change requests and ❓ for open questions;
+  a folder adds up its files. The Discussions view's header uses 🟠, ✅ and ❓ the same way.
+- The open review is checked for changes for as long as it is open, not only while a review view
+  or its Overview is visible. The review queue is still checked only while the Reviews view is.
+- After a comment or a reply is posted, or you are added as a reviewer, the reloaded discussions
+  stop counting as pending updates at once, without waiting for the next check.
+- Review writes (comments, replies, Add Me as Reviewer and your own review status) run
+  the installed `cm` with its own sign-in, on any server `cm` works with. They need Unity Version
+  Control client 11.0.16.10512 or newer and a trusted workspace; with an older `cm` the extension
+  says so and writes nothing. It asks `cm` again on the next action and when
+  `plastic-scm.cmConfiguration` changes, so an upgraded client is found without a reload. No token
+  is created, stored or asked for.
+- A comment's text goes to `cm` on its standard input, never through the logged `cm shell`; on
+  Windows it goes in a temporary UTF-8 file instead, deleted once `cm` has ended, so that non-ASCII
+  text is not garbled by the console code page. The output channel names the command and the
+  review only.
+- A new comment is a plain comment on its line's revision; written in the diff of one changeset of
+  a branch review, it is filed under that changeset. A reply answers its thread by the comment's
+  GUID. The gutter `+` is offered only where `cm` takes a comment: the right side of a review or
+  changeset diff, and the left side of a deleted file. Outdated and previous-revision diffs, files
+  from xlinked repositories and diff tabs restored after a reload offer none.
+- A `cm` error about the connection or the server's answer, or an error exit with no message,
+  leaves a comment's result unknown (**Allow Another Attempt**) rather than **Not sent**, since
+  the server may have taken it. Only a write `cm` refused offers **Set the Review's Status** after
+  a failed verdict. A cancelled add whose `cm` had already started says the result is unknown and
+  reloads the discussions.
+- After a comment or a reply is posted, the review's discussions reload, so it shows as the server
+  has it and can be replied to. The confirmation before every send names the workspace's server
+  through `cm` as the destination.
 - The end-to-end review tests run on every test run, against a synthetic Plastic
   server.
+- The review Overview reads like a GitHub pull request's Conversation tab. Under the header and
+  the summary tiles come compact reviewer cards and a one-line list of the open change requests
+  and questions, then one **Conversation**, oldest first: the description as its opening comment
+  (with **Edit description** when it is yours), the review's creation, the branch's changesets
+  (a person's changesets within 30 minutes of each other are one entry, merges marked, with the
+  change requests each one applied), every discussion in full with its replies (comments on the
+  whole review and threads on a file's line, the latter headed by their kind, state and a
+  `File.cs:18` link to the diff; applied and discarded change requests drawn as resolved), and
+  every review event: verdicts with their text, review requests, re-requests and removals,
+  renames and description edits. Each entry's kind is an icon on the line (comment, question,
+  change request, changeset, review request, verdict, rename…), coloured by its state, and every
+  author — of a comment, a reply or an event — has a small avatar beside their name.
+  The timeline closes on a rule, and while posting works an **Add a comment** box follows it, with
+  your avatar and a **Write a comment…** button that opens the input box at the top of the window.
+  A changeset review keeps its changeset comment above the Conversation and its files below it. The separate
+  Conversation, Other discussions, Changesets and History sections, and the verdict quotes on the
+  reviewer cards, are gone; their content is in the Conversation.
 
 ### Removed
 
-- **Configure Experimental Posting…**, and the organization name, repository name and token it
-  asked for. **Forget Experimental Posting Token** is replaced by **Revoke Review Access Token**.
-  The bearer token that 0.4.0 saved for a workspace and repository is deleted from VS Code's secret
-  storage the next time Plastic Reviews shows that workspace, whatever the setting.
+- **Configure Experimental Posting…** and **Forget Experimental Posting Token**, and the
+  organization name, repository name and token they dealt with. The bearer token that 0.4.0 saved
+  for a workspace and repository is deleted from VS Code's secret storage the next time Plastic
+  Reviews shows that workspace, whatever the setting.
 
 ## [0.4.0] - 2026-09-23
 

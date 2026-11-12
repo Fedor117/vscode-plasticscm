@@ -1,3 +1,4 @@
+import { ageInWords, hasLocation, shortDateTime } from "../../../reviews/reviewPresentation";
 import { AUTHOR, CHANGESET_REVIEW_ID, comment, file, LAP_TIMER_PATH, ME } from "./fixtures";
 import {
   EMAIL,
@@ -12,13 +13,23 @@ import {
   visible,
 } from "./overviewFixtures";
 import { FileChangeStatus, RevisionType } from "../../../models";
-import { fileKey, groupReviewThreads, IReviewComment, IReviewDiscussions } from "../../../reviews/models";
-import { IOverviewOptions, OverviewLinkTarget, renderOverview } from "../../../reviews/reviewOverview";
+import {
+  fileKey,
+  groupReviewThreads,
+  IReviewChangeset,
+  IReviewComment,
+  IReviewDiscussions,
+} from "../../../reviews/models";
+import {
+  groupChangesets,
+  IOverviewOptions,
+  OverviewLinkTarget,
+  renderOverview,
+} from "../../../reviews/reviewOverview";
 import { IScenario, loadScenario, NOW, readyReview, review } from "./viewFixtures";
 import { expect } from "chai";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { parseTimeline } from "../../../reviews/timeline";
-import { shortDateTime } from "../../../reviews/reviewPresentation";
 
 /** Server text that would end the HTML block, run a script and draw a link if it were not escaped. */
 const EVIL = "</div>\n\n<script>alert(1)</script><img src=x onerror=\"alert(1)\"> & 'q' # *x* [a](javascript:alert(1))";
@@ -33,6 +44,11 @@ function options(overrides: Partial<IOverviewOptions> = {}): IOverviewOptions {
 
 function at(date: string | Date): string {
   return shortDateTime(date, NOW);
+}
+
+/** A Conversation entry's date: `22 Sep 17:10, 50 minutes ago`. */
+function when(date: string | Date): string {
+  return `${at(date)}, ${ageInWords(date, NOW)}`;
 }
 
 function ago(minutes: number): string {
@@ -53,16 +69,30 @@ function discussionsOf(rows: IReviewComment[]): IReviewDiscussions {
   return { reviewers: [], threads: groupReviewThreads(rows, timeline), timeline };
 }
 
-/** The scenario with these comment rows as its discussions. */
+const NO_CHANGESETS: IActiveReview["changesets"] = { state: "ready", value: { hasMore: false, items: [] }};
+
+/** The scenario with these comment rows as its discussions, and no changesets unless `overrides` has some. */
 function withComments(scenario: IScenario, rows: IReviewComment[], overrides: Partial<IActiveReview> = {}):
     IActiveReview {
-  return readyReview(scenario, { discussions: { state: "ready", value: discussionsOf(rows) }, ...overrides });
+  return readyReview(scenario, {
+    changesets: NO_CHANGESETS, discussions: { state: "ready", value: discussionsOf(rows) }, ...overrides,
+  });
 }
 
-const HEADINGS = [
-  "Changeset comment", "Files", "Reviewers", "Open items", "Conversation", "Other discussions", "Changesets",
-  "History",
-];
+/** A changeset of the branch `minutes` before the tests' clock. */
+function branchChangeset(id: number, minutes: number, text: string, owner = AUTHOR,
+    extra: Partial<IReviewChangeset> = {}): IReviewChangeset {
+  return {
+    branch: "/main/feature_lap_timer", comment: text, date: new Date(NOW - minutes * 60000), guid: `guid-${id}`, id,
+    isMerge: false, owner, parentId: id - 1, repository: "Nimbus", server: "local", ...extra,
+  };
+}
+
+function changesetsOf(...items: IReviewChangeset[]): IActiveReview["changesets"] {
+  return { state: "ready", value: { hasMore: false, items: items.slice().reverse() }};
+}
+
+const HEADINGS = [ "Reviewers", "Open items", "Changeset comment", "Conversation", "Files" ];
 
 /** The lines from a section's heading (`Files 53`) up to the next heading. */
 function section(lines: string[], heading: string): string[] {
@@ -73,9 +103,14 @@ function section(lines: string[], heading: string): string[] {
   return lines.slice(start, end < 0 ? lines.length : end);
 }
 
-/** A History line without its date: `erin.author opened the review`. */
+/** A line without its date: `erin.author opened the review`. */
 function dateless(line: string): string {
-  return line.replace(/^\d{1,2} \w{3}(?: \d{4})? \d\d:\d\d /, "");
+  return line.replace(/ · \d{1,2} \w{3}(?: \d{4})? \d\d:\d\d, [^·]*$/, "");
+}
+
+/** The Conversation's lines after its heading, without their dates. */
+function told(html: string): string[] {
+  return section(textLines(html), "Conversation").slice(1).map(dateless);
 }
 
 describe("Review overview", () => {
@@ -86,11 +121,11 @@ describe("Review overview", () => {
     changesetScenario = await loadScenario(CHANGESET_REVIEW_ID);
   });
 
-  it("renders a branch review as one HTML block that reads as the artboard does", () => {
+  it("renders a branch review as one HTML block: where it stands, then one Conversation, oldest first", () => {
     const active = readyReview(scenario);
     const html = renderOverview(active, options({ link: testLink, whoami: ME }));
     expectWellFormed(html);
-    const changesetDate = at(scenario.changesets.items[0].date);
+    const changesetDate = when(scenario.changesets.items[0].date);
     expect(textLines(html)).to.deep.equal([
       "Branch review · #12831",
       "Lap Timer Accuracy",
@@ -111,43 +146,65 @@ describe("Review overview", () => {
       "Would one shared property on the 'RaceSessionManager' be simpler for callers?",
       "Question SaveSystem.cs:154 Assets/Code/Core alex.reviewer · 1 hour ago",
       "If a third save source turns up, an interface would pay off here.",
-      "1 applied and 1 discarded change requests, and 2 comments are in Discussions.",
-      "Conversation 1",
-      `erin.author · ${at("2026-09-22T17:05:00+01:00")}`,
+      "Conversation",
+      // The branch's changesets came before the review: one person within half an hour, one entry.
+      `erin.author checked in 3 changesets · ${changesetDate}`,
+      "cs:3477 Merge from /main",
+      "cs:3699 Merge from /main",
+      "cs:3715 Change 3715",
+      `erin.author opened the review · ${when(scenario.review.date)}`,
+      "erin.author renamed it from “Review of branch /main/feature_lap_timer - Epic: RAC-3861” to " +
+        `“Lap Timer Accuracy” · ${when("2026-09-21T16:04:42+01:00")}`,
+      // The request is written twice, once per marker format, in the same second: one entry.
+      `alex.reviewer joined as a reviewer · ${when("2026-09-22T16:11:21+01:00")}`,
+      "Change request GhostRunAnalyticsCollector.cs:287 Assets/Code/Events/GhostRuns",
+      `alex.reviewer · ${when("2026-09-22T16:16:24+01:00")}`,
+      "Would one shared property on the 'RaceSessionManager' be simpler for callers?",
+      "One check for callers.",
+      "Question SaveSystem.cs:154 Assets/Code/Core",
+      `alex.reviewer · ${when("2026-09-22T16:21:45+01:00")}`,
+      "If a third save source turns up, an interface would pay off here.",
+      "Change request · applied in cs:3718 LapTimer.cs:41 Assets/Code/Laps",
+      `alex.reviewer · ${when("2026-09-22T16:26:45+01:00")}`,
+      "Compare against the qualifying end date too.",
+      "Change request · discarded LapTimer.cs:13 Assets/Code/Laps",
+      `alex.reviewer · ${when("2026-09-22T16:30:00+01:00")}`,
+      "This allocates a new List<Sprite> each frame.",
+      `erin.author Discarded · ${when("2026-09-22T17:00:00+01:00")}`,
+      "Out of scope for this branch.",
+      `erin.author · ${when("2026-09-22T17:05:00+01:00")}`,
       "Appreciate the quick look!",
       // A verdict with a reply that is no longer the reviewer's latest.
-      "Other discussions 1",
-      `alex.reviewer Reviewed · ${at("2026-09-22T17:10:00+01:00")}`,
+      `alex.reviewer marked it Reviewed · ${when("2026-09-22T17:10:00+01:00")}`,
       "LGTM, only a few small questions, none blocking.",
-      `erin.author · ${at("2026-09-22T17:20:00+01:00")}`,
+      `erin.author · ${when("2026-09-22T17:20:00+01:00")}`,
       "Both points addressed. Cheers!",
-      "Changesets 3",
-      `cs:3715 Change 3715 erin.author · ${changesetDate}`,
-      `cs:3699 Merge from /main erin.author · ${changesetDate}`,
-      `cs:3477 Merge from /main erin.author · ${changesetDate}`,
-      "History",
-      `${at("2026-09-22T17:30:00+01:00")} alex.reviewer asked for rework`,
-      `${at("2026-09-22T17:10:00+01:00")} alex.reviewer marked it Reviewed: ` +
-        "LGTM, only a few small questions, none blocking.",
-      // The request is written twice, once per marker format, in the same second: one entry.
-      `${at("2026-09-22T16:11:21+01:00")} alex.reviewer joined as a reviewer`,
-      `${at("2026-09-21T16:04:42+01:00")} erin.author renamed it from ` +
-        "“Review of branch /main/feature_lap_timer - Epic: RAC-3861” to " +
-        "“Lap Timer Accuracy”",
-      `${at(scenario.review.date)} erin.author opened the review`,
+      `alex.reviewer asked for rework · ${when("2026-09-22T17:30:00+01:00")}`,
+      "Comment LapTimer.cs:56 Assets/Code/Laps",
+      `alex.reviewer · ${when("2026-09-22T17:40:00+01:00")}`,
+      "This constant was already here.",
+      "Comment revision 6411:2",
+      `alex.reviewer · ${when("2026-09-22T17:50:00+01:00")}`,
+      "Old editor script.",
     ]);
     expect(html).to.contain("<span class=\"pill blue\"><span class=\"dot\" aria-hidden=\"true\"></span>" +
       "Under review</span>");
     expect(html).to.contain("<span class=\"pill orange\">Rework required</span>");
-    // Names are plain text with the address in their title; only a file reference is a link.
+    // Names are plain text with the address in their title; only file references are links.
     expect(html).to.contain("<span class=\"who\" title=\"erin.author@example.com\">erin.author</span>");
     expect(html).to.contain(`<a href="${HANDLER}?thread=12907">GhostRunAnalyticsCollector.cs:287</a>`);
-    expect(expectLinksOpen(html, active)).to.equal(2);
+    // Open items, then every thread with a line in the Conversation.
+    const located = scenario.discussions.threads.filter(hasLocation).length;
+    expect(located).to.equal(6);
+    expect(expectLinksOpen(html, active)).to.equal(2 + located);
     expect(visible(html)).to.not.match(EMAIL);
     expectEveryGeneralThread(html, scenario.discussions);
+    // Resolved change requests look resolved; every file thread is marked as one.
+    expect(html.match(/<li class="tl-item tl-comment on-file resolved">/g)).to.have.length(2);
+    expect(html.match(/<li class="tl-item tl-comment on-file/g)).to.have.length(6);
   });
 
-  it("renders a changeset review with its comment and files before the discussions, and no changesets", () => {
+  it("renders a changeset review with its comment before the Conversation, its files after, and no changesets", () => {
     const active = readyReview(changesetScenario);
     const html = renderOverview(active, options({ link: testLink }));
     expectWellFormed(html);
@@ -159,9 +216,8 @@ describe("Review overview", () => {
       `Under review erin.author → unassigned · opened ${at(changesetScenario.review.date)}, 7 months ago`,
       "cs:3203 cs:3195 ↔ cs:3203",
     ]);
-    expect(headings(html)).to.deep.equal([
-      "Changeset comment", "Files", "Reviewers", "Open items", "Conversation", "Other discussions", "History",
-    ]);
+    expect(headings(html)).to.deep.equal([ "Reviewers", "Open items", "Changeset comment", "Conversation", "Files" ]);
+    expect(html).to.not.contain("checked in");
     expect(section(lines, "Changeset comment"))
       .to.deep.equal([ "Changeset comment", "TestGenerator: script, prompts and CI pipeline" ]);
     // The directory record is a folder, not a file to review.
@@ -173,7 +229,8 @@ describe("Review overview", () => {
       scope: "changes",
     };
     expect(links(html).map(link => link.href)).to.include(testLink(target));
-    expect(expectLinksOpen(html, active)).to.equal(3);
+    const located = changesetScenario.discussions.threads.filter(hasLocation).length;
+    expect(expectLinksOpen(html, active)).to.equal(3 + located);
     expect(visible(html)).to.not.match(EMAIL);
   });
 
@@ -196,9 +253,8 @@ describe("Review overview", () => {
     const branch = renderOverview(readyReview(scenario, {
       changesets: { state: "ready", value: { hasMore: false, items: [ head, applied ] }},
     }), options());
-    const rows = section(textLines(branch), "Changesets");
-    expect(rows[1]).to.match(/^cs:3715 Clamp the stack size erin\.author · /);
-    expect(rows[2]).to.match(/^cs:3707 \(applied a change request\) erin\.author · /);
+    expect(textLines(branch).filter(line => line.startsWith("cs:")))
+      .to.deep.equal([ "cs:3707 (applied a change request)", "cs:3715 Clamp the stack size" ]);
     expect(html + titled + branch).to.not.contain("apply-change");
   });
 
@@ -223,6 +279,11 @@ describe("Review overview", () => {
       comment({
         date: ago(420), id: 2281, location: 3, owner: evil("asker"), revisionId: 6, text: evil("question"),
         type: "question",
+      }),
+      // A reply on a file's line, which the Conversation prints in full too.
+      comment({
+        date: ago(410), id: 2282, location: 16, owner: evil("fileReplier"), parentId: 2280, revisionId: 5,
+        text: evil("fileReply"), type: "comment",
       }),
     ];
     const discussions = { ...discussionsOf(rows), message: evil("message") };
@@ -254,18 +315,20 @@ describe("Review overview", () => {
         status: evil("status"),
         title: `Review of branch /main/x - ${evil("title")}`,
       }),
-      updates: { newComments: 1, removedComments: 0, status: evil("update") },
+      updates: { comments: [], newComments: 1, removedComments: 0, status: evil("update") },
       workspaceId: "wk",
     };
     const html = renderOverview(active, options({ link: testLink, whoami: evil("owner") }));
     expectWellFormed(html);
-    expect(expectLinksOpen(html, active)).to.equal(2);
+    // Open items, and the same two threads in the Conversation.
+    expect(expectLinksOpen(html, active)).to.equal(4);
     expectEveryGeneralThread(html, discussions);
     const text = visible(html);
     const fields = [
       "title", "owner", "assignee", "status", "branch", "label", "update", "description", "message", "request",
       "reviewer", "verdict", "replier", "reply", "previous", "renamed", "note", "talker", "conversation", "answerer",
       "answer", "requester", "change", "asker", "question", "path", "csComment", "csOwner", "source",
+      "fileReplier", "fileReply",
     ];
     for (const field of fields) {
       expect(text, field).to.contain(`${field}</div>`);
@@ -297,7 +360,8 @@ describe("Review overview", () => {
     });
     const csHtml = renderOverview(csActive, options({ link: testLink }));
     expectWellFormed(csHtml);
-    expect(expectLinksOpen(csHtml, csActive)).to.equal(3);
+    const located = changesetScenario.discussions.threads.filter(hasLocation).length;
+    expect(expectLinksOpen(csHtml, csActive)).to.equal(3 + located);
     expect(visible(csHtml)).to.contain("first</div>").and.contain("second</div>").and.contain("dir</div>");
   });
 
@@ -314,10 +378,10 @@ describe("Review overview", () => {
       review: { ...scenario.review, title: `Review of branch /main/x - Tickets:\n\n${blanks}` },
     }), options());
     expectWellFormed(html);
-    // The title's rest and the description lead the page, the verdict is quoted on its card, the comment in full.
+    // The title's rest and the description open the Conversation, the verdict is quoted under its entry, the
+    // comment is in full.
     expect(html.split("<p>one</p><p>two</p><p>three</p><p>four</p>").length - 1).to.equal(4);
-    // History prints one line; the card has the paragraphs.
-    expect(html).to.contain("marked it <strong>Reviewed</strong>: one two three four</span>");
+    expect(html).to.contain("<blockquote class=\"quote\"><p>one</p><p>two</p><p>three</p><p>four</p></blockquote>");
   });
 
   it("links the http(s) URLs people wrote, and nothing else", () => {
@@ -372,7 +436,9 @@ describe("Review overview", () => {
         return testLink(target);
       },
     }));
-    expect(targets).to.deep.equal([{ kind: "thread", threadId: 12907 }, { kind: "thread", threadId: 12915 }]);
+    // Open items, then the Conversation's threads with a line, oldest first.
+    expect(targets).to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
+      .map(threadId => ({ kind: "thread", threadId })));
     expect(linked).to.contain(`<a href="${HANDLER}?thread=12915">SaveSystem.cs:154</a>`);
     // A URI is an attribute value, escaped as one.
     const quoted = renderOverview(active, options({ link: () => `${HANDLER}?x="><script>` }));
@@ -398,9 +464,11 @@ describe("Review overview", () => {
       "Change requests: loading…",
       "Questions: loading…",
       "Sign-off: loading…",
+      // The Conversation says what is still loading, in the place its entries will take.
+      "Conversation",
       "Loading the discussions…",
-      "Changesets",
       "Loading the changesets…",
+      `erin.author opened the review · ${when(scenario.review.date)}`,
     ]);
     const failed = renderOverview(readyReview(scenario, {
       changesets: { message: "cm find changeset failed\nwith detail", state: "error" },
@@ -418,14 +486,23 @@ describe("Review overview", () => {
       "Change requests: couldn't load",
       "Questions: couldn't load",
       "Sign-off: couldn't load",
+      "Conversation",
       "Couldn't load the discussions: cm failed",
-      "Changesets",
       "Couldn't load the changesets: cm find changeset failed",
+      `erin.author opened the review · ${when(scenario.review.date)}`,
     ]);
     // The whole message is the tile's tooltip.
     expect(failed).to.contain("<li class=\"tile\" title=\"cm failed&#10;with detail\">");
     // A failed stage is an error notice, not the blue of the notices that only inform.
     expect(failed).to.contain("<p class=\"notice error\">Couldn't load the discussions: cm failed</p>");
+    expect(failed).to.contain("<li class=\"tl-item tl-note\"><p class=\"notice error\">Couldn't load the changesets: " +
+      "cm find changeset failed</p></li>");
+    // Changesets that load later take the note's place, merged by date with the rest.
+    const later = renderOverview(readyReview(scenario, { discussions: { state: "loading" }}), options());
+    expect(section(textLines(later), "Conversation").map(dateless)).to.deep.equal([
+      "Conversation", "Loading the discussions…", "erin.author checked in 3 changesets", "cs:3477 Merge from /main",
+      "cs:3699 Merge from /main", "cs:3715 Change 3715", "erin.author opened the review",
+    ]);
     // A first line that only introduces the reason keeps the reason.
     const introduced = renderOverview(readyReview(scenario, {
       discussions: { message: "cm find comment failed:\nThe server is unreachable.\nat line 3", state: "error" },
@@ -481,7 +558,7 @@ describe("Review overview", () => {
 
   it("says when the server has newer data, under the chips", () => {
     const html = renderOverview(readyReview(scenario, {
-      updates: { newComments: 2, newHead: 3718, removedComments: 1 },
+      updates: { comments: [], newComments: 2, newHead: 3718, removedComments: 1 },
     }), options());
     expectWellFormed(html);
     expect(textLines(html)[4]).to.equal("Newer data on the server: branch moved to cs:3718 · 2 new comments · " +
@@ -505,47 +582,114 @@ describe("Review overview", () => {
     expect(html).to.contain(`<div class="lead"><p>Tickets:<br>${link(1)}<br>${link(2)}</p>` +
       `<p>Ticket: ${link(3)}</p><p>Second paragraph</p></div>`);
     expect(visible(html)).to.not.contain("First take");
-    expect(textLines(html).filter(line => line.endsWith("edited the description"))).to.have.length(2);
+    // The description opens the Conversation as its author's card; the first one is the opening, a later one an edit.
+    expect(told(html)).to.deep.equal([
+      "erin.author Description", "Tickets:", "https://jira.example/browse/RAC-1", "https://jira.example/browse/RAC-2",
+      "Ticket: https://jira.example/browse/RAC-3", "Second paragraph",
+      "erin.author opened the review",
+      "erin.author edited the description",
+    ]);
+    // Replies to the description sit under it in the opening card, once.
+    const answered = renderOverview(withComments(scenario, [ ...rows, reply(2554, 2552, 450, "Which ticket?",
+      ME) ], { review: titled }), options());
+    expect(told(answered).slice(5, 9)).to.deep.equal([ "Second paragraph", "alex.reviewer", "Which ticket?",
+      "erin.author opened the review" ]);
+    expect(visible(answered).split("Which ticket?")).to.have.length(2);
     // An emptied description leaves only the title's rest.
     const cleared = renderOverview(withComments(scenario, [ ...rows, event(2553, 400, "[description]") ],
       { review: titled }), options());
     expect(cleared).to.contain(`<div class="lead"><p>Tickets:<br>${link(1)}<br>${link(2)}</p></div>`);
   });
 
-  it("folds History past the newest 8 entries into a details element", () => {
-    const requests = (count: number) => Array.from({ length: count }, (_, index) =>
-      event(2341 + index, 600 - index * 30, `[requested-review-from]user${index}@example.com`));
-    expect(renderOverview(withComments(scenario, requests(7)), options())).to.not.contain("<details");
-    const html = renderOverview(withComments(scenario, requests(12)), options());
+  it("merges the review's creation, changesets, discussions and events into one Conversation, oldest first", () => {
+    const bob = "bob@example.com";
+    const rows = [
+      event(2341, 600, `[requested-review-from]${bob}`),
+      comment({ date: ago(500), id: 2342, location: -1, owner: AUTHOR, revisionId: -1, text: "Kick-off",
+        type: "conversation" }),
+      // A change request and a verdict written in the same minute keep the order of their ids.
+      comment({ date: ago(400), id: 2343, location: 3, owner: bob, revisionId: 11, text: "Rename it",
+        type: "change" }),
+      event(2344, 400, "[status-rework-required]Please rename", bob),
+      reply(2345, 2342, 350, "Welcome", bob),
+    ];
+    const items = [
+      // Before the review was opened.
+      branchChangeset(3001, 2000, "Prepare the timer"),
+      branchChangeset(3002, 300, "Rename the timer"),
+      branchChangeset(3003, 290, "Fix the tests"),
+      branchChangeset(3004, 100, "Tidy up", bob),
+      branchChangeset(3005, 50, "Last touch"),
+    ];
+    const changesets = changesetsOf(...items);
+    const html = renderOverview(withComments(scenario, rows, { changesets }), options());
     expectWellFormed(html);
-    const [ shown, earlier ] = html.substring(html.indexOf("<h2>History</h2>")).split("<details class=\"earlier\">");
-    const undated = (part: string) => textLines(part).map(line =>
-      line.replace(/^\d{1,2} \w{3}(?: \d{4})? \d\d:\d\d /, ""));
-    const requested = (indexes: number[]) => indexes.map(index => `erin.author requested a review from user${index}`);
-    expect(undated(shown)).to.deep.equal([ "History", ...requested([ 11, 10, 9, 8, 7, 6, 5, 4 ]) ]);
-    expect(undated(earlier))
-      .to.deep.equal([ "5 earlier events", ...requested([ 3, 2, 1, 0 ]), "erin.author opened the review" ]);
+    expect(told(html)).to.deep.equal([
+      "erin.author checked in cs:3001", "cs:3001 Prepare the timer",
+      "erin.author opened the review",
+      "erin.author requested a review from bob",
+      // Replies stay under their comment, whenever they came.
+      "erin.author", "Kick-off", "bob", "Welcome",
+      "Change request revision 11:4", "bob", "Rename it",
+      "bob asked for rework", "Please rename",
+      "erin.author checked in 2 changesets", "cs:3002 Rename the timer", "cs:3003 Fix the tests",
+      "bob checked in cs:3004", "cs:3004 Tidy up",
+      "erin.author checked in cs:3005", "cs:3005 Last touch",
+    ]);
+    // The order does not depend on the order cm listed anything in.
+    const shuffled = withComments(scenario, rows.slice().reverse(), {
+      changesets: changesetsOf(...items.slice().sort((a, b) => a.id % 2 - b.id % 2)),
+    });
+    expect(renderOverview(shuffled, options())).to.equal(html);
   });
 
-  it("lists the newest 4 changesets and the newest 50 files, and points at the Review view for the rest", () => {
-    const changesets = (count: number, hasMore = false) => textLines(renderOverview(readyReview(scenario, {
+  it("groups a person's changesets within half an hour of each other, marks merges and applied change requests", () => {
+    const bob = "bob@example.com";
+    const minutes = (...values: number[]) =>
+      values.map(value => ({ date: new Date(NOW - value * 60000), owner: AUTHOR }));
+    const ids = (groups: Array<Array<{ date: Date }>>) => groups.map(group => group.length);
+    // Each within 30 minutes of the one before it, however long the run.
+    expect(ids(groupChangesets(minutes(200, 170, 140, 110)))).to.deep.equal([4]);
+    expect(ids(groupChangesets(minutes(200, 169, 140)))).to.deep.equal([ 1, 2 ]);
+    expect(ids(groupChangesets([ ...minutes(200), { date: new Date(NOW - 190 * 60000), owner: bob },
+      ...minutes(180) ]))).to.deep.equal([ 1, 1, 1 ]);
+    // cm prints the same address in different cases.
+    expect(ids(groupChangesets([ ...minutes(200), { date: new Date(NOW - 190 * 60000), owner: AUTHOR.toUpperCase() }])))
+      .to.deep.equal([2]);
+
+    const applied = comment({
+      appliedInChangesetId: 3012, date: ago(100), id: 2361, location: 3, revisionId: 11, text: "Rename it",
+      type: "change",
+    });
+    const html = renderOverview(withComments(scenario, [applied], {
       changesets: {
         state: "ready",
         value: {
-          hasMore,
-          items: Array.from({ length: count }, (_, index) => ({
-            ...scenario.changesets.items[0], comment: `Change ${2080 - index}`, id: 2080 - index, isMerge: false,
-          })),
+          hasMore: true,
+          items: [
+            branchChangeset(3013, 280, "", AUTHOR, { isMerge: true, mergeSourceBranch: "/main" }),
+            branchChangeset(3012, 290, "[apply-change:38c85554]"),
+            branchChangeset(3011, 300, "Rename the timer\nand say why"),
+          ],
         },
       },
-    }), options()));
-    expect(section(changesets(4), "Changesets").map(line => line.split(" ")[0]))
-      .to.deep.equal([ "Changesets", "cs:2080", "cs:2079", "cs:2078", "cs:2077" ]);
-    expect(section(changesets(5), "Changesets").slice(-1)).to.deep.equal(["1 older changeset is in the Review view."]);
-    const more = section(changesets(6, true), "Changesets");
-    expect([ more[0], ...more.slice(-1) ])
-      .to.deep.equal([ "Changesets 6+", "2+ older changesets are in the Review view." ]);
+    }), options({ link: testLink }));
+    expectWellFormed(html);
+    const lines = told(html);
+    expect(lines.slice(lines.indexOf("Older changesets are in the Review view."))).to.deep.equal([
+      "Older changesets are in the Review view.",
+      "erin.author checked in 3 changesets",
+      "cs:3011 Rename the timer",
+      "cs:3012 (applied a change request) · applied the change request on revision 11:4",
+      "cs:3013 Merge from /main",
+      "Change request · applied in cs:3012 revision 11:4", "Reviewer", "Rename it",
+    ]);
+    expect(html).to.contain("<span class=\"pill purple\">Merge</span>");
+    // The applied change request links to its discussion from the changeset, as from its card.
+    expect(links(html).filter(link => link.href === `${HANDLER}?thread=2361`)).to.have.length(2);
+  });
 
+  it("lists the newest 50 files of a changeset review and points at the Review view for the rest", () => {
     const many = Array.from({ length: 53 }, (_, index) => file({ path: `/Code/File${100 + index}.cs`,
       revisionId: 2442 + index }));
     const active = readyReview(changesetScenario, {
@@ -560,7 +704,8 @@ describe("Review overview", () => {
     expect(files[1]).to.match(/^\S+ File100\.cs Code$/);
     expect(files[50]).to.match(/^\S+ File149\.cs Code$/);
     expect(files[51]).to.equal("3 more files are in the Review view.");
-    expect(expectLinksOpen(html, active)).to.equal(52);
+    const threads = links(html).filter(link => link.href.startsWith(`${HANDLER}?thread=`)).length;
+    expect(expectLinksOpen(html, active)).to.equal(50 + threads);
   });
 
   it("marks the current user in the header and the summary only", () => {
@@ -607,7 +752,7 @@ describe("Review overview", () => {
     ]);
   });
 
-  it("quotes a reviewer's latest verdict on their card with its replies, and asks again after rework", () => {
+  it("keeps reviewer cards compact and quotes each verdict with its replies in the Conversation", () => {
     const rows = [
       event(2443, 600, "[requested-review-from]bob@example.com"),
       event(2444, 590, "[requested-review-from]carol@example.com"),
@@ -628,62 +773,80 @@ describe("Review overview", () => {
       "No verdict yet",
       "carol Asked again",
       "Asked for rework 7 hours ago · asked to look again 5 hours ago",
-      "Tests fail on iOS.",
       "bob Reviewed",
       "8 hours ago",
-      "Looks good.",
-      "Ship it.",
-      `erin.author · ${at(ago(470))}`,
-      "Thanks!",
     ]);
-    expect(html).to.not.contain("<h2>Other discussions");
+    expect(told(html)).to.deep.equal([
+      "erin.author opened the review",
+      "erin.author requested a review from bob",
+      "erin.author requested a review from carol",
+      "bob marked it Reviewed", "Looks good.", "Ship it.", "erin.author", "Thanks!",
+      "carol asked for rework", "Tests fail on iOS.",
+      "erin.author asked carol to look again",
+    ]);
+    // Printed once, under its verdict.
     expect(visible(html).split("Thanks!")).to.have.length(2);
+    expect(html).to.contain("<span class=\"tl-mark green\" aria-hidden=\"true\">");
+    expect(html).to.contain("<span class=\"tl-mark orange\" aria-hidden=\"true\">");
+    expectEveryGeneralThread(html, discussionsOf(rows));
   });
 
-  it("prints General threads in full and leaves file threads to Discussions", () => {
+  it("prints every discussion in full: General threads as comments, file threads headed by their line", () => {
     const rows = [
       comment({ date: ago(300), id: 20, location: -1, revisionId: -1, text: "A note on the whole review",
         type: "comment" }),
       comment({ date: ago(200), id: 21, location: -1, parentId: 20, revisionId: -1, text: "Agreed",
         type: "comment" }),
       comment({ date: ago(100), id: 22, location: 3, revisionId: 11, text: "A line comment", type: "comment" }),
+      comment({ date: ago(90), id: 23, location: 3, owner: AUTHOR, parentId: 22, revisionId: 11, text: "Fixed",
+        type: "comment" }),
     ];
-    const html = renderOverview(withComments(scenario, rows), options());
-    const lines = textLines(html);
-    expect(section(lines, "Other discussions")).to.deep.equal([
-      "Other discussions 1",
-      `Reviewer Comment · ${at(ago(300))}`,
-      "A note on the whole review",
-      `Reviewer · ${at(ago(200))}`,
-      "Agreed",
+    const html = renderOverview(withComments(scenario, rows), options({ link: testLink }));
+    expectWellFormed(html);
+    expect(told(html)).to.deep.equal([
+      "erin.author opened the review",
+      "Reviewer Comment", "A note on the whole review", "Reviewer", "Agreed",
+      "Comment revision 11:4", "Reviewer", "A line comment", "erin.author", "Fixed",
     ]);
-    expect(lines).to.include("1 comment is in Discussions.");
-    expect(visible(html)).to.not.contain("A line comment");
+    expect(html).to.contain("<div class=\"row card-top\"><span class=\"pill grey\">Comment</span> " +
+      `<a href="${HANDLER}?thread=22">revision 11:4</a></div>`);
+    // A comment on the whole file has no line to open.
+    const whole = renderOverview(withComments(scenario, [{ ...rows[2], location: -1 }]), options({ link: testLink }));
+    expect(told(whole)).to.include("Comment revision 11");
+    expect(links(whole)).to.deep.equal([]);
   });
 
-  it("names the change requests in the Discussions hint, whatever follows them", () => {
+  it("heads a file thread with its kind and state, and draws resolved change requests as resolved", () => {
     const change = (id: number, applied: number) => comment({
-      appliedInChangesetId: applied, date: ago(100), id, location: 3, revisionId: 11, text: "Rename it", type: "change",
+      appliedInChangesetId: applied, date: ago(100 - id), id, location: id, revisionId: 11, text: `Change ${id}`,
+      type: "change",
     });
-    const discarded = [ change(3, -1), comment({
-      date: ago(90), id: 4, location: 3, owner: AUTHOR, parentId: 3, revisionId: 11, text: "No", type: "discarded",
-    }) ];
-    const answered = [
+    const rows = [
+      change(1, -1),
+      change(2, 3718),
+      change(3, -1),
+      comment({ date: ago(90), id: 4, location: 3, owner: AUTHOR, parentId: 3, revisionId: 11, text: "No",
+        type: "discarded" }),
       comment({ date: ago(80), id: 5, location: 4, owner: ME, revisionId: 11, text: "Why?", type: "question" }),
-      comment({
-        date: ago(70), id: 6, location: 4, owner: AUTHOR, parentId: 5, revisionId: 11, text: "Yes.", type: "comment",
-      }),
+      comment({ date: ago(70), id: 6, location: 4, owner: AUTHOR, parentId: 5, revisionId: 11, text: "Because.",
+        type: "comment" }),
+      comment({ date: ago(60), id: 7, location: 5, owner: ME, revisionId: 11, text: "And this?", type: "question" }),
     ];
-    const hint = (rows: IReviewComment[]) =>
-      textLines(renderOverview(withComments(scenario, rows), options())).find(line => line.endsWith("in Discussions."));
-    expect(hint([change(1, 3718)])).to.equal("1 applied change request is in Discussions.");
-    expect(hint([ change(1, 3718), change(2, 3719), ...discarded ]))
-      .to.equal("2 applied and 1 discarded change requests are in Discussions.");
-    // Not "3 applied and 1 answered question", which reads as applied questions.
-    expect(hint([ change(1, 3718), change(2, 3719), change(7, 3720), ...answered ]))
-      .to.equal("3 applied change requests and 1 answered question are in Discussions.");
-    expect(hint([ change(1, 3718), ...discarded, ...answered ]))
-      .to.equal("1 applied and 1 discarded change requests, and 1 answered question are in Discussions.");
+    const html = renderOverview(withComments(scenario, rows), options());
+    expectWellFormed(html);
+    const heads = told(html).filter(line => / revision 11:\d$/.test(line));
+    expect(heads).to.deep.equal([
+      "Change request revision 11:2",
+      "Change request · applied in cs:3718 revision 11:3",
+      "Change request · discarded revision 11:4",
+      "Question · answered revision 11:5",
+      "Question revision 11:6",
+    ]);
+    const pills = html.match(/<div class="row card-top"><span class="pill (\w+)">/g)!
+      .map(pill => /pill (\w+)/.exec(pill)![1]);
+    expect(pills).to.deep.equal([ "orange", "green", "grey", "green", "blue" ]);
+    expect(html.match(/<li class="tl-item tl-comment on-file resolved">/g)).to.have.length(2);
+    expect(told(html)).to.include.members([ "erin.author Discarded", "No", "erin.author", "Because." ]);
   });
 
   it("keeps a question open until someone other than the asker replies", () => {
@@ -702,19 +865,7 @@ describe("Review overview", () => {
       "Open items 1",
       "Question revision 11:4 alex.reviewer · 2 hours ago · 1 reply",
       "Why?",
-      "1 answered question is in Discussions.",
     ]);
-  });
-
-  it("orders the conversation by date", () => {
-    const rows = [
-      comment({ date: "2026-09-22T12:00:00+01:00", id: 2, location: -1, revisionId: -1, text: "second",
-        type: "conversation" }),
-      comment({ date: "2026-09-21T12:00:00+01:00", id: 3, location: -1, revisionId: -1, text: "first",
-        type: "conversation" }),
-    ];
-    const lines = textLines(renderOverview(withComments(scenario, rows), options()));
-    expect(lines.filter(line => line === "first" || line === "second")).to.deep.equal([ "first", "second" ]);
   });
 
   it("counts files as the Review view does, without directory records", () => {
@@ -755,7 +906,7 @@ describe("Review overview", () => {
     expect(Date.now() - started).to.be.below(1000);
     expectWellFormed(html);
     expect(links(html).map(link => link.href)).to.deep.equal([ "https://a.b/", "https://a.b/" ]);
-    expect(html).to.contain(`marked it <strong>Reviewed</strong>: a${" ".repeat(40000)}b c</span>`);
+    expect(html).to.contain(`<blockquote class="quote"><p>a${" ".repeat(40000)}b</p><p>c</p></blockquote>`);
   });
 
   it("waits on a reviewer who joined again after their verdict, and on one asked again right after a removal", () => {
@@ -769,7 +920,7 @@ describe("Review overview", () => {
     expect(rejoined[4]).to.equal("Waiting on bob Nothing is open.");
     // The card says what the verdict was, and quotes it.
     expect(section(rejoined, "Reviewers")).to.deep.equal([
-      "Reviewers 1", "bob Reviewing", "Asked for rework 8 hours ago · joined again 1 hour ago", "Please rename Foo",
+      "Reviewers 1", "bob Reviewing", "Asked for rework 8 hours ago · joined again 1 hour ago",
     ]);
     // A removal between two requests a second apart makes the second a new request, not a copy of the first.
     const start = NOW - 600 * 60000;
@@ -809,8 +960,8 @@ describe("Review overview", () => {
       "priya.nair marked it Reviewed and joined again. Nothing is open.");
     expect(section(lines, "Reviewers")).to.deep.equal([
       "Reviewers 2",
-      "priya.nair Reviewing", "Marked it Reviewed 10 hours ago · joined again 1 hour ago", "LGTM",
-      "bob.b Rework required", "8 hours ago", "fix it",
+      "priya.nair Reviewing", "Marked it Reviewed 10 hours ago · joined again 1 hour ago",
+      "bob.b Rework required", "8 hours ago",
     ]);
     // Marked Reviewed, the headline names nobody either; each verdict is told apart from the silent reviewers.
     const settled = textLines(renderOverview(withComments(scenario, [
@@ -828,7 +979,7 @@ describe("Review overview", () => {
     ]);
   });
 
-  it("asks a reviewer removed after their verdict and requested again to look again, on the card as in History", () => {
+  it("asks a reviewer removed after their verdict and requested again to look again, on the card as in the log", () => {
     const priya = "priya.nair@example.com";
     const rows = [
       event(2652, 1200, `[requested-review-from]${priya}`),
@@ -846,19 +997,15 @@ describe("Review overview", () => {
       "Reviewers 1",
       "priya.nair Asked again",
       "Marked it Reviewed 10 hours ago · asked to look again 1 hour ago",
-      "LGTM",
-      `erin.author · ${at(ago(590))}`,
-      "Thanks, merging after the build",
     ]);
-    expect(section(lines, "History").slice(1).map(dateless)).to.deep.equal([
-      "erin.author asked priya.nair to look again",
-      "erin.author removed priya.nair from the reviewers",
-      "priya.nair marked it Reviewed: LGTM",
-      "erin.author requested a review from priya.nair",
+    expect(told(html)).to.deep.equal([
       "erin.author opened the review",
+      "erin.author requested a review from priya.nair",
+      "priya.nair marked it Reviewed", "LGTM", "erin.author", "Thanks, merging after the build",
+      "erin.author removed priya.nair from the reviewers",
+      "erin.author asked priya.nair to look again",
     ]);
-    // The verdict's thread moves from Other discussions to the card: printed once, still printed.
-    expect(html).to.not.contain("<h2>Other discussions");
+    expect(html).to.contain(`<span class="when">· ${when(ago(590))}</span>`);
     expect(visible(html).split("Thanks, merging after the build")).to.have.length(2);
     expectEveryGeneralThread(html, discussionsOf(rows));
   });
@@ -902,12 +1049,12 @@ describe("Review overview", () => {
     expect(lines).to.include("Sign-off: None · no reviewers left");
     expect(section(lines, "Reviewers"))
       .to.deep.equal([ "Reviewers 1", "erin.author author assignee Reviewed", "11 hours ago · no comment" ]);
-    expect(section(lines, "History").slice(1).map(dateless)).to.deep.equal([
-      "erin.author joined and marked it Reviewed",
-      "erin.author removed priya.nair from the reviewers",
-      "erin.author asked priya.nair to look again",
-      "priya.nair joined and asked for rework: Split it",
+    expect(told(html)).to.deep.equal([
       "erin.author opened the review",
+      "priya.nair joined and asked for rework", "Split it",
+      "erin.author asked priya.nair to look again",
+      "erin.author removed priya.nair from the reviewers",
+      "erin.author joined and marked it Reviewed",
     ]);
     expectEveryGeneralThread(html, discussionsOf(rows));
     // Nobody left and no verdict of the author's.
@@ -925,7 +1072,7 @@ describe("Review overview", () => {
     expect(own).to.include("Sign-off: None · no reviewers yet");
   });
 
-  it("says in History when someone is asked to look again, and when a rename only dropped Plastic's prefix", () => {
+  it("says when someone is asked to look again, and when a rename only dropped Plastic's prefix", () => {
     const bob = "bob@example.com";
     const rows = [
       event(2731, 900, "[renamed-title]Review of changeset 3551 - Make lap times clear#->#Make lap times clear"),
@@ -934,26 +1081,61 @@ describe("Review overview", () => {
       event(2734, 600, `[requested-review-from]${bob}`),
       event(2735, 500, "[renamed-title]Make lap times clear#->#Lap Timer Accuracy"),
     ];
-    const lines = textLines(renderOverview(withComments(scenario, rows), options()));
-    expect(section(lines, "History").slice(1).map(dateless)).to.deep.equal([
-      "erin.author renamed it from “Make lap times clear” to “Lap Timer Accuracy”",
-      "erin.author asked bob to look again",
-      "bob marked it Reviewed",
-      "erin.author requested a review from bob",
-      "erin.author renamed it to drop the generated prefix",
+    expect(told(renderOverview(withComments(scenario, rows), options()))).to.deep.equal([
       "erin.author opened the review",
+      "erin.author renamed it to drop the generated prefix",
+      "erin.author requested a review from bob",
+      "bob marked it Reviewed",
+      "erin.author asked bob to look again",
+      "erin.author renamed it from “Make lap times clear” to “Lap Timer Accuracy”",
     ]);
   });
 
-  it("leaves Open items out when nothing is open or in Discussions, and prints each item's first line only", () => {
+  it("words each review event, quotes the text a line leaves out, and keeps replies on rows it leaves out", () => {
+    const bob = "bob@example.com";
+    const rows = [
+      event(2761, 900, "[description]First description"),
+      reply(2762, 2761, 890, "Nice summary", bob),
+      event(2763, 800, `[requested-review-from]${bob}`),
+      event(2764, 700, "[status-under-review]Back to it", bob),
+      event(2765, 650, "[status-on-hold]", bob),
+      event(2766, 600, `[re-requested-review-from]${bob}`),
+      event(2767, 500, `[removed-requested-review-from]${bob}`),
+      event(2768, 400, "[renamed-title]Lap Timer Accuracy"),
+      event(2769, 300, "[description]Second description"),
+      event(2770, 200, "Imported from the old tracker"),
+    ];
+    const html = renderOverview(withComments(scenario, rows), options());
+    expectWellFormed(html);
+    expect(told(html)).to.deep.equal([
+      "erin.author Description", "Second description",
+      "erin.author opened the review",
+      // The first description opens the Conversation; its replies stay on the row it was.
+      "erin.author Description", "First description", "bob", "Nice summary",
+      "erin.author requested a review from bob",
+      "bob moved it back to Under review", "Back to it",
+      "bob changed the status",
+      "erin.author asked bob to look again",
+      "erin.author removed bob from the reviewers",
+      "erin.author renamed it to “Lap Timer Accuracy”",
+      "erin.author edited the description",
+      "erin.author updated the review", "Imported from the old tracker",
+    ]);
+    // Under review: an eye in blue on the line; every line starts with who did it, as a small avatar.
+    expect(html).to.match(/<span class="tl-mark blue" aria-hidden="true"><svg[^>]*><path d="M1\.5 8S/);
+    expect(html.match(/<p class="tl-line"><span class="av sm"/g)?.length).to.be.greaterThan(5);
+    expect(html).not.to.match(/<li class="tl-item[^"]*"><span class="av"/);
+    expectEveryGeneralThread(html, discussionsOf(rows));
+  });
+
+  it("leaves Open items out when nothing is open, and prints each item's first line only", () => {
     expect(headings(renderOverview(withComments(changesetScenario, []), options()))).to.not.include("Open items");
     const applied = comment({
       appliedInChangesetId: 3718, date: ago(100), id: 2751, location: 3, revisionId: 11, text: "Rename it",
       type: "change",
     });
     const lines = textLines(renderOverview(withComments(scenario, [applied]), options()));
-    expect(section(lines, "Open items"))
-      .to.deep.equal([ "Open items 0", "Nothing open.", "1 applied change request is in Discussions." ]);
+    expect(headings(renderOverview(withComments(scenario, [applied]), options()))).to.not.include("Open items");
     // The tile leaves out what is zero.
     expect(lines).to.include("Change requests: None · 1 applied");
     const question = comment({
@@ -988,5 +1170,82 @@ describe("Review overview", () => {
     for (const html of without) {
       expect(html).to.not.contain("add-me").and.not.contain("Add me as reviewer");
     }
+  });
+
+  it("links Reply, Edit, Delete and Add comment on comments only while posting works", () => {
+    const guid = (n: number) => `0a1b2c3d-1111-4222-8333-${String(n).padStart(12, "0")}`;
+    const conversation = (id: number, owner: string, text: string, parentId = -1) => comment({
+      date: ago(60 - id), guid: guid(id), id, location: -1, owner, parentId, revisionId: -1, text,
+      type: parentId < 0 ? "conversation" : "comment",
+    });
+    const rows = [
+      { ...event(9001, 90, "[description]Adds lap splits.", ME), guid: guid(9001) },
+      conversation(9002, AUTHOR, "Please look at the reset first."),
+      conversation(9003, ME.toUpperCase(), "Done, see cs:3718.", 9002),
+      conversation(9004, ME, "One more thing."),
+      { ...event(9005, 20, "[status-reviewed]Fine by me.", ME), guid: guid(9005) },
+    ];
+    const active = withComments(scenario, rows);
+    const html = renderOverview(active, options({ commentActions: true, link: testLink, whoami: ME }));
+    expectWellFormed(html);
+    const actions = links(html).filter(link => /\?(reply|edit|delete|addComment)\b/.test(link.href))
+      .map(link => `${link.text} ${link.href.substring(HANDLER.length + 1)}`);
+    expect(actions).to.deep.equal([
+      "Edit description edit=9001",
+      "Reply reply=9002",
+      "Edit edit=9003",
+      "Delete delete=9003",
+      "Reply reply=9004",
+      "Edit edit=9004",
+      "Delete delete=9004",
+      "Write a comment… addComment",
+    ]);
+    // Someone else's comment, the verdict and every timeline row take no edit or delete.
+    expect(actions.some(action => /=900[25]$/.test(action) && !action.startsWith("Reply"))).to.equal(false);
+
+    const off = [
+      renderOverview(active, options({ link: testLink, whoami: ME })),
+      renderOverview(active, options({ commentActions: true, whoami: ME })),
+    ];
+    for (const page of off) {
+      expect(page).to.not.contain("comment-actions");
+    }
+    // Before cm has said who the user is, only Reply and Add comment are offered.
+    const anonymous = links(renderOverview(active, options({ commentActions: true, link: testLink })))
+      .map(link => link.text).filter(text => [ "Reply", "Edit", "Delete", "Edit description" ].includes(text));
+    expect(anonymous).to.deep.equal([ "Reply", "Reply" ]);
+    // With nothing said on the whole review yet, the Conversation still ends with the comment box.
+    const empty = renderOverview(withComments(scenario, []), options({ commentActions: true, link: testLink }));
+    expect(told(empty)).to.deep.equal(
+      [ "erin.author opened the review", "Add a comment", "Write it in the input box at the top of the window.",
+        "Write a comment…" ]);
+    // One way to write it: a button to the input box, and nothing drawn as a text field.
+    expect(empty).to.contain(`<a class="button primary" href="${HANDLER}?addComment">Write a comment…</a>`);
+    expect(empty).to.not.contain("compose-box");
+    // Without a cm user, the box has a blank avatar; with one, theirs.
+    expect(empty).to.contain("<div class=\"composer\"><span class=\"av anon\"");
+    const mine = renderOverview(withComments(scenario, []),
+      options({ commentActions: true, link: testLink, whoami: ME }));
+    expect(mine).to.match(/<div class="composer"><span class="av" style=/);
+    // Threads on a file are answered on the Overview too, as in the desktop app; the user's own are edited and deleted.
+    const onFile = withComments(scenario, [
+      comment({ date: ago(30), guid: guid(9101), id: 9101, location: 3, owner: ME, revisionId: 11, text: "Mine",
+        type: "comment" }),
+      comment({ date: ago(20), guid: guid(9102), id: 9102, location: 3, owner: ME, parentId: 9101, revisionId: 11,
+        text: "Also mine", type: "comment" }),
+    ]);
+    const fileActions = links(renderOverview(onFile, options({ commentActions: true, link: testLink, whoami: ME })))
+      .filter(link => /\?(reply|edit|delete)=/.test(link.href))
+      .map(link => `${link.text} ${link.href.substring(HANDLER.length + 1)}`);
+    expect(fileActions).to.deep.equal([
+      "Reply reply=9101", "Edit edit=9101", "Delete delete=9101", "Edit edit=9102", "Delete delete=9102",
+    ]);
+    // Someone else's thread on a file: Reply only.
+    const theirs = withComments(scenario, [
+      comment({ date: ago(30), guid: guid(9103), id: 9103, location: 3, owner: AUTHOR, revisionId: 11,
+        text: "Theirs", type: "question" }),
+    ]);
+    expect(links(renderOverview(theirs, options({ commentActions: true, link: testLink, whoami: ME })))
+      .filter(link => /\?(reply|edit|delete)=/.test(link.href)).map(link => link.text)).to.deep.equal(["Reply"]);
   });
 });

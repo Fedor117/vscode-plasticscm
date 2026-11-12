@@ -81,6 +81,8 @@ export interface IReviewTimelineEvent {
   text: string;
   /** The title a `renamed` event replaced; it often held the only ticket link. */
   previous?: string;
+  /** The row's GUID, on `description` events only: editing the description changes that row. */
+  guid?: string;
 }
 
 export interface IReviewRevision {
@@ -157,6 +159,12 @@ export interface IReviewChangesets {
   hasMore: boolean;
 }
 
+/** A comment `IReviewUpdates.newComments` counts, and who wrote it. */
+export interface IReviewUpdateComment {
+  id: number;
+  owner: string;
+}
+
 export interface IReviewUpdates {
   /** The new status, when it differs from the review's. */
   status?: string;
@@ -165,6 +173,12 @@ export interface IReviewUpdates {
   /** Discussion comments that are new, or whose text, type or applied state changed. */
   newComments: number;
   removedComments: number;
+  /**
+   * The comments `newComments` counts, by id, so that two checks which found
+   * the same changes compare equal as JSON. A notification names their authors
+   * and leaves out the user's own.
+   */
+  comments: IReviewUpdateComment[];
 }
 
 /** The personal review groups. A review appears in at most one of them; each is newest first. */
