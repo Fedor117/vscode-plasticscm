@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-12
+
+### Fixed
+
+- The review Overview can no longer be scrolled past its end until the page is blank: it ends at
+  its last line, whatever `editor.scrollBeyondLastLine` says. Other Markdown previews are unchanged.
+
 ## [0.5.0] - 2026-11-12
 
 ### Added

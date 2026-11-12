@@ -7,6 +7,16 @@
  * enough for it. Sizes are in em, so the page follows the preview's font size.
  */
 
+/*
+ * With editor.scrollBeyondLastLine on, the preview leaves a screen of blank
+ * margin under the content, so the page could be scrolled until nothing of it
+ * showed. A review page ends at its last line; other previews keep the margin.
+ */
+body.scrollBeyondLastLine:has(.plastic-review) {
+  margin-bottom: 0;
+  padding-bottom: 24px;
+}
+
 .plastic-review {
   --pr-border: var(--vscode-contrastBorder, var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 20%, transparent)));
   --pr-card: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
