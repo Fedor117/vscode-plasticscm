@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-13
+
 ### Added
 
 - **Branch Explorer**. **Plastic SCM: Open Branch Explorer** (Source Control title bar, Graph and
@@ -96,7 +98,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - `plastic-scm.cmConfiguration.millisCommandTimeout` set to `0` (or less) now means "no
   timeout"; before, every command timed out at once.
 
-### Fixed (review of the unreleased work)
+### Fixed
 
 - **Crashes and hangs**: a `cm` that exits or breaks its pipe while a command runs now fails that
   command and restarts the shell instead of blocking every later command. Switch and update are
@@ -118,7 +120,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **Revert to This Revision** refreshes the status and checks unsaved editor buffers before deciding
   to warn about overwriting changes.
 
-### Not built yet (deferred)
+### Known limitations
 
 - Hidden changes as a separate collapsed group, and an optional setting that routes Explorer
   renames and deletes through `cm move`/`cm remove` (use **Delete (Plastic SCM)** and
