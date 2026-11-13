@@ -1,8 +1,17 @@
 import * as constants from "./constants";
 import * as events from "./events";
 import * as path from "path";
+import {
+  ChangeType,
+  IChangeInfo,
+  IPendingChanges,
+  IWorkspaceConfig,
+  IWorkspaceInfo,
+  WkConfigType,
+} from "./models";
 import { GetFile as CmGetFileCommand, Status as CmStatusCommand } from "./cm/commands";
 import {
+  Command,
   Disposable,
   Event,
   EventEmitter,
@@ -16,17 +25,12 @@ import {
   Uri,
   workspace as VsCodeWorkspace,
 } from "vscode";
-import {
-  IChangeInfo,
-  IPendingChanges,
-  IWorkspaceConfig,
-  IWorkspaceInfo,
-  WkConfigType,
-} from "./models";
+import { hasIncomingChanges, IKnownBranchHead } from "./incomingChanges";
 import { IWorkspaceOperations, WorkspaceOperation } from "./workspaceOperations";
 import { debounce } from "./decorators";
 import { ICmShell } from "./cm/shell";
 import { IConfig } from "./config";
+import { LockStore } from "./locks/lockStore";
 import { PlasticScmResource } from "./plasticScmResource";
 import { toRevisionUri } from "./revisionContentProvider";
 
@@ -44,6 +48,15 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
   public get statusResourceGroup(): IPlasticScmResourceGroup {
     return this.mStatusResourceGroup as IPlasticScmResourceGroup;
+  }
+
+  /**
+   * Every pending change of the last status, including the One File Per Actor
+   * ones that the SCM group leaves out. Switch, update and shelve decisions use
+   * this list, not the group.
+   */
+  public get pendingChanges(): ReadonlyArray<{ isPrivate: boolean; resourceUri: Uri; type: ChangeType }> {
+    return this.mPendingChanges;
   }
 
   public get workspaceConfig(): IWorkspaceConfig | undefined {
@@ -67,8 +80,16 @@ export class Workspace implements Disposable, QuickDiffProvider {
     return this.mOperations;
   }
 
-  public readonly onDidRunStatus: Event<void>;
+  /** True when the branch the workspace is on has a newer head than the workspace's changeset. */
+  public get hasIncomingChanges(): boolean {
+    return hasIncomingChanges(this.mWorkspaceConfig, this.mCurrentChangeset, this.mKnownBranchHead);
+  }
 
+  public readonly onDidRunStatus: Event<void>;
+  /** The locks of this workspace's repository; badges and the Locks view read it. */
+  public readonly locks: LockStore;
+
+  private mPendingChanges: Array<{ isPrivate: boolean; resourceUri: Uri; type: ChangeType }> = [];
   private readonly mShell: ICmShell;
   private readonly mChannel: OutputChannel;
   private readonly mWkInfo: IWorkspaceInfo;
@@ -84,6 +105,7 @@ export class Workspace implements Disposable, QuickDiffProvider {
   private mWorkspaceConfig?: IWorkspaceConfig;
   private mbIsStatusSlow = false;
   private mCurrentChangeset?: number;
+  private mKnownBranchHead?: IKnownBranchHead;
 
   private onDidChangeStatus: EventEmitter<void>;
 
@@ -112,6 +134,11 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
     this.mWkInfo = workspaceInfo;
     this.mShell = shell;
+    this.locks = new LockStore({
+      log: message => channel.appendLine(message),
+      repSpec: () => this.mWorkspaceConfig?.repSpec,
+      shell,
+    });
     this.mChannel = channel;
     // Namespaced per workspace: a constant id makes every Plastic workspace in the
     // window answer to the same `scmProvider` key, so menus and commands can't tell
@@ -157,6 +184,7 @@ export class Workspace implements Disposable, QuickDiffProvider {
   }
 
   public dispose(): void {
+    this.locks.dispose();
     this.mDisposables.dispose();
   }
 
@@ -197,6 +225,11 @@ export class Workspace implements Disposable, QuickDiffProvider {
       e => this.mChannel.appendLine(`Unable to prune the revision cache: ${(e as Error).message}`));
 
     const changeInfos: IChangeInfo[] = Array.from(pendingChanges.changes.values());
+    this.mPendingChanges = changeInfos.map(info => ({
+      isPrivate: (info.type & ChangeType.Private) !== 0,
+      resourceUri: info.path,
+      type: info.type,
+    }));
 
     const sourceControlResources: PlasticScmResource[] = [];
     const unrealLevelResources: SourceControlResourceState[] = [];
@@ -245,7 +278,8 @@ export class Workspace implements Disposable, QuickDiffProvider {
           decorations: {
             faded: false,
             strikeThrough: false,
-            tooltip: "Hello",
+            tooltip: `${levelRelativeLocation}.umap: actors or objects saved in separate files ` +
+              "(One File Per Actor) have pending changes",
           },
           resourceUri: Uri.from({
             path: `${pathToContentDir}/${levelRelativeLocation}.umap`,
@@ -263,24 +297,49 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
 
     this.mSourceControl.inputBox.placeholder = this.getCheckinPlaceholder(this.mWorkspaceConfig);
-    this.mSourceControl.statusBarCommands = [{
-      command: "workbench.view.scm",
-      title: [
-        "$(",
-        this.getStatusBarIconKey(this.mWorkspaceConfig.configType),
-        ") ",
-        this.getPrefix(this.mWorkspaceConfig.configType),
-        this.mWorkspaceConfig.location,
-      ].join(""),
-      tooltip: [
-        this.getPrefix(this.mWorkspaceConfig.configType),
-        this.mWorkspaceConfig.location,
-        "@",
-        this.mWorkspaceConfig.repSpec,
-      ].join(""),
-    }];
+    this.updateStatusBar();
 
     this.onDidChangeStatus.fire();
+  }
+
+  /**
+   * Tells the workspace the newest changeset the server has on its branch, as
+   * the graph last saw it. When that is newer than the workspace's changeset,
+   * the status bar offers an Update.
+   */
+  public setKnownBranchHead(head: IKnownBranchHead | undefined): void {
+    const wasIncoming = this.hasIncomingChanges;
+    this.mKnownBranchHead = head;
+    if (wasIncoming !== this.hasIncomingChanges) {
+      this.updateStatusBar();
+    }
+  }
+
+  private updateStatusBar(): void {
+    const config = this.mWorkspaceConfig;
+    if (!config) {
+      return;
+    }
+
+    const location = this.getPrefix(config.configType) + config.location;
+    const statusBarCommands: Command[] = [{
+      // A menu, not the SCM view: switching and updating are what the entry is for.
+      arguments: [this],
+      command: "plastic-scm.statusBarMenu",
+      title: `$(${this.getStatusBarIconKey(config.configType)}) ${location}`,
+      tooltip: `${location}@${config.repSpec}\nClick to switch, create a branch or update.`,
+    }];
+
+    if (this.hasIncomingChanges) {
+      statusBarCommands.push({
+        arguments: [this],
+        command: "plastic-scm.update",
+        title: "$(cloud-download) Update",
+        tooltip: `Newer changesets on ${config.location}. Click to update the workspace.`,
+      });
+    }
+
+    this.mSourceControl.statusBarCommands = statusBarCommands;
   }
 
   /**
@@ -330,7 +389,8 @@ export class Workspace implements Disposable, QuickDiffProvider {
       return `Message (Ctrl+Enter to checkin after '${wkConfig.location}')`;
     }
 
-    return `Sorry, you can't checkin in ${wkConfig.configType} ${wkConfig.location} 🥺`;
+    return "Check in on a branch or a changeset. This workspace is on a " +
+      `${wkConfig.configType.toLowerCase()}: run "Plastic SCM: Switch to Branch" first.`;
   }
 
   private getStatusBarIconKey(wkConfigType: WkConfigType) {

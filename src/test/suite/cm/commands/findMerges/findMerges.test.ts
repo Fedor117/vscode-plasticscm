@@ -149,4 +149,36 @@ describe("FindMerges command", () => {
       });
     });
   });
+
+  context("When run for a range of destination changesets", () => {
+    it("asks for every merge into the range, whatever the branch", async () => {
+      const shell: IShellMock = mockShell({ result: [link], success: true });
+      const result = await FindMerges.runRange(shell.mock.object, 3301);
+
+      expect(result).to.eql([link]);
+      expect(shell.calls).to.eql([{
+        args: [ "merge", "where dstchangeset >= 3301", ...XML_ARGS ],
+        command: "find",
+      }]);
+    });
+
+    it("closes the range when an upper bound is given", async () => {
+      const shell: IShellMock = mockShell<IMergeLink[]>({ result: [], success: true });
+      await FindMerges.runRange(shell.mock.object, 3001, 3301);
+
+      expect(shell.calls[0].args[1]).to.equal("where dstchangeset >= 3001 and dstchangeset < 3301");
+    });
+
+    it("refuses bounds that are not integers", async () => {
+      const shell: IShellMock = mockShell<IMergeLink[]>({ result: [], success: true });
+      expect(await runCatching(() => FindMerges.runRange(shell.mock.object, 1.5))).to.be.instanceOf(Error);
+      expect(await runCatching(() => FindMerges.runRange(shell.mock.object, 1, NaN))).to.be.instanceOf(Error);
+      expect(shell.calls).to.eql([]);
+    });
+
+    it("throws what cm reports", async () => {
+      const shell: IShellMock = mockShell<IMergeLink[]>({ error: new Error("boom"), success: false });
+      expect((await runCatching(() => FindMerges.runRange(shell.mock.object, 1)))?.message).to.equal("boom");
+    });
+  });
 });

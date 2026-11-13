@@ -16,16 +16,31 @@ import {
   WorkspaceFolder,
 } from "vscode";
 import { historyViewId, HistoryViewProvider } from "./history/historyViewProvider";
+import { AnnotateCommands } from "./commands/annotate";
+import { BranchCommands } from "./commands/branch";
+import { BranchExplorer } from "./explorer/branchExplorerPanel";
+import { CodeReviewCommands } from "./commands/codeReview";
+import { CompareCommands } from "./commands/compare";
+import { ExplorerCommands } from "./commands/explorer";
+import { FileHistoryCommands } from "./commands/fileHistory";
 import { GetWorkspaceFromPath } from "./cm/commands";
 import { HistoryCommands } from "./commands/history";
 import { IConfig } from "./config";
+import { IgnoreRuleCommands } from "./commands/ignoreRules";
 import { IWorkspaceInfo } from "./models";
+import { LabelCommands } from "./commands/label";
+import { LockCommands } from "./commands/locks";
 import { OpenFileCommand } from "./commands/openFile";
 import { PlasticReviews } from "./reviews/plasticReviews";
 import { PlasticScmDecorations } from "./decorations";
 import { RefreshCommand } from "./commands/refresh";
+import { REPOSITORY_SECTIONS } from "./repository/repositorySections";
+import { RepositoryCommands } from "./commands/repository";
 import { RevisionContentProvider } from "./revisionContentProvider";
+import { ShelveCommands } from "./commands/shelve";
 import { ShowOutputCommand } from "./commands/showOutput";
+import { SwitchCommands } from "./commands/switch";
+import { TrackedFileCommands } from "./commands/trackedFiles";
 import { Workspace } from "./workspace";
 import { WorkspaceOperations } from "./workspaceOperations";
 
@@ -104,7 +119,8 @@ export class PlasticScm implements Disposable {
     });
   }
 
-  public async promptUserToPickWorkspace(): Promise<Workspace | undefined> {
+  public async promptUserToPickWorkspace(placeHolder = "Which workspace would you like to refresh?"):
+      Promise<Workspace | undefined> {
     if (this.workspaces.size === 1) {
       return Array.from(this.workspaces.values())[0];
     }
@@ -118,7 +134,7 @@ export class PlasticScm implements Disposable {
       {
         canPickMany: false,
         ignoreFocusOut: true,
-        placeHolder: "Which workspace would you like to refresh?",
+        placeHolder,
       });
 
     return choice?.workspace;
@@ -193,9 +209,29 @@ export class PlasticScm implements Disposable {
       this.mDisposables.push(historyProvider);
       this.mDisposables.push(new HistoryCommands(this, historyProvider));
 
+      const repository = new RepositoryCommands(
+        () => Array.from(this.mWorkspaces.values()), REPOSITORY_SECTIONS);
+      this.mDisposables.push(repository);
+
+      // Branch and label commands reload the Repository view after they change what it lists.
+      const refreshRepository = () => repository.provider.refresh();
+      this.mDisposables.push(new BranchCommands(this, refreshRepository));
+      this.mDisposables.push(new LabelCommands(this, refreshRepository));
+      this.mDisposables.push(new ShelveCommands(this, refreshRepository));
+      this.mDisposables.push(new SwitchCommands(this));
+      this.mDisposables.push(new LockCommands(this, refreshRepository));
+      this.mDisposables.push(new TrackedFileCommands(this));
+      this.mDisposables.push(new IgnoreRuleCommands(this));
+      this.mDisposables.push(new FileHistoryCommands(this));
+      this.mDisposables.push(new AnnotateCommands(this));
+      this.mDisposables.push(new CompareCommands(this));
+
+      const explorer = new BranchExplorer(this, this.mExtensionUri, () => this.mConfig ?? configuration);
+      this.mDisposables.push(new ExplorerCommands(this, explorer), explorer);
+
       // Every review workspace gets its own cm shell on first use, so review queries never
       // queue behind a status refresh.
-      this.mDisposables.push(new PlasticReviews({
+      const reviews = new PlasticReviews({
         channel: this.mChannel,
         extensionId: this.storage.extensionId,
         globalState: this.storage.globalState,
@@ -208,6 +244,15 @@ export class PlasticScm implements Disposable {
           path: wk.info.path,
           repository: wk.workspaceConfig?.repSpec,
         })),
+      });
+      this.mDisposables.push(reviews, new CodeReviewCommands(this, () => {
+        const active = reviews.session.active;
+        return active && {
+          id: active.review.id,
+          owner: active.review.owner,
+          title: active.review.title,
+          workspaceId: active.workspaceId,
+        };
       }));
     }
   }

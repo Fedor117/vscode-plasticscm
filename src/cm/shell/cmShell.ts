@@ -4,7 +4,7 @@ import * as path from "path";
 import * as uuid from "uuid";
 import { ChildProcess, spawn } from "child_process";
 import { Disposable, OutputChannel } from "vscode";
-import { ICmParser, ICmResult, ICmShell } from "./interfaces";
+import { ICmExecOptions, ICmParser, ICmResult, ICmShell } from "./interfaces";
 import { IShellConfig } from "../../config";
 import { LineStream } from "./lineStream";
 import { Readable } from "stream";
@@ -12,8 +12,25 @@ import { Readable } from "stream";
 const UTF8 = "utf8";
 const COMMAND_RESULT_TOKEN = "CommandResult ";
 
+/** The longest delay `setTimeout` honours; anything longer fires after 1 ms. */
+const MAX_TIMER_MILLIS = 2147483647;
+
 /** Keeps a runaway command's output from being pasted wholesale into a message box. */
 const MAX_ERROR_LINES = 50;
+
+/**
+ * The timeout one `exec` call runs under: the call's own `timeoutMillis` when
+ * given, otherwise the configured default. `undefined` means no timeout, which
+ * is what `0`, a negative value or `Infinity` ask for. Values above what Node's
+ * `setTimeout` can hold (2^31-1 ms, about 24.8 days, beyond which it fires after
+ * 1 ms) are clamped to that maximum.
+ */
+export function commandTimeoutMillis(
+    options: ICmExecOptions | undefined,
+    defaultMillis: number): number | undefined {
+  const millis = options?.timeoutMillis ?? defaultMillis;
+  return Number.isFinite(millis) && millis > 0 ? Math.min(millis, MAX_TIMER_MILLIS) : undefined;
+}
 
 export class CmShell implements ICmShell {
 
@@ -136,9 +153,12 @@ export class CmShell implements ICmShell {
   public exec<T>(
       command: string,
       args: string[],
-      parser: ICmParser<T>): Promise<ICmResult<T>> {
+      parser: ICmParser<T>,
+      options?: ICmExecOptions): Promise<ICmResult<T>> {
 
-    const runner = () => this.execSerialized(command, args, parser);
+    // Resolved now, so a settings change while the call waits in the queue does not change it.
+    const timeoutMillis = commandTimeoutMillis(options, this.mShellConfig.millisCommandTimeout);
+    const runner = () => this.execSerialized(command, args, parser, timeoutMillis);
     // Run after whatever is queued, whether it succeeded or not.
     const queued = this.mQueue.then(runner, runner);
     this.mQueue = queued.then(() => undefined, () => undefined);
@@ -148,7 +168,8 @@ export class CmShell implements ICmShell {
   private async execSerialized<T>(
       command: string,
       args: string[],
-      parser: ICmParser<T>): Promise<ICmResult<T>> {
+      parser: ICmParser<T>,
+      timeoutMillis: number | undefined): Promise<ICmResult<T>> {
 
     if (!this.isRunning) {
       this.mChannel.appendLine(
@@ -166,6 +187,8 @@ export class CmShell implements ICmShell {
     const parserErrorRead: (line: string) => void = line => parser.readLineErr(line);
     let parserOutRead: ((line: string) => void) | undefined;
     let timeout: NodeJS.Timeout | undefined;
+    const proc = this.mProcess;
+    let onProcessGone: ((reason?: Error | number | null) => void) | undefined;
 
     this.mbIsBusy = true;
     try {
@@ -183,10 +206,20 @@ export class CmShell implements ICmShell {
         this.mOutStream.on("data", parserOutRead);
         this.mErrStream.on("data", parserErrorRead);
 
-        timeout = setTimeout(
-          () => reject(new Error(
-            `Command '${command}' timed out after ${this.mShellConfig.millisCommandTimeout} ms`)),
-          this.mShellConfig.millisCommandTimeout);
+        // Without this a cm that dies or breaks its stdin mid-command would leave the
+        // call (and, with no timeout, the whole queue) waiting forever.
+        onProcessGone = reason => reject(new Error(
+          reason instanceof Error
+            ? `Command '${command}' failed: ${reason.message}`
+            : `The cm shell exited while running '${command}'`));
+        proc?.once("exit", onProcessGone);
+        proc?.stdin?.once("error", onProcessGone);
+
+        if (timeoutMillis !== undefined) {
+          timeout = setTimeout(
+            () => reject(new Error(`Command '${command}' timed out after ${timeoutMillis} ms`)),
+            timeoutMillis);
+        }
 
         this.write(commandLine);
       });
@@ -202,6 +235,10 @@ export class CmShell implements ICmShell {
     } finally {
       if (timeout) {
         clearTimeout(timeout);
+      }
+      if (onProcessGone) {
+        proc?.off("exit", onProcessGone);
+        proc?.stdin?.off("error", onProcessGone);
       }
       if (parserOutRead) {
         this.mOutStream.off("data", parserOutRead);

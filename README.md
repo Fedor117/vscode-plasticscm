@@ -36,6 +36,16 @@ With this plugin, you can use Plastic SCM as your SCM tool.
 7. **Changeset graph** of the current branch and its parent branch, in the Source
    Control pane like VS Code's Git graph — expand a changeset to see the files it
    changed, click a file to diff it against the parent changeset
+8. **Branch Explorer**: the history of every branch in an editor tab, with a lane
+   graph, search, branch and author filters, changeset details and a context menu
+   to switch, branch, label, review and compare
+9. **Repository view** listing the branches, labels and shelves of each workspace's
+   repository, newest first
+10. **Switch, create, rename and delete branches and labels, and update**, from the
+    Command Palette, the Repository view and the status bar
+11. **Shelves**: shelve all or selected pending changes, browse the files of a shelve
+    and diff them, apply or delete a shelve, and shelve pending changes when a switch
+    or update would meet them
 
 ## Plastic Reviews
 
@@ -199,6 +209,22 @@ this to your `keybindings.json`:
 menu) opens the review in the Unity Version Control desktop app through a `plastic://` code-review
 link. It works whatever the review writes setting says. The desktop app must be installed.
 
+### Creating reviews and managing reviewers
+
+* **Create Code Review…** (Reviews view title bar, a branch in the Plastic SCM Repository view, a
+  changeset in the Branch Explorer, or the Command Palette) reviews the current branch, a branch
+  you pick, or a changeset you pick. It asks for a title, an optional description (passed to `cm`
+  in a file) and optional reviewers, then offers to open the new review.
+* **Add Reviewers…**, **Remove Reviewers…** and **Request Review Again…** (the Review view's `…`
+  menu, a review's context menu in Reviews, and the Command Palette with a review open). Reviewers
+  are a comma-separated list of users; write `group:<name>` for a group. Remove and Request Review
+  Again pick from the reviewers `cm codereview reviewer list` prints; removing asks first.
+
+They run `cm codereview <spec> <title>`, `cm codereview reviewer add|remove` and
+`cm codereview review --re-request` with your `cm` sign-in, whatever the review writes setting
+says, and tell you when the installed `cm` lacks those commands. They have been tested with a
+mocked `cm` only, not against a live server.
+
 ### Review writes
 
 With `plastic-scm.reviews.commentWrites` on, the extension can add you as a reviewer, set
@@ -293,7 +319,7 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.cmPath`                 |`string` |`cm`     |Location of the `cm` CLI executable
 |`plastic-scm.cmConfiguration.millisToWaitUntilUp`    |`number` |`5000`   |Time to wait for the shell to start
 |`plastic-scm.cmConfiguration.millisToStop`           |`number` |`5000`   |Grace time to wait for a shell to close
-|`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted
+|`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted. `0` means no limit
 |`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 |`plastic-scm.reviews.fileLayout`                     |`string` |`tree`   |How Plastic Reviews lists changed files: `tree` (folders) or `list` (sorted by path)
 |`plastic-scm.reviews.updateCheckInterval`            |`number` |`60`     |Seconds between two checks for changes in Plastic Reviews: the open review, whatever is on screen, and the review queue while the Reviews view is visible. The shortest interval is 15 seconds; `0` turns the checks off
@@ -369,6 +395,189 @@ Id**, **Copy Comment**, **Open Changes** and **Open File**.
 History queries run on a separate `cm shell`, so they never delay a status
 refresh or a checkin. A branch that gained changesets since the view loaded shows
 a *New changesets* row instead of reloading under you.
+
+### Branch Explorer
+
+**Plastic SCM: Open Branch Explorer** — also the button in the Source Control
+title bar and in the Graph and Repository views — opens an editor tab with the
+history of the whole repository, the way Sourcetree or the Plastic SCM Branch
+Explorer show it: every branch in one list, newest first, with a lane graph next
+to it. Each branch has its own colour, merges and cherry-picks are dashed lines
+to their source, branch heads and labels are pills on their changeset, and the
+changeset your workspace is on is marked with a ring and a home icon.
+
+The toolbar decides what is listed:
+
+- **All branches**, **Current branch and its ancestors** (the workspace's
+  changeset, the head of its branch and everything they descend from, through
+  parents and merges), or **Selected branches…**, which lists the branches that
+  have loaded changesets for you to tick.
+- The **filter box** narrows the loaded changesets as you type, matching every
+  word against the comment, branch, author, labels and `cs:` number. A filtered
+  list has no graph, because the rows in between are gone.
+- The **author** list keeps one person's changesets.
+- **Search repository** (or Enter in the filter box) searches every changeset of
+  the repository rather than the loaded ones: a number or `cs:N` finds that
+  changeset, anything else is matched against the comment. `cm` matches comment
+  text case-sensitively, and the newest 200 matches are listed.
+
+Select a changeset to see its full comment, its parent and merge sources (click
+one to jump to it) and the files it changed, with a filter of their own. Click a
+file to open its diff against the parent changeset; right-click it for **Show
+File History**. Arrow keys, Page Up/Down, Home and End move the selection.
+
+Right-click a changeset for **Switch Workspace to This Changeset…**, **Switch
+Workspace to This Branch…**, **Create Branch from This Changeset…**, **Label This
+Changeset…**, **Create Code Review for This Branch…**, **Compare with Selected
+Changeset** (select one, right-click another), **Compare with Workspace
+Changeset**, and copying its id, branch name or comment. These run the same
+commands as the Repository view and the palette, with the same confirmations.
+
+Changesets load 300 at a time as you scroll; the home button jumps to the
+workspace's changeset and the refresh button reloads from the server. New
+changesets are picked up after a checkin, switch or update. The explorer runs on
+its own `cm shell`.
+
+### Repository
+
+The **Plastic SCM Repository** view, in the Source Control pane, lists the
+**Branches**, **Labels** and **Shelves** of the workspace's repository (one group
+per workspace when several are open). A section runs no `cm` query until you
+expand it, then loads the newest 50 rows; **Load More** fetches the next 50.
+Branches and labels are newest by creation date. Shelves are newest by number:
+`cm find shelve` cannot sort, so the view reads every shelve once and pages them
+itself. Hidden branches are not listed.
+
+The branch, label or shelve your workspace is on is marked *current*, and moves
+when the workspace does. Hover a row for its owner, date, changeset and full
+comment. The title bar has **Refresh Repository**; a section that failed to load
+shows the error, and clicking it retries.
+
+Branch and label rows have actions, see [Branches, labels, switch and update](#branches-labels-switch-and-update).
+
+### Branches, labels, switch and update
+
+All of these are in the Command Palette (`Plastic SCM: …`), the **Repository** view's rows and
+section headers, and, for switching and updating, the status bar. They run one at a time per
+workspace, show a progress notification, and show `cm`'s own error with a **Show Output** button
+when something fails.
+
+| Command | `cm` |
+|---|---|
+| **Switch to Branch…**, **Switch to Changeset…**, **Switch to Label…** | `cm switch <br:\|cs:\|lb:> --noinput` |
+| **Create Branch…** from the current changeset, a changeset, a label or a branch's head | `cm branch create br:<name> [--changeset=<n> \| --label=lb:<name>]` |
+| **Create Branch and Switch…** | the two above |
+| **Rename Branch…**, **Delete Branch…**, **Edit Branch Comment…** | `cm branch rename \| delete \| editcomment` |
+| **Create Label…** on the current changeset, a picked changeset or a branch's head | `cm label create lb:<name> cs:<n>` |
+| **Rename Label…**, **Delete Label…** | `cm label rename \| delete` |
+| **Update Workspace** | `cm update --noinput`, or `cm update --last --noinput` |
+
+A new branch is created under the branch its starting changeset is on, so you type only its last
+name segment. Comments are sent in a temporary file, so they can have any text. Names are checked
+first: they cannot be empty, start or end with a space, start with `-`, or contain quotes, line
+breaks or `@` (and a branch name cannot contain `/`). Creating a label with a name that already
+exists is refused, because `cm label create` would put that label on one more changeset.
+**Delete Branch…** and **Delete Label…** name the target in a confirmation, and refuse the branch
+or label the workspace is on. A branch that still has changesets is not emptied: the command never
+passes `--delete-changesets`, so `cm` is expected to refuse it.
+
+**Pending changes.** `cm shell` cannot answer the question `cm` asks when a switch or update meets
+pending changes, so the extension runs these commands with `--noinput`. `cm help switch` and
+`cm help update` say only that this skips the questions and "disables the possibility of bringing
+your pending changes"; they do not say what happens to the changes instead. So when the workspace
+has pending changes (private files do not count), a dialog says so and offers **Continue** or
+Cancel. Check in or discard what you need before continuing.
+
+**Update.** A workspace on a changeset or a label stays where it is until it is switched, so
+**Update Workspace** asks first and then runs `cm update --last`, which points the workspace at the
+branch of that changeset or label and brings it to the latest changeset. A workspace on a shelve
+cannot be updated; switch to a branch first. Switch and update download files and may take
+minutes: they have no time limit.
+
+**Status bar.** The workspace's entry (the branch, changeset, label or shelve it is on) opens a
+menu: switch to a branch, changeset or label, create a branch, update the workspace, or show
+Source Control. When the Graph has seen newer changesets on the workspace's branch, an **Update**
+entry appears next to it, and the Source Control title bar has an **Update** button. The Graph
+checks for newer changesets at most once a minute, and only while its view is open, so the entry
+can lag behind the server.
+
+### Shelves
+
+Shelves keep pending changes on the server without a changeset. Everything here is in the
+Command Palette, the Source Control view and the **Shelves** section of the Repository view.
+
+| Command | Where | `cm` |
+|---|---|---|
+| **Shelve Pending Changes…** | Source Control title menu, status bar menu, palette | `cm shelveset create <paths> --all --summaryformat` |
+| **Shelve Selected Changes…** | right-click on changed files (multi-select) | the same, with the selected paths |
+| **Apply Shelve…** | a shelve row, palette | `cm shelveset apply sh:N --dontcheckout` |
+| **Delete Shelve…** | a shelve row, palette | `cm shelveset delete sh:N` |
+| **Copy Shelve Id** | a shelve row | |
+
+Expand a shelve in the Repository view to list its files (`cm diff sh:N`); click one to open a diff
+of it against the changeset the shelve was made on. Binary files and directories have no text diff.
+
+- Only controlled changes are shelved. Private (untracked) files are not: add them to source
+  control first. The comment is sent in a temporary file, so it can have any text.
+- After shelving, a dialog offers to **Undo Changes** in the workspace (`cm undo` on the shelved
+  files only, never deleting private files). Cancel keeps the changes in the workspace as well.
+- **Delete Shelve…** asks first and names the shelve; a deleted shelve cannot be brought back.
+- **Switch and update.** When a switch or update meets pending changes, the dialog has a third
+  button, **Shelve changes and continue**: it shelves every pending change, undoes them in the
+  workspace, then runs the switch or update. Afterwards a message tells you the shelve (`sh:N`) and
+  offers **Apply Shelve Now**. If the shelve cannot be created or undone, nothing runs and the
+  changes stay as they were.
+- **Applying and conflicts.** `cm shelveset apply` has no option to resolve conflicts without a
+  person, and `cm shell` cannot answer a merge tool. The extension applies with `--dontcheckout` (the
+  changes become local changes and no file is exclusively checked out). If the workspace has pending
+  changes, a dialog first names how many of them are in files the shelve also changes. If you go on
+  and `cm` needs to merge, it may open its merge tool in a window outside VS Code; the apply waits
+  until that window is closed or gives up after 10 minutes. Check in or shelve your own changes
+  first if you want to avoid that. If `cm` reports a conflict in its output, a warning says so.
+  `cm merge sh:N --conflict-markers` would write conflict markers in the files instead, but it is a
+  merge (with traceability) rather than an apply, so it is not used.
+
+### Locks, checkout, delete, move and ignore rules
+
+- **Checkout** is in the right-click menu of SCM rows, Explorer files and the editor tab. It runs
+  `cm checkout`; when the server's lock rules match, the checkout is exclusive and takes a lock. If
+  someone else holds it, the error names them.
+- **Locks** is a section of the Plastic SCM Repository view (`cm lock list`), grouped *Mine* and
+  *Others*. **Release Lock** and **Remove Lock** ask first and warn when the lock is someone else's;
+  `cm` only allows that for a server administrator. Locked files carry a badge in the Explorer and
+  the Source Control list. The list is refreshed at most once a minute, or with **Refresh Locks**.
+- **Delete (Plastic SCM)** (`cm remove`) and **Rename/Move (Plastic SCM)…** (`cm move`) are
+  explicit commands. The extension does not hook Explorer renames or deletes: Plastic detects local
+  moves and deletes in pending changes by itself.
+- **Add to Ignore List / Hidden Changes List / Cloaked List** offer: this item, by name, by
+  extension, or the parent folder, and append the rule to `ignore.conf`, `hidden_changes.conf` or
+  `cloaked.conf` in the workspace root (created if missing, no duplicates). The files are versioned,
+  so the change appears in pending changes. **Open ignore.conf** (and the other two) open them.
+- Clicking an added file opens it, a deleted file opens its base revision read-only, and a moved
+  file shows the old path at the loaded changeset next to the new one.
+
+### File history, annotate and comparisons
+
+- **Show File History** (Explorer, editor and editor tab menus, Source Control rows, and the files
+  listed in the Graph) opens the **File History** view in the Source Control container: every
+  revision of that file (`cm history --moveddeleted`) with changeset, branch, owner, date and
+  comment. Per revision: **Open Changes** (against the revision before it; the first revision is
+  shown against an empty file), **Compare with Workspace File**, **Open File at Revision** (a
+  read-only copy), **Copy Changeset Id** and **Revert to This Revision** (`cm revert`; it asks
+  first and warns when the file has pending changes of its own). Binary files have no text diff.
+  The view shows one file at a time and is reloaded with its Refresh button; it does not follow
+  the workspace on its own.
+- **Toggle Annotate (Blame)** (editor context menu, editor tab menu, palette) puts the owner,
+  changeset and date of the last change in front of every line (`cm annotate`). Hover the
+  gutter of a line for the changeset's branch and comment, with links to the file's diff in that
+  changeset and to the changeset's file list. The annotation is removed when you toggle it
+  again, when the file is closed and as soon as the text is edited. A binary file, a file that is
+  not under source control, an unsaved file and a file with pending changes (its lines would not
+  match the checked-in revision) get a message instead.
+- **Compare Changesets...** asks for two changesets (`cm diff cs:A cs:B`) and **Show Branch
+  Changes...** for a branch (`cm diff br:X`, the branch against its parent; also on a branch row of
+  the Repository view). Both fill the **Comparison** view with the files that differ, which opens
+  the same diff editors as the Graph's file list. **Clear Comparison** empties it.
 
 ### Show Output
 

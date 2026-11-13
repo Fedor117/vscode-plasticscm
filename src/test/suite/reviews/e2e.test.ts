@@ -457,6 +457,8 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       channel,
       extensionId: EXTENSION_ID,
       globalState: memento(),
+      // The text on stdin on every platform; the writer's own tests cover the file Windows gets.
+      platform: "linux",
       // Writes are on by default; these tests read, and the ones that write turn them on themselves.
       posting: { setting: () => false },
       secrets: undefined,

@@ -1,4 +1,4 @@
-import { CmShell, ICmParser } from "../../../cm/shell";
+import { CmShell, commandTimeoutMillis, ICmParser } from "../../../cm/shell";
 import { IMock, It, Mock, MockBehavior, Times } from "typemoq";
 
 import { expect } from "chai";
@@ -80,5 +80,32 @@ describe("CmShell", () => {
         p => p.readLineErr(It.isAnyString()),
         Times.never());
     });
+  });
+});
+
+describe("commandTimeoutMillis", () => {
+  it("uses the configured default when the call says nothing", () => {
+    expect(commandTimeoutMillis(undefined, 120000)).to.equal(120000);
+    expect(commandTimeoutMillis({}, 120000)).to.equal(120000);
+  });
+
+  it("uses the call's own timeout over the default", () => {
+    expect(commandTimeoutMillis({ timeoutMillis: 600000 }, 120000)).to.equal(600000);
+    expect(commandTimeoutMillis({ timeoutMillis: 5 }, 120000)).to.equal(5);
+  });
+
+  it("reads zero, negative and infinite timeouts as no timeout", () => {
+    [ 0, -1, Infinity, NaN ].forEach(timeoutMillis => {
+      expect(commandTimeoutMillis({ timeoutMillis }, 120000), String(timeoutMillis)).to.be.undefined;
+    });
+  });
+
+  it("clamps a timeout beyond what setTimeout holds instead of letting it fire at once", () => {
+    expect(commandTimeoutMillis({ timeoutMillis: 9999999999 }, 120000)).to.equal(2147483647);
+    expect(commandTimeoutMillis(undefined, 9999999999)).to.equal(2147483647);
+  });
+
+  it("reads a zero default as no timeout", () => {
+    expect(commandTimeoutMillis(undefined, 0)).to.be.undefined;
   });
 });

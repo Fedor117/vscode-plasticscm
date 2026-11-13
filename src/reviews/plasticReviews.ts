@@ -62,6 +62,8 @@ export interface IPlasticReviewsHost {
   readonly posting?: IReviewPostingOptions;
   /** Test injection: what runs cm once for a review write; by default the configured cm, as a child process. */
   readonly cm?: CmRunner;
+  /** Test injection: the platform, which decides how a comment's text reaches cm; `process.platform` by default. */
+  readonly platform?: NodeJS.Platform;
 }
 
 /** Comparisons whose decorations stay registered, so tabs opened before a reload keep their letters. */
@@ -125,6 +127,7 @@ export class PlasticReviews implements Disposable {
     const writer = new ReviewWriter({
       cmPath: () => host.shellConfig().cmPath,
       log: message => host.channel.appendLine(`Plastic Reviews: ${message}`),
+      platform: host.platform,
       run: host.cm,
     });
     this.posting = new ReviewPosting(writer, {

@@ -1,4 +1,4 @@
-import { commands, window } from "vscode";
+import { commands, OutputChannel, window } from "vscode";
 import { PlasticScm } from "../plasticScm";
 import { PlasticScmResource } from "../plasticScmResource";
 import { Workspace } from "../workspace";
@@ -59,7 +59,9 @@ export function describeError(e: unknown): string {
  * the user hunt for the output channel.
  */
 export async function showOperationError(
-    plasticScm: PlasticScm, operation: string, e: unknown): Promise<void> {
+    plasticScm: { readonly channel: Pick<OutputChannel, "appendLine"> },
+    operation: string,
+    e: unknown): Promise<void> {
   const message = describeError(e);
   plasticScm.channel.appendLine(`ERROR: ${message}`);
 

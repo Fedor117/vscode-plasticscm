@@ -163,34 +163,51 @@ export class PlasticScmResource implements SourceControlResourceState {
     return undefined;
   }
 
+  /**
+   * What a click on the row opens:
+   * - changed or checked out text files: the diff against the loaded changeset;
+   * - moved text files: the old path at the loaded changeset against the new path;
+   * - added files: the file itself (there is no base to compare with);
+   * - deleted text files: the base revision, read-only (the `plastic:` scheme has no writer).
+   * Private files, directories and binaries open nothing.
+   */
   public get command(): Command | undefined {
-    const unallowedFlag =
-      ChangeType.Added |
-      ChangeType.Private |
-      ChangeType.Moved |
-      ChangeType.Deleted;
-
-    // cm already told us the revision type, so there is nothing to sniff off disk.
-    if (
-      this.mWorkspace.currentChangeset < 0 ||
-      this.mChangeInfo.revisionType !== RevisionType.TextFile ||
-      (this.mChangeInfo.type & unallowedFlag) !== 0
-    ) {
+    const info = this.mChangeInfo;
+    if (this.mWorkspace.currentChangeset < 0 || (info.type & ChangeType.Private) !== 0) {
       return undefined;
     }
 
-    const originalFile = toRevisionUri(
-      this.mWorkspace.info.id,
-      this.resourceUri,
-      this.mWorkspace.currentChangeset,
-    );
+    if (info.type & ChangeType.Added) {
+      return info.revisionType === RevisionType.Directory
+        ? undefined
+        : { arguments: [this.resourceUri], command: "vscode.open", title: "Open" };
+    }
+
+    // cm already told us the revision type, so there is nothing to sniff off disk.
+    if (info.revisionType !== RevisionType.TextFile) {
+      return undefined;
+    }
+
+    const baseOf = (file: Uri): Uri => toRevisionUri(
+      this.mWorkspace.info.id, file, this.mWorkspace.currentChangeset);
+
+    if (info.type & ChangeType.Deleted) {
+      return { arguments: [baseOf(this.resourceUri)], command: "vscode.open", title: "Open" };
+    }
+
+    const oldPath = info.type & ChangeType.Moved ? info.oldPath : undefined;
+    if ((info.type & ChangeType.Moved) && !oldPath) {
+      return undefined;
+    }
+
+    const original = oldPath ?? this.resourceUri;
+    const name = path.basename(this.resourceUri.fsPath);
+    const title = oldPath
+      ? `${path.basename(oldPath.fsPath)} ↔ ${name} (Moved)`
+      : `${name} (Diff)`;
 
     return {
-      arguments: [
-        originalFile,
-        this.resourceUri,
-        `${path.basename(this.resourceUri.fsPath)} (Diff)`,
-      ],
+      arguments: [ baseOf(original), this.resourceUri, title ],
       command: "vscode.diff",
       title: "Open",
     };

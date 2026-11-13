@@ -6,6 +6,128 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-13
+
+### Added
+
+- **Branch Explorer**. **Plastic SCM: Open Branch Explorer** (Source Control title bar, Graph and
+  Repository view title bars, Command Palette) opens an editor tab with the changesets of every
+  branch of the repository in one list, newest first, with a lane graph: one colour per branch,
+  merge and cherry-pick links dashed, branch heads and labels as pills, the workspace's changeset
+  marked. The toolbar narrows it to all branches, the current branch and everything it descends
+  from, or a picked set of branches; filters the loaded changesets as you type by comment, branch,
+  author, label or `cs:` number; filters by author; and **Search repository** searches every
+  changeset by comment text or number (`cm find changeset "where comment like ..."`,
+  case-sensitive, newest 200). Selecting a changeset shows its comment, parent, merge sources and
+  files; clicking a file opens its diff. The context menu switches the workspace to the changeset
+  or its branch, creates a branch, a label or a code review from it, compares it with the selected
+  or the workspace's changeset, and copies its id, branch or comment. Changesets load 300 at a
+  time as you scroll, on a separate `cm shell`. Tested against a synthetic history only.
+- **Reviews: create and manage reviewers**. **Create Code Review…** (Reviews view title bar,
+  Repository branch rows, Branch Explorer rows, Command Palette) creates a review of the current
+  branch, a picked branch or a picked changeset with a title, an optional description (passed in a
+  file) and reviewers (`cm codereview <spec> <title>`). **Add Reviewers…**, **Remove Reviewers…**
+  and **Request Review Again…** (the Review view's `…` menu, a review's context menu, Command
+  Palette) manage the reviewers of a review with `cm codereview reviewer add|remove|list` and
+  `cm codereview review --re-request`; the open review reloads afterwards. They need a `cm` that
+  has those commands and say so when it does not. Tested with a mocked `cm` only.
+- **File history, annotate and comparisons**. **Show File History** (Explorer, editor, SCM rows and
+  the Graph's file rows) fills a **File History** view with the revisions of a file
+  (`cm history --moveddeleted`); each revision offers Open Changes (against the previous
+  revision), Compare with Workspace File, Open File at Revision, Copy Changeset Id and **Revert to
+  This Revision** (`cm revert`, with confirmation). **Toggle Annotate (Blame)** shows owner,
+  changeset and date per line (`cm annotate`) with a hover for the comment and links to the
+  changeset's changes; it clears on toggle, close and edit, and explains binary, uncontrolled,
+  unsaved and locally changed files. **Compare Changesets...** and **Show Branch Changes...**
+  (`cm diff cs:A cs:B`, `cm diff br:X`) list the differing files in a **Comparison** view that opens
+  the Graph's diff editors. The branch/changeset diff is now one shared wrapper
+  (`DiffChangeset.runSpec`), which the reviews use as well.
+- **Locks, checkout, tracked delete and move, ignore rules**. **Checkout** (`cm checkout`, in the
+  SCM row, Explorer and editor title context menus, multi-select aware) takes an exclusive lock
+  when the server's lock rules match; if somebody else holds the lock the message names the
+  holder. A **Locks** section in the Plastic SCM Repository view lists `cm lock list` grouped as
+  *Mine* and *Others* with path, owner, branch and status, with **Refresh Locks**, **Release
+  Lock** and **Remove Lock** (both ask first; a warning names the owner when the lock is not
+  yours). Files locked by you or by someone else get a badge in the Explorer and the SCM list; the
+  lock list is read at most once a minute or on refresh. **Delete (Plastic SCM)** (`cm remove`)
+  and **Rename/Move (Plastic SCM)…** (`cm move`) are explicit commands in the Explorer and SCM row
+  menus; Explorer renames and deletes are not intercepted. **Add to Ignore List**, **Add to Hidden
+  Changes List** and **Add to Cloaked List** append a rule (this item, by name, by extension or the
+  parent folder) to `ignore.conf`, `hidden_changes.conf` or `cloaked.conf` at the workspace root,
+  never twice, and **Open ignore.conf / hidden_changes.conf / cloaked.conf** open them. In pending
+  changes, added files open the file, deleted files open their base revision read-only and moved
+  files diff the old path against the new one.
+- **Shelves**: **Shelve Pending Changes…** (Source Control title menu) and **Shelve Selected
+  Changes…** (right-click on changed files) create a shelve with a comment, then offer to undo the
+  shelved changes in the workspace. In the Repository view, a shelve expands to its files, a click
+  opens a diff against the changeset it was made on, and **Apply Shelve…**, **Delete Shelve…**
+  (asks first) and **Copy Shelve Id** are on its row. Switching or updating with pending changes
+  has a new choice, **Shelve changes and continue**, which shelves and undoes the changes, runs
+  the switch or update and tells you the shelve to apply (**Apply Shelve Now**). Applying runs
+  `cm shelveset apply --dontcheckout` and warns first when the workspace has changes in files the
+  shelve also changes, because `cm` may then open its merge tool outside VS Code.
+- **Plastic SCM Repository**, a new view in the Source Control pane that lists the branches,
+  labels and shelves of each workspace's repository, newest first, 50 at a time with
+  **Load More**. Sections query `cm` only when expanded, the branch, label or shelve the
+  workspace is on is marked *current*, and **Refresh Repository** is in the title bar.
+- **Switch, branches, labels and update**, so a normal day no longer needs the desktop app for
+  them. **Switch to Branch…**, **Switch to Changeset…** and **Switch to Label…** (`cm switch`),
+  **Create Branch…** from the current changeset, a changeset, a label or the head of a branch,
+  **Create Branch and Switch…**, **Rename Branch…**, **Delete Branch…**, **Edit Branch Comment…**,
+  **Create Label…**, **Rename Label…**, **Delete Label…** and **Update Workspace** (`cm update`)
+  are in the Command Palette and on the Repository view's rows and section headers. Names are
+  checked before `cm` is called. Deleting asks first and names the target; the branch or label the
+  workspace is on cannot be deleted.
+- Switching or updating with pending changes asks first, because `cm shell` cannot answer `cm`'s
+  own question about them and the extension runs the command with `--noinput`. `cm help switch` and
+  `cm help update` say that this disables bringing the pending changes along, and nothing more: the
+  dialog says so and offers Continue or Cancel. Updating a workspace on a changeset or label asks
+  too, because it moves the workspace to that one's branch (`cm update --last`).
+- Switch and update show a progress notification and have no time limit.
+- The **status bar entry** of the workspace now opens a menu (switch to a branch, changeset or
+  label, create a branch, update the workspace) instead of only focusing the Source Control view.
+  When the Graph has seen newer changesets on the workspace's branch, a second entry,
+  **Update**, runs Update Workspace; the Source Control title bar has an **Update** button too.
+
+### Changed
+
+- The Unreal levels rows in Source Control have a tooltip naming the level and what changed,
+  instead of "Hello".
+- The checkin box of a workspace on a label or a shelve says in plain words that checking in needs
+  a branch or a changeset and points at **Switch to Branch…**, instead of an apology with an emoji.
+- `plastic-scm.cmConfiguration.millisCommandTimeout` set to `0` (or less) now means "no
+  timeout"; before, every command timed out at once.
+
+### Fixed
+
+- **Crashes and hangs**: a `cm` that exits or breaks its pipe while a command runs now fails that
+  command and restarts the shell instead of blocking every later command. Switch and update are
+  bounded at two hours instead of having no timeout. A `millisCommandTimeout` above 2^31-1 ms is
+  clamped (Node used to fire it after 1 ms). `cm lock list` is limited to the workspace's repository
+  and, after one failure, stops running automatically until **Refresh Locks** succeeds.
+- **Pending changes**: the switch/update question and **Shelve changes and continue** now count
+  every pending change, including Unreal One-File-Per-Actor ones that the Source Control view
+  groups. If **Create Branch and Switch** fails after changes were shelved, the message naming the
+  shelve still appears.
+- **Shelves**: **Undo Changes** after a shelve leaves files written since the shelve alone. Applying
+  a shelve over pending changes to the same files is refused (cm would wait on a merge prompt the
+  extension cannot answer); a timed-out apply says the workspace may be partly applied.
+- **Delete (Plastic SCM)** warns when the items have uncommitted changes (Undo only restores the
+  checked-in revision) and skips items that are already deleted with another flag set.
+- **Locks**: releasing a lock refreshes afterwards and a failed listing no longer reports a
+  successful release as failed; a checkout refreshes the lock list at once; two locks on the same
+  item no longer clash in the Locks view or inherit each other's "mine" flag.
+- **Revert to This Revision** refreshes the status and checks unsaved editor buffers before deciding
+  to warn about overwriting changes.
+
+### Known limitations
+
+- Hidden changes as a separate collapsed group, and an optional setting that routes Explorer
+  renames and deletes through `cm move`/`cm remove` (use **Delete (Plastic SCM)** and
+  **Rename/Move (Plastic SCM)** meanwhile).
+- The incoming-changes status-bar entry updates only while the Graph view is visible.
+- The Shelves section still runs one `cm find shelve` per page; very large repositories can be slow.
+
 ## [0.5.1] - 2026-11-12
 
 ### Fixed

@@ -336,7 +336,8 @@ function buildLinks(rows: IGraphRow[], merges: IMergeLink[], laneById: Map<numbe
   return links;
 }
 
-function subjectOf(comment: string): string {
+/** First non-empty comment line, trimmed; empty when the comment is empty. */
+export function subjectOf(comment: string): string {
   for (const line of comment.split(/\r\n|\r|\n/)) {
     const trimmed = line.trim();
     if (trimmed.length > 0) {
@@ -353,6 +354,6 @@ export function shortOwner(owner: string): string {
 }
 
 /** The parsers already map unparseable dates to the epoch; mirror that rather than let `toISOString` throw. */
-function toIsoDate(date: Date): string {
+export function toIsoDate(date: Date): string {
   return isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString();
 }
