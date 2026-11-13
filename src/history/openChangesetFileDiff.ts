@@ -1,5 +1,5 @@
 import { commands, TextDocumentShowOptions, Uri, window } from "vscode";
-import { FileChangeStatus, IChangesetFileChange, IHistoryChangeset, RevisionType } from "../models";
+import { FileChangeStatus, IChangesetFileChange, IHistoryChangeset, IShelveInfo, RevisionType } from "../models";
 import { toEmptyRevisionUri, toRevisionIdUri } from "../revisionContentProvider";
 import { posix } from "path";
 import { Workspace } from "../workspace";
@@ -16,6 +16,18 @@ interface ILeftSide {
   label: string;
 }
 
+/** How the two sides are named in editor titles; changesets default to `cs:<id>` and `cs:<parent>`. */
+export interface IDiffLabels {
+  /** The tree the right side comes from, e.g. `cs:42` or `sh:7`. */
+  readonly current: string;
+  /** The tree the left side comes from, e.g. `cs:41`. */
+  readonly parent: string;
+}
+
+function changesetLabels(changeset: IHistoryChangeset): IDiffLabels {
+  return { current: `cs:${changeset.id}`, parent: `cs:${changeset.parentId}` };
+}
+
 /**
  * Pure: decides which two revisions to compare and how to title the editor.
  * Returns undefined when there is nothing to open (directories, binaries).
@@ -23,7 +35,8 @@ interface ILeftSide {
 export function describeChangesetFileDiff(
     workspaceId: string,
     changeset: IHistoryChangeset,
-    change: IChangesetFileChange): IChangesetFileDiff | undefined {
+    change: IChangesetFileChange,
+    labels: IDiffLabels = changesetLabels(changeset)): IChangesetFileDiff | undefined {
   if (change.revisionType !== RevisionType.TextFile) {
     return undefined;
   }
@@ -37,7 +50,7 @@ export function describeChangesetFileDiff(
     return {
       left: toEmptyRevisionUri(workspaceId, change.path),
       right: revision,
-      title: `${name} (added in cs:${changeset.id})`,
+      title: `${name} (added in ${labels.current})`,
     };
   }
 
@@ -47,7 +60,7 @@ export function describeChangesetFileDiff(
     return {
       left: revision,
       right: toEmptyRevisionUri(workspaceId, change.path),
-      title: `${name} (deleted in cs:${changeset.id})`,
+      title: `${name} (deleted in ${labels.current})`,
     };
   }
 
@@ -57,15 +70,15 @@ export function describeChangesetFileDiff(
     return {
       left: toRevisionIdUri(workspaceId, oldPath, change.revisionId, change.repository),
       right: revision,
-      title: `${oldName} (cs:${changeset.parentId}) ↔ ${name} (cs:${changeset.id})`,
+      title: `${oldName} (${labels.parent}) ↔ ${name} (${labels.current})`,
     };
   }
 
-  const left = describeLeftSide(workspaceId, changeset, change, oldPath);
+  const left = describeLeftSide(workspaceId, labels, change, oldPath);
   return {
     left: left.uri,
     right: revision,
-    title: `${oldName} ${left.label} ↔ ${name} (cs:${changeset.id})`,
+    title: `${oldName} ${left.label} ↔ ${name} (${labels.current})`,
   };
 }
 
@@ -73,7 +86,58 @@ export async function openChangesetFileDiff(
     workspace: Workspace,
     changeset: IHistoryChangeset,
     change: IChangesetFileChange): Promise<void> {
-  const diff = describeChangesetFileDiff(workspace.info.id, changeset, change);
+  await openFileDiff(describeChangesetFileDiff(workspace.info.id, changeset, change), change);
+}
+
+/**
+ * Opens the diff of one file of a shelve against the changeset the shelve was
+ * made on. A shelve has no changeset of its own, so the labels name `sh:N`.
+ */
+export async function openShelveFileDiff(
+    workspaceId: string,
+    shelve: IShelveInfo,
+    change: IChangesetFileChange): Promise<void> {
+  await openFileDiff(describeShelveFileDiff(workspaceId, shelve, change), change);
+}
+
+export function describeShelveFileDiff(
+    workspaceId: string,
+    shelve: IShelveInfo,
+    change: IChangesetFileChange): IChangesetFileDiff | undefined {
+  // Only `id`/`parentId` are read, and only through the labels.
+  const stand: IHistoryChangeset = {
+    branch: "", comment: shelve.comment, date: shelve.date, guid: shelve.guid, id: -1,
+    owner: shelve.owner, parentId: shelve.parentChangesetId, repository: shelve.repository, server: shelve.server,
+  };
+  return describeChangesetFileDiff(
+    workspaceId, stand, change, { current: `sh:${shelve.shelveId}`, parent: `cs:${shelve.parentChangesetId}` });
+}
+
+/**
+ * Opens the diff of one file of a comparison (two changesets, or a branch against
+ * its parent), titled with the labels of the two sides.
+ */
+export async function openComparisonFileDiff(
+    workspaceId: string,
+    labels: IDiffLabels,
+    change: IChangesetFileChange): Promise<void> {
+  await openFileDiff(describeComparisonFileDiff(workspaceId, labels, change), change);
+}
+
+export function describeComparisonFileDiff(
+    workspaceId: string,
+    labels: IDiffLabels,
+    change: IChangesetFileChange): IChangesetFileDiff | undefined {
+  // Only the labels are read from the stand-in.
+  const stand: IHistoryChangeset = {
+    branch: "", comment: "", date: new Date(0), guid: "", id: -1, owner: "", parentId: -1, repository: "", server: "",
+  };
+  return describeChangesetFileDiff(workspaceId, stand, change, labels);
+}
+
+async function openFileDiff(
+    diff: IChangesetFileDiff | undefined,
+    change: IChangesetFileChange): Promise<void> {
   if (!diff) {
     const name = posix.basename(change.path);
     void window.showInformationMessage(change.revisionType === RevisionType.BinaryFile
@@ -88,14 +152,14 @@ export async function openChangesetFileDiff(
 
 function describeLeftSide(
     workspaceId: string,
-    changeset: IHistoryChangeset,
+    labels: IDiffLabels,
     change: IChangesetFileChange,
     oldPath: string): ILeftSide {
   // The base revision is the one in the parent changeset's tree: exactly "what
   // did this changeset change".
   if (change.baseRevisionId > 0) {
     return {
-      label: `(cs:${changeset.parentId})`,
+      label: `(${labels.parent})`,
       uri: toRevisionIdUri(workspaceId, oldPath, change.baseRevisionId, change.repository),
     };
   }

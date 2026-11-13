@@ -50,6 +50,65 @@ describe("DiffChangeset command", () => {
     });
   });
 
+  context("When run for a shelve", () => {
+    const shell: IShellMock = mockShell({ result: [change], success: true });
+
+    it("diffs the sh: spec with the same format, so the shelve is compared with its parent", async () => {
+      const result = await DiffChangeset.runShelve(shell.mock.object, 41);
+      expect(result).to.eql([change]);
+      expect(shell.calls).to.eql([{ args: [ "sh:41", FORMAT, "--repositorypaths" ], command: "diff" }]);
+    });
+
+    it("rejects a shelve number that is not an integer", async () => {
+      const error = await runCatching(() => DiffChangeset.runShelve(shell.mock.object, 1.5));
+      expect(error).to.be.instanceOf(Error);
+    });
+
+    it("names the shelve in the fallback error", async () => {
+      const failing = mockShell<IChangesetFileChange[]>({ success: false });
+      const error = await runCatching(() => DiffChangeset.runShelve(failing.mock.object, 8));
+      expect(error?.message).to.equal("cm diff sh:8 failed.");
+    });
+  });
+
+  context("When run for two changesets", () => {
+    const shell: IShellMock = mockShell({ result: [change], success: true });
+
+    it("diffs cs:from against cs:to with the same format", async () => {
+      expect(await DiffChangeset.runBetween(shell.mock.object, 3600, 3624)).to.eql([change]);
+      expect(shell.calls).to.eql([{ args: [ "cs:3600", "cs:3624", FORMAT, "--repositorypaths" ], command: "diff" }]);
+    });
+
+    it("rejects ids that are not integers", async () => {
+      const error = await runCatching(() => DiffChangeset.runBetween(shell.mock.object, 1, Number.NaN));
+      expect(error).to.be.instanceOf(Error);
+    });
+  });
+
+  context("When run for a branch or a spec", () => {
+    const shell: IShellMock = mockShell({ result: [change], success: true });
+
+    it("diffs br: against the parent", async () => {
+      await DiffChangeset.runBranch(shell.mock.object, "/main/task7");
+      expect(shell.calls[0]).to.eql({ args: [ "br:/main/task7", FORMAT, "--repositorypaths" ], command: "diff" });
+    });
+
+    it("adds --clean for a branch when asked", async () => {
+      await DiffChangeset.runSpec(shell.mock.object, "br:/main/task7", { clean: true });
+      expect(shell.calls[1].args).to.eql([ "br:/main/task7", FORMAT, "--repositorypaths", "--clean" ]);
+    });
+
+    it("refuses --clean for a changeset, other specs and quotes or line breaks", async () => {
+      const before = shell.calls.length;
+      const clean = await runCatching(() => DiffChangeset.runSpec(shell.mock.object, "cs:5", { clean: true }));
+      expect(clean).to.be.instanceOf(Error);
+      expect(await runCatching(() => DiffChangeset.runSpec(shell.mock.object, "lb:x"))).to.be.instanceOf(Error);
+      expect(await runCatching(() => DiffChangeset.runBranch(shell.mock.object, "/main/a\"b"))).to.be.instanceOf(Error);
+      expect(await runCatching(() => DiffChangeset.runSpec(shell.mock.object, "br:/a\nb"))).to.be.instanceOf(Error);
+      expect(shell.calls).to.have.length(before);
+    });
+  });
+
   context("When the parser produced no result", () => {
     const shell: IShellMock = mockShell<IChangesetFileChange[]>({ success: true });
     let cmdResult: IChangesetFileChange[];

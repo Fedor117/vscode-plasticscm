@@ -242,10 +242,11 @@ describe("Plastic Reviews contributions", () => {
     const inline = title.filter(entry => entry.when?.startsWith("view == plastic-scm.reviews.list") &&
       entry.group?.startsWith("navigation"));
     expect(inline.map(entry => [ entry.command, entry.group ])).to.deep.equal([
+      [ "plastic-scm.codeReview.create", "navigation@0" ],
       [ "plastic-scm.reviews.find", "navigation@1" ],
       [ "plastic-scm.reviews.refresh", "navigation@2" ],
     ]);
-    expect(inline[0].when).to.equal("view == plastic-scm.reviews.list");
+    expect(inline[1].when).to.equal("view == plastic-scm.reviews.list");
     expect(title.some(entry => entry.command === "plastic-scm.reviews.openById")).to.equal(false);
     // With no review open, the Review view points at Find Review… too, which also opens a review by its number.
     const welcome = contributes.viewsWelcome?.find(entry => entry.view === "plastic-scm.reviews.active");

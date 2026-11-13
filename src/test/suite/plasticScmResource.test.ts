@@ -82,4 +82,59 @@ describe("PlasticScmResource", () => {
       expect(buildResource(ChangeType.Private, RevisionType.TextFile).letter).to.equal("P");
     });
   });
+
+  context("command", () => {
+    function resourceWith(
+        type: ChangeType, revisionType: RevisionType, oldPath?: Uri, changeset = 42): PlasticScmResource {
+      const workspace = Mock.ofType<Workspace>();
+      workspace.setup(w => w.currentChangeset).returns(() => changeset);
+      workspace.setup(w => w.info).returns(() => ({ id: "wk1", name: "Nimbus", path: "/wk" }));
+      return new PlasticScmResource(
+        { oldPath, path: Uri.file("/wk/foo.cs"), revisionType, type }, workspace.object);
+    }
+
+    it("diffs a changed text file against the loaded changeset", () => {
+      const command = resourceWith(ChangeType.Changed, RevisionType.TextFile).command!;
+      expect(command.command).to.equal("vscode.diff");
+      expect((command.arguments![0] as Uri).scheme).to.equal("plastic");
+      expect((command.arguments![1] as Uri).fsPath).to.equal(Uri.file("/wk/foo.cs").fsPath);
+    });
+
+    it("opens an added file itself, binary or not", () => {
+      for (const revisionType of [ RevisionType.TextFile, RevisionType.BinaryFile ]) {
+        const command = resourceWith(ChangeType.Added, revisionType).command!;
+        expect(command.command).to.equal("vscode.open");
+        expect((command.arguments![0] as Uri).fsPath).to.equal(Uri.file("/wk/foo.cs").fsPath);
+      }
+      expect(resourceWith(ChangeType.Added, RevisionType.Directory).command).to.equal(undefined);
+    });
+
+    it("opens the base revision of a deleted text file from the read-only plastic: scheme", () => {
+      const command = resourceWith(ChangeType.Deleted, RevisionType.TextFile).command!;
+      expect(command.command).to.equal("vscode.open");
+      const base = command.arguments![0] as Uri;
+      expect(base.scheme).to.equal("plastic");
+      expect(base.fsPath).to.equal(Uri.file("/wk/foo.cs").fsPath);
+      expect(JSON.parse(base.query)).to.eql({ changeset: 42, wkId: "wk1" });
+      expect(resourceWith(ChangeType.Deleted, RevisionType.BinaryFile).command).to.equal(undefined);
+    });
+
+    it("diffs a moved file: the old path at the loaded changeset against the new path", () => {
+      const oldPath = Uri.file("/wk/old/foo.cs");
+      const command = resourceWith(ChangeType.Moved, RevisionType.TextFile, oldPath).command!;
+      expect(command.command).to.equal("vscode.diff");
+      const [ left, right, title ] = command.arguments as [ Uri, Uri, string ];
+      expect(left.scheme).to.equal("plastic");
+      expect(left.fsPath).to.equal(oldPath.fsPath);
+      expect(JSON.parse(left.query).changeset).to.equal(42);
+      expect(right.fsPath).to.equal(Uri.file("/wk/foo.cs").fsPath);
+      expect(title).to.equal("foo.cs ↔ foo.cs (Moved)");
+    });
+
+    it("opens nothing for a moved file of unknown origin, private files, or before a changeset is loaded", () => {
+      expect(resourceWith(ChangeType.Moved, RevisionType.TextFile).command).to.equal(undefined);
+      expect(resourceWith(ChangeType.Private, RevisionType.TextFile).command).to.equal(undefined);
+      expect(resourceWith(ChangeType.Changed, RevisionType.TextFile, undefined, -1).command).to.equal(undefined);
+    });
+  });
 });

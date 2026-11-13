@@ -150,7 +150,11 @@ export class HistoryViewProvider implements WebviewViewProvider, Disposable {
       this.mHistories.set(workspace.info.id, history);
       this.mDisposables.push(
         history,
-        history.onDidChange(() => this.schedulePost()),
+        history.onDidChange(() => {
+          this.schedulePost();
+          // The status bar's Update entry follows what the graph knows of the branch head.
+          workspace.setKnownBranchHead(history.knownHead);
+        }),
         // The history's own status subscription was registered first (in its
         // constructor), so by the time this runs `isStale` already reflects the
         // new workspace position.

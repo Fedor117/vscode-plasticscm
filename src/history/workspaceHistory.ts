@@ -5,6 +5,7 @@ import { Disposable, Event, EventEmitter, OutputChannel } from "vscode";
 import { IBranchInfo, IChangesetFileChange, IHistoryChangeset, IMergeLink, WkConfigType } from "../models";
 import { IConfig, IShellConfig } from "../config";
 import { describeError } from "../commands/scmUtils";
+import { IKnownBranchHead } from "../incomingChanges";
 import { Workspace } from "../workspace";
 
 export type HistoryStatus = "idle" | "loading" | "ready" | "error" | "unsupported";
@@ -72,6 +73,18 @@ export class WorkspaceHistory implements Disposable {
 
   public get currentBranch(): string | undefined {
     return this.mCurrentBranch;
+  }
+
+  /**
+   * The newest changeset cm reported for the current branch, kept fresh by
+   * `checkForNewer`; the workspace compares it with its own changeset to offer
+   * an update. Undefined until the first lane has loaded.
+   */
+  public get knownHead(): IKnownBranchHead | undefined {
+    const lane = this.mLanes[0];
+    return lane && lane.branch === this.mCurrentBranch && lane.headChangesetId !== undefined
+      ? { branch: lane.branch, changesetId: lane.headChangesetId }
+      : undefined;
   }
 
   public readonly onDidChange: Event<void>;

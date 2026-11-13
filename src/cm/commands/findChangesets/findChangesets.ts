@@ -22,6 +22,19 @@ export interface IChangesetLookupOptions {
   ignoreHidden?: boolean;
 }
 
+/** A newest-first listing of the whole repository, across every branch; what the Branch Explorer pages through. */
+export interface IRepositoryChangesetQuery {
+  limit: number;
+  /** Only changesets strictly older than this id, for paging. */
+  beforeChangesetId?: number;
+  /** Only changesets strictly newer than this id, to pick up work done since the last load. */
+  afterChangesetId?: number;
+  /** Text the comment must contain. cm's `like` is case-sensitive. */
+  commentContains?: string;
+  /** Full branch name, e.g. `/main/task001`. */
+  branch?: string;
+}
+
 const IGNORE_HIDDEN = " and ignorehidden = 'true'";
 
 /** Arguments every `cm find` in this module passes after the query. */
@@ -44,6 +57,16 @@ export function assertInteger(value: number, name: string): void {
   }
 }
 
+/**
+ * Free text interpolated into a query: cm offers no escape for quotes, and a
+ * line break would end the shell command.
+ */
+export function assertQueryText(value: string, name: string): void {
+  if (/['"\r\n]/.test(value)) {
+    throw new Error(`${name} contains a quote or a line break, which cm queries cannot express.`);
+  }
+}
+
 export class FindChangesets {
   public static async run(shell: ICmShell, query: IChangesetQuery): Promise<IHistoryChangeset[]> {
     assertBranchName(query.branch);
@@ -63,6 +86,34 @@ export class FindChangesets {
     where += ` order by changesetid desc limit ${query.limit}`;
 
     return FindChangesets.find(shell, where);
+  }
+
+  public static async runRepository(shell: ICmShell, query: IRepositoryChangesetQuery): Promise<IHistoryChangeset[]> {
+    assertInteger(query.limit, "limit");
+    if (query.limit <= 0) {
+      throw new Error(`limit must be positive, got ${query.limit}.`);
+    }
+
+    const conditions: string[] = [];
+    if (query.branch !== undefined) {
+      assertBranchName(query.branch);
+      conditions.push(`branch='${query.branch}'`);
+    }
+    if (query.beforeChangesetId !== undefined) {
+      assertInteger(query.beforeChangesetId, "beforeChangesetId");
+      conditions.push(`changesetid < ${query.beforeChangesetId}`);
+    }
+    if (query.afterChangesetId !== undefined) {
+      assertInteger(query.afterChangesetId, "afterChangesetId");
+      conditions.push(`changesetid > ${query.afterChangesetId}`);
+    }
+    if (query.commentContains !== undefined) {
+      assertQueryText(query.commentContains, "The search text");
+      conditions.push(`comment like '%${query.commentContains}%'`);
+    }
+
+    const where = conditions.length > 0 ? `where ${conditions.join(" and ")} ` : "";
+    return FindChangesets.find(shell, `${where}order by changesetid desc limit ${query.limit}`);
   }
 
   public static async runById(

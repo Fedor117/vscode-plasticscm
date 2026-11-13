@@ -202,4 +202,63 @@ describe("FindChangesets command", () => {
       });
     });
   });
+
+  context("When run across the whole repository", () => {
+    it("asks for the newest changesets of every branch when nothing narrows it", async () => {
+      const shell: IShellMock = mockShell({ result: [changeset], success: true });
+      const result = await FindChangesets.runRepository(shell.mock.object, { limit: 301 });
+
+      expect(result).to.eql([changeset]);
+      expect(shell.calls).to.eql([{
+        args: [ "changeset", "order by changesetid desc limit 301", ...XML_ARGS ],
+        command: "find",
+      }]);
+    });
+
+    it("pages with a changeset id on either side", async () => {
+      const shell: IShellMock = mockShell<IHistoryChangeset[]>({ result: [], success: true });
+      await FindChangesets.runRepository(shell.mock.object, { beforeChangesetId: 2080, limit: 50 });
+      await FindChangesets.runRepository(shell.mock.object, { afterChangesetId: 3622, limit: 50 });
+
+      expect(shell.calls.map(call => call.args[1])).to.eql([
+        "where changesetid < 2080 order by changesetid desc limit 50",
+        "where changesetid > 3622 order by changesetid desc limit 50",
+      ]);
+    });
+
+    it("combines a branch, a cursor and comment text", async () => {
+      const shell: IShellMock = mockShell<IHistoryChangeset[]>({ result: [], success: true });
+      await FindChangesets.runRepository(
+        shell.mock.object, { beforeChangesetId: 900, branch: "/main/X", commentContains: "tyre model", limit: 200 });
+
+      expect(shell.calls[0].args[1]).to.equal(
+        "where branch='/main/X' and changesetid < 900 and comment like '%tyre model%' "
+        + "order by changesetid desc limit 200");
+    });
+
+    it("refuses search text that would end the quoted string or the shell argument", async () => {
+      const shell: IShellMock = mockShell<IHistoryChangeset[]>({ result: [], success: true });
+      for (const text of [ "it's", "say \"hi\"", "two\nlines", "carriage\rreturn" ]) {
+        const error = await runCatching(
+          () => FindChangesets.runRepository(shell.mock.object, { commentContains: text, limit: 10 }));
+        expect(error, text).to.be.instanceOf(Error);
+      }
+      expect(shell.calls).to.eql([]);
+    });
+
+    it("refuses a limit that is not a positive integer", async () => {
+      const shell: IShellMock = mockShell<IHistoryChangeset[]>({ result: [], success: true });
+      for (const limit of [ 0, -5, 1.5 ]) {
+        expect(await runCatching(() => FindChangesets.runRepository(shell.mock.object, { limit })), String(limit))
+          .to.be.instanceOf(Error);
+      }
+      expect(shell.calls).to.eql([]);
+    });
+
+    it("throws what cm reports", async () => {
+      const shell: IShellMock = mockShell<IHistoryChangeset[]>({ error: new Error("boom"), success: false });
+      const error = await runCatching(() => FindChangesets.runRepository(shell.mock.object, { limit: 10 }));
+      expect(error?.message).to.equal("boom");
+    });
+  });
 });

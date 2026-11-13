@@ -9,7 +9,7 @@ import {
 import { IChangesetFileChange, IHistoryChangeset, IMergeLink } from "../models";
 import { ICmParser, ICmShell } from "../cm/shell";
 import { IReview, IReviewBranch, IReviewComment, IReviewRevision, ReviewStatus, reviewStatuses } from "./models";
-import { DiffChangesetParser } from "../cm/commands/diffChangeset/diffChangesetParser";
+import { DiffChangeset } from "../cm/commands/diffChangeset/diffChangeset";
 import { encodeBranchSpec } from "../cm/commands/findMerges/findMerges";
 import { FindBranchParser } from "../cm/commands/findBranch/findBranchParser";
 import { FindMergesParser } from "../cm/commands/findMerges/findMergesParser";
@@ -31,10 +31,6 @@ export const PAGE_SIZE = 50;
 
 /** Reviews Find Review… lists; cm answers this many in about a second. */
 export const FIND_LIMIT = 2000;
-
-const DIFF_FORMAT =
-  "--format=S:{status}{newline}T:{type}{newline}P:{path}{newline}R:{revid}{newline}PR:{parentrevid}{newline}" +
-  "B:{baserevid}{newline}SP:{srccmpath}{newline}DP:{dstcmpath}{newline}RP:{repository}";
 
 /** A parser without a class of its own: it only has to buffer and hand the lines to `read`. */
 export function outputParser<T>(read: (lines: string[]) => T | Promise<T>): ICmParser<T> {
@@ -303,11 +299,7 @@ export class ReviewCommands {
     if (options.clean && !spec.startsWith("br:")) {
       throw new Error("Only branch comparisons can leave out merged changes.");
     }
-    const args = [ spec, DIFF_FORMAT, "--repositorypaths" ];
-    if (options.clean) {
-      args.push("--clean");
-    }
-    return executeReviewCommand(this.shell, "diff", args, new DiffChangesetParser());
+    return DiffChangeset.runSpec(this.shell, spec, options);
   }
 
   /** Merges, cherry picks and interval merges into `branchName` up to `head`. */

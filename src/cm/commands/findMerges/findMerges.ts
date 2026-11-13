@@ -17,6 +17,35 @@ export function encodeBranchSpec(branchName: string): string {
 }
 
 export class FindMerges {
+  /**
+   * Every merge link of the repository whose destination is in
+   * `[fromChangesetId, beforeChangesetId)`, whatever the branches: what a graph of
+   * all branches needs for one page of changesets.
+   */
+  public static async runRange(
+      shell: ICmShell, fromChangesetId: number, beforeChangesetId?: number): Promise<IMergeLink[]> {
+    assertInteger(fromChangesetId, "fromChangesetId");
+    let where = `where dstchangeset >= ${fromChangesetId}`;
+    if (beforeChangesetId !== undefined) {
+      assertInteger(beforeChangesetId, "beforeChangesetId");
+      where += ` and dstchangeset < ${beforeChangesetId}`;
+    }
+
+    const parser: ICmParser<IMergeLink[]> = new FindMergesParser();
+    const result: ICmResult<IMergeLink[]> = await shell.exec(
+      "find", [ "merge", where, ...FIND_XML_ARGS ], parser);
+
+    if (!result.success) {
+      throw result.error ?? new Error("cm find merge failed.");
+    }
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    return result.result ?? [];
+  }
+
   public static async run(
       shell: ICmShell, branchName: string, fromChangesetId: number): Promise<IMergeLink[]> {
     assertBranchName(branchName);

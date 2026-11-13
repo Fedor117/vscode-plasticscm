@@ -67,7 +67,7 @@
         "plastic-scm.cmConfiguration.millisCommandTimeout": {
           "type": "number",
           "default": 120000,
-          "markdownDescription": "Milliseconds to wait for a single `cm` command to complete. A command that exceeds this is abandoned and the `cm shell` is restarted, because its output can no longer be matched to a command.",
+          "markdownDescription": "Milliseconds to wait for a single `cm` command to complete. A command that exceeds this is abandoned and the `cm shell` is restarted, because its output can no longer be matched to a command. `0` means no limit.",
           "scope": "window"
         },
         "plastic-scm.ignoredDirectories": {
@@ -502,6 +502,354 @@
         "command": "plastic-scm.reviews.cancelEdit",
         "category": "Plastic Reviews",
         "title": "Cancel"
+      },
+      {
+        "command": "plastic-scm.repository.refresh",
+        "category": "Plastic SCM",
+        "title": "Refresh Repository",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.repository.loadMore",
+        "category": "Plastic SCM",
+        "title": "Load More"
+      },
+      {
+        "command": "plastic-scm.repository.retry",
+        "category": "Plastic SCM",
+        "title": "Retry",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.branch.create",
+        "category": "Plastic SCM",
+        "title": "Create Branch…",
+        "icon": "$(add)"
+      },
+      {
+        "command": "plastic-scm.branch.createAndSwitch",
+        "category": "Plastic SCM",
+        "title": "Create Branch and Switch…"
+      },
+      {
+        "command": "plastic-scm.switch.branch",
+        "category": "Plastic SCM",
+        "title": "Switch to Branch…",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "plastic-scm.switch.changeset",
+        "category": "Plastic SCM",
+        "title": "Switch to Changeset…"
+      },
+      {
+        "command": "plastic-scm.switch.label",
+        "category": "Plastic SCM",
+        "title": "Switch to Label…",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "plastic-scm.branch.rename",
+        "category": "Plastic SCM",
+        "title": "Rename Branch…"
+      },
+      {
+        "command": "plastic-scm.branch.delete",
+        "category": "Plastic SCM",
+        "title": "Delete Branch…"
+      },
+      {
+        "command": "plastic-scm.branch.editComment",
+        "category": "Plastic SCM",
+        "title": "Edit Branch Comment…"
+      },
+      {
+        "command": "plastic-scm.label.create",
+        "category": "Plastic SCM",
+        "title": "Create Label…",
+        "icon": "$(add)"
+      },
+      {
+        "command": "plastic-scm.label.rename",
+        "category": "Plastic SCM",
+        "title": "Rename Label…"
+      },
+      {
+        "command": "plastic-scm.label.delete",
+        "category": "Plastic SCM",
+        "title": "Delete Label…"
+      },
+      {
+        "command": "plastic-scm.update",
+        "category": "Plastic SCM",
+        "title": "Update Workspace",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "plastic-scm.statusBarMenu",
+        "category": "Plastic SCM",
+        "title": "Workspace Menu"
+      },
+      {
+        "command": "plastic-scm.shelve.create",
+        "category": "Plastic SCM",
+        "title": "Shelve Pending Changes…",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "plastic-scm.shelve.createSelected",
+        "category": "Plastic SCM",
+        "title": "Shelve Selected Changes…"
+      },
+      {
+        "command": "plastic-scm.shelve.apply",
+        "category": "Plastic SCM",
+        "title": "Apply Shelve…"
+      },
+      {
+        "command": "plastic-scm.shelve.delete",
+        "category": "Plastic SCM",
+        "title": "Delete Shelve…"
+      },
+      {
+        "command": "plastic-scm.shelve.copyId",
+        "category": "Plastic SCM",
+        "title": "Copy Shelve Id"
+      },
+      {
+        "command": "plastic-scm.shelve.openFile",
+        "category": "Plastic SCM",
+        "title": "Open Shelved Changes"
+      },
+      {
+        "command": "plastic-scm.checkout",
+        "category": "Plastic SCM",
+        "title": "Checkout"
+      },
+      {
+        "command": "plastic-scm.locks.refresh",
+        "category": "Plastic SCM",
+        "title": "Refresh Locks",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.locks.release",
+        "category": "Plastic SCM",
+        "title": "Release Lock"
+      },
+      {
+        "command": "plastic-scm.locks.remove",
+        "category": "Plastic SCM",
+        "title": "Remove Lock"
+      },
+      {
+        "command": "plastic-scm.delete",
+        "category": "Plastic SCM",
+        "title": "Delete (Plastic SCM)"
+      },
+      {
+        "command": "plastic-scm.move",
+        "category": "Plastic SCM",
+        "title": "Rename/Move (Plastic SCM)…"
+      },
+      {
+        "command": "plastic-scm.ignore.add",
+        "category": "Plastic SCM",
+        "title": "Add to Ignore List"
+      },
+      {
+        "command": "plastic-scm.hiddenChanges.add",
+        "category": "Plastic SCM",
+        "title": "Add to Hidden Changes List"
+      },
+      {
+        "command": "plastic-scm.cloaked.add",
+        "category": "Plastic SCM",
+        "title": "Add to Cloaked List"
+      },
+      {
+        "command": "plastic-scm.ignore.open",
+        "category": "Plastic SCM",
+        "title": "Open ignore.conf"
+      },
+      {
+        "command": "plastic-scm.hiddenChanges.open",
+        "category": "Plastic SCM",
+        "title": "Open hidden_changes.conf"
+      },
+      {
+        "command": "plastic-scm.cloaked.open",
+        "category": "Plastic SCM",
+        "title": "Open cloaked.conf"
+      },
+      {
+        "command": "plastic-scm.fileHistory.show",
+        "category": "Plastic SCM",
+        "title": "Show File History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "plastic-scm.fileHistory.refresh",
+        "category": "Plastic SCM",
+        "title": "Refresh File History",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.fileHistory.openChanges",
+        "category": "Plastic SCM",
+        "title": "Open Changes",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "plastic-scm.fileHistory.compareWithWorkspace",
+        "category": "Plastic SCM",
+        "title": "Compare with Workspace File"
+      },
+      {
+        "command": "plastic-scm.fileHistory.openAtRevision",
+        "category": "Plastic SCM",
+        "title": "Open File at Revision",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "plastic-scm.fileHistory.copyChangesetId",
+        "category": "Plastic SCM",
+        "title": "Copy Changeset Id"
+      },
+      {
+        "command": "plastic-scm.fileHistory.revert",
+        "category": "Plastic SCM",
+        "title": "Revert to This Revision",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "plastic-scm.annotate.toggle",
+        "category": "Plastic SCM",
+        "title": "Toggle Annotate (Blame)"
+      },
+      {
+        "command": "plastic-scm.annotate.openChanges",
+        "category": "Plastic SCM",
+        "title": "Open Changes of This Line's Changeset"
+      },
+      {
+        "command": "plastic-scm.compare.changesets",
+        "category": "Plastic SCM",
+        "title": "Compare Changesets…",
+        "icon": "$(compare-changes)"
+      },
+      {
+        "command": "plastic-scm.compare.branch",
+        "category": "Plastic SCM",
+        "title": "Show Branch Changes…",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "plastic-scm.compare.showChangeset",
+        "category": "Plastic SCM",
+        "title": "Show Changed Files of a Changeset"
+      },
+      {
+        "command": "plastic-scm.compare.clear",
+        "category": "Plastic SCM",
+        "title": "Clear Comparison",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "plastic-scm.compare.openFile",
+        "category": "Plastic SCM",
+        "title": "Open Changes"
+      },
+      {
+        "command": "plastic-scm.codeReview.create",
+        "category": "Plastic SCM",
+        "title": "Create Code Review…",
+        "icon": "$(git-pull-request-create)"
+      },
+      {
+        "command": "plastic-scm.codeReview.addReviewers",
+        "category": "Plastic Reviews",
+        "title": "Add Reviewers…",
+        "icon": "$(person-add)"
+      },
+      {
+        "command": "plastic-scm.codeReview.removeReviewers",
+        "category": "Plastic Reviews",
+        "title": "Remove Reviewers…",
+        "icon": "$(person)"
+      },
+      {
+        "command": "plastic-scm.codeReview.requestReviewAgain",
+        "category": "Plastic Reviews",
+        "title": "Request Review Again…",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "plastic-scm.explorer.open",
+        "category": "Plastic SCM",
+        "title": "Open Branch Explorer",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "plastic-scm.explorer.refresh",
+        "category": "Plastic SCM",
+        "title": "Refresh Branch Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "plastic-scm.explorer.switchToChangeset",
+        "category": "Plastic SCM",
+        "title": "Switch Workspace to This Changeset…"
+      },
+      {
+        "command": "plastic-scm.explorer.switchToBranch",
+        "category": "Plastic SCM",
+        "title": "Switch Workspace to This Branch…"
+      },
+      {
+        "command": "plastic-scm.explorer.createBranch",
+        "category": "Plastic SCM",
+        "title": "Create Branch from This Changeset…"
+      },
+      {
+        "command": "plastic-scm.explorer.createLabel",
+        "category": "Plastic SCM",
+        "title": "Label This Changeset…"
+      },
+      {
+        "command": "plastic-scm.explorer.createReview",
+        "category": "Plastic SCM",
+        "title": "Create Code Review for This Branch…"
+      },
+      {
+        "command": "plastic-scm.explorer.compareWithSelected",
+        "category": "Plastic SCM",
+        "title": "Compare with Selected Changeset"
+      },
+      {
+        "command": "plastic-scm.explorer.compareWithWorkspace",
+        "category": "Plastic SCM",
+        "title": "Compare with Workspace Changeset"
+      },
+      {
+        "command": "plastic-scm.explorer.copyChangesetId",
+        "category": "Plastic SCM",
+        "title": "Copy Changeset Id"
+      },
+      {
+        "command": "plastic-scm.explorer.copyBranch",
+        "category": "Plastic SCM",
+        "title": "Copy Branch Name"
+      },
+      {
+        "command": "plastic-scm.explorer.copyComment",
+        "category": "Plastic SCM",
+        "title": "Copy Comment"
+      },
+      {
+        "command": "plastic-scm.compare.between",
+        "category": "Plastic SCM",
+        "title": "Compare Two Changesets"
       }
     ],
     "views": {
@@ -513,6 +861,27 @@
           "contextualTitle": "Plastic SCM Graph",
           "icon": "images/icons/iconsidebar.svg",
           "when": "plastic-scm.active"
+        },
+        {
+          "id": "plastic-scm.repository",
+          "name": "Plastic SCM Repository",
+          "contextualTitle": "Plastic SCM Repository",
+          "icon": "images/icons/iconsidebar.svg",
+          "when": "plastic-scm.active"
+        },
+        {
+          "id": "plastic-scm.fileHistory",
+          "name": "File History",
+          "contextualTitle": "Plastic SCM File History",
+          "icon": "images/icons/iconsidebar.svg",
+          "when": "plastic-scm.active"
+        },
+        {
+          "id": "plastic-scm.comparison",
+          "name": "Comparison",
+          "contextualTitle": "Plastic SCM Comparison",
+          "icon": "images/icons/iconsidebar.svg",
+          "when": "plastic-scm.active && plastic-scm.comparison.active"
         }
       ],
       "plastic-scm-reviews": [
@@ -543,6 +912,10 @@
         "view": "plastic-scm.reviews.discussions",
         "contents": "Discussions of the selected review appear here.",
         "when": "!plastic-scm.reviews.hasActiveReview"
+      },
+      {
+        "view": "plastic-scm.fileHistory",
+        "contents": "Right-click a file in the Explorer or in the editor and choose Show File History.\n[Show File History](command:plastic-scm.fileHistory.show)"
       }
     ],
     "menus": {
@@ -558,8 +931,18 @@
           "when": "scmProvider =~ /^plastic-scm/"
         },
         {
+          "command": "plastic-scm.update",
+          "group": "navigation",
+          "when": "scmProvider =~ /^plastic-scm/"
+        },
+        {
           "command": "plastic-scm.undoCheckoutAll",
           "group": "navigation",
+          "when": "scmProvider =~ /^plastic-scm/"
+        },
+        {
+          "command": "plastic-scm.shelve.create",
+          "group": "2_shelve@1",
           "when": "scmProvider =~ /^plastic-scm/"
         },
         {
@@ -570,6 +953,21 @@
         {
           "command": "plastic-scm.reviews.show",
           "group": "3_footer@2",
+          "when": "scmProvider =~ /^plastic-scm/"
+        },
+        {
+          "command": "plastic-scm.compare.changesets",
+          "when": "scmProvider =~ /^plastic-scm/",
+          "group": "4_compare@1"
+        },
+        {
+          "command": "plastic-scm.compare.branch",
+          "when": "scmProvider =~ /^plastic-scm/",
+          "group": "4_compare@2"
+        },
+        {
+          "command": "plastic-scm.explorer.open",
+          "group": "navigation",
           "when": "scmProvider =~ /^plastic-scm/"
         }
       ],
@@ -603,6 +1001,46 @@
           "command": "plastic-scm.checkin",
           "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /checkedout|changed|added|moved|deleted/",
           "group": "1_modification@1"
+        },
+        {
+          "command": "plastic-scm.shelve.createSelected",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /checkedout|changed|added|moved|deleted/",
+          "group": "1_modification@3"
+        },
+        {
+          "command": "plastic-scm.checkout",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /changed|moved/",
+          "group": "1_modification@4"
+        },
+        {
+          "command": "plastic-scm.delete",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /checkedout|changed|added|moved/",
+          "group": "1_modification@5"
+        },
+        {
+          "command": "plastic-scm.move",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /checkedout|changed|added|moved/",
+          "group": "1_modification@6"
+        },
+        {
+          "command": "plastic-scm.ignore.add",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status",
+          "group": "3_rules@1"
+        },
+        {
+          "command": "plastic-scm.hiddenChanges.add",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status",
+          "group": "3_rules@2"
+        },
+        {
+          "command": "plastic-scm.cloaked.add",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status",
+          "group": "3_rules@3"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /file/ && scmResourceState =~ /checkedout|changed|moved/",
+          "group": "2_history@1"
         }
       ],
       "scm/resourceFolder/context": [
@@ -632,6 +1070,11 @@
           "command": "plastic-scm.history.refresh",
           "group": "navigation",
           "when": "view == plastic-scm.history"
+        },
+        {
+          "command": "plastic-scm.codeReview.create",
+          "when": "view == plastic-scm.reviews.list",
+          "group": "navigation@0"
         },
         {
           "command": "plastic-scm.reviews.find",
@@ -712,6 +1155,51 @@
           "command": "plastic-scm.reviews.addReviewComment",
           "when": "view == plastic-scm.reviews.discussions && plastic-scm.reviews.hasActiveReview && plastic-scm.reviews.postingEnabled",
           "group": "navigation@1"
+        },
+        {
+          "command": "plastic-scm.repository.refresh",
+          "group": "navigation",
+          "when": "view == plastic-scm.repository"
+        },
+        {
+          "command": "plastic-scm.showOutput",
+          "group": "9_output@1",
+          "when": "view == plastic-scm.repository"
+        },
+        {
+          "command": "plastic-scm.fileHistory.refresh",
+          "group": "navigation",
+          "when": "view == plastic-scm.fileHistory"
+        },
+        {
+          "command": "plastic-scm.compare.clear",
+          "group": "navigation",
+          "when": "view == plastic-scm.comparison"
+        },
+        {
+          "command": "plastic-scm.explorer.open",
+          "group": "navigation",
+          "when": "view == plastic-scm.history"
+        },
+        {
+          "command": "plastic-scm.explorer.open",
+          "group": "navigation",
+          "when": "view == plastic-scm.repository"
+        },
+        {
+          "command": "plastic-scm.codeReview.addReviewers",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "2_reviewers@1"
+        },
+        {
+          "command": "plastic-scm.codeReview.removeReviewers",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "2_reviewers@2"
+        },
+        {
+          "command": "plastic-scm.codeReview.requestReviewAgain",
+          "when": "view == plastic-scm.reviews.active && plastic-scm.reviews.hasActiveReview",
+          "group": "2_reviewers@3"
         }
       ],
       "view/item/context": [
@@ -824,6 +1312,186 @@
           "command": "plastic-scm.reviews.deleteComment",
           "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;delete(;|$)/ && plastic-scm.reviews.postingEnabled",
           "group": "2_write@3"
+        },
+        {
+          "command": "plastic-scm.switch.branch",
+          "when": "view == plastic-scm.repository && viewItem == branch",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.switch.branch",
+          "when": "view == plastic-scm.repository && viewItem == branch",
+          "group": "1_switch@1"
+        },
+        {
+          "command": "plastic-scm.branch.create",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "2_create@1"
+        },
+        {
+          "command": "plastic-scm.branch.createAndSwitch",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "2_create@2"
+        },
+        {
+          "command": "plastic-scm.label.create",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "2_create@3"
+        },
+        {
+          "command": "plastic-scm.branch.rename",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "3_edit@1"
+        },
+        {
+          "command": "plastic-scm.branch.editComment",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "3_edit@2"
+        },
+        {
+          "command": "plastic-scm.branch.delete",
+          "when": "view == plastic-scm.repository && viewItem == branch",
+          "group": "4_delete@1"
+        },
+        {
+          "command": "plastic-scm.switch.label",
+          "when": "view == plastic-scm.repository && viewItem == label",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.switch.label",
+          "when": "view == plastic-scm.repository && viewItem == label",
+          "group": "1_switch@1"
+        },
+        {
+          "command": "plastic-scm.branch.create",
+          "when": "view == plastic-scm.repository && viewItem =~ /^label(\\.current)?$/",
+          "group": "2_create@1"
+        },
+        {
+          "command": "plastic-scm.branch.createAndSwitch",
+          "when": "view == plastic-scm.repository && viewItem =~ /^label(\\.current)?$/",
+          "group": "2_create@2"
+        },
+        {
+          "command": "plastic-scm.label.rename",
+          "when": "view == plastic-scm.repository && viewItem =~ /^label(\\.current)?$/",
+          "group": "3_edit@1"
+        },
+        {
+          "command": "plastic-scm.label.delete",
+          "when": "view == plastic-scm.repository && viewItem == label",
+          "group": "4_delete@1"
+        },
+        {
+          "command": "plastic-scm.branch.create",
+          "when": "view == plastic-scm.repository && viewItem == section.branches",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.label.create",
+          "when": "view == plastic-scm.repository && viewItem == section.labels",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.shelve.apply",
+          "when": "view == plastic-scm.repository && viewItem =~ /^shelve(\\.current)?$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.shelve.apply",
+          "when": "view == plastic-scm.repository && viewItem =~ /^shelve(\\.current)?$/",
+          "group": "1_apply@1"
+        },
+        {
+          "command": "plastic-scm.shelve.copyId",
+          "when": "view == plastic-scm.repository && viewItem =~ /^shelve(\\.current)?$/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "plastic-scm.shelve.delete",
+          "when": "view == plastic-scm.repository && viewItem =~ /^shelve(\\.current)?$/",
+          "group": "4_delete@1"
+        },
+        {
+          "command": "plastic-scm.shelve.openFile",
+          "when": "view == plastic-scm.repository && viewItem == shelve.file",
+          "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.locks.refresh",
+          "when": "view == plastic-scm.repository && viewItem == section.locks",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.locks.release",
+          "when": "view == plastic-scm.repository && viewItem =~ /^lock\\.(mine|others)$/",
+          "group": "1_lock@1"
+        },
+        {
+          "command": "plastic-scm.locks.remove",
+          "when": "view == plastic-scm.repository && viewItem =~ /^lock\\.(mine|others)$/",
+          "group": "1_lock@2"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openChanges",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openAtRevision",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "inline@2"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openChanges",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "1_open@1"
+        },
+        {
+          "command": "plastic-scm.fileHistory.compareWithWorkspace",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "1_open@2"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openAtRevision",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "1_open@3"
+        },
+        {
+          "command": "plastic-scm.fileHistory.copyChangesetId",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "2_copy@1"
+        },
+        {
+          "command": "plastic-scm.fileHistory.revert",
+          "when": "view == plastic-scm.fileHistory && viewItem == fileRevision",
+          "group": "3_modify@1"
+        },
+        {
+          "command": "plastic-scm.compare.branch",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "3_compare@1"
+        },
+        {
+          "command": "plastic-scm.codeReview.create",
+          "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
+          "group": "3_compare@2"
+        },
+        {
+          "command": "plastic-scm.codeReview.addReviewers",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "2_status@3"
+        },
+        {
+          "command": "plastic-scm.codeReview.removeReviewers",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "2_status@4"
+        },
+        {
+          "command": "plastic-scm.codeReview.requestReviewAgain",
+          "when": "view == plastic-scm.reviews.list && viewItem =~ /^review;/",
+          "group": "2_status@5"
         }
       ],
       "editor/title": [
@@ -866,6 +1534,11 @@
           "command": "plastic-scm.reviews.refreshReview",
           "when": "resourceScheme == plastic-review && plastic-scm.reviews.activeEditorIsOverview && !plastic-scm.reviews.hasUpdates",
           "group": "navigation@3"
+        },
+        {
+          "command": "plastic-scm.explorer.refresh",
+          "group": "navigation",
+          "when": "activeWebviewPanelId == plastic-scm.branchExplorer"
         }
       ],
       "webview/context": [
@@ -888,6 +1561,66 @@
           "command": "plastic-scm.history.openFile",
           "group": "1_open@2",
           "when": "webviewId == plastic-scm.history && webviewSection == file"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "webviewId == plastic-scm.history && webviewSection == file",
+          "group": "1_open@3"
+        },
+        {
+          "command": "plastic-scm.explorer.switchToChangeset",
+          "group": "1_switch@1",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && !explorerIsWorkspaceChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.switchToBranch",
+          "group": "1_switch@2",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.createBranch",
+          "group": "2_create@1",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.createLabel",
+          "group": "2_create@2",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.createReview",
+          "group": "2_create@3",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.compareWithSelected",
+          "group": "3_compare@1",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && explorerCanCompare"
+        },
+        {
+          "command": "plastic-scm.explorer.compareWithWorkspace",
+          "group": "3_compare@2",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && !explorerIsWorkspaceChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.copyChangesetId",
+          "group": "4_copy@1",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.copyBranch",
+          "group": "4_copy@2",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.copyComment",
+          "group": "4_copy@3",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "group": "1_open@1",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerFile"
         }
       ],
       "commandPalette": [
@@ -1094,6 +1827,266 @@
         {
           "command": "plastic-scm.reviews.cancelEdit",
           "when": "false"
+        },
+        {
+          "command": "plastic-scm.repository.refresh",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.repository.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.repository.retry",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.branch.create",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.branch.createAndSwitch",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.switch.branch",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.switch.changeset",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.switch.label",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.branch.rename",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.branch.delete",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.branch.editComment",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.label.create",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.label.rename",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.label.delete",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.update",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.shelve.create",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.shelve.createSelected",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.shelve.apply",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.shelve.delete",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.shelve.copyId",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.shelve.openFile",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.statusBarMenu",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.checkout",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.locks.refresh",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.locks.release",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.locks.remove",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.delete",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.move",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.ignore.add",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.hiddenChanges.add",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.cloaked.add",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.ignore.open",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.hiddenChanges.open",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.cloaked.open",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openChanges",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.compareWithWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.openAtRevision",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.copyChangesetId",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.revert",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.refresh",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.annotate.openChanges",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.compare.showChangeset",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.compare.openFile",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.compare.clear",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.annotate.toggle",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.compare.changesets",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.compare.branch",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.codeReview.create",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.codeReview.addReviewers",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.codeReview.removeReviewers",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.codeReview.requestReviewAgain",
+          "when": "plastic-scm.reviews.hasActiveReview"
+        },
+        {
+          "command": "plastic-scm.explorer.open",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.explorer.refresh",
+          "when": "activeWebviewPanelId == plastic-scm.branchExplorer"
+        },
+        {
+          "command": "plastic-scm.explorer.switchToChangeset",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.switchToBranch",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.createBranch",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.createLabel",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.createReview",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.compareWithSelected",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.compareWithWorkspace",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.copyChangesetId",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.copyBranch",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.copyComment",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.compare.between",
+          "when": "false"
         }
       ],
       "comments/commentThread/context": [
@@ -1150,6 +2143,72 @@
           "command": "plastic-scm.reviews.cancelEdit",
           "when": "commentController == plastic-scm.reviews && comment == reviewComment-own",
           "group": "inline@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "plastic-scm.checkout",
+          "when": "plastic-scm.active && !explorerResourceIsFolder",
+          "group": "7_plastic@1"
+        },
+        {
+          "command": "plastic-scm.delete",
+          "when": "plastic-scm.active",
+          "group": "7_plastic@2"
+        },
+        {
+          "command": "plastic-scm.move",
+          "when": "plastic-scm.active",
+          "group": "7_plastic@3"
+        },
+        {
+          "command": "plastic-scm.ignore.add",
+          "when": "plastic-scm.active",
+          "group": "7_plastic@4"
+        },
+        {
+          "command": "plastic-scm.hiddenChanges.add",
+          "when": "plastic-scm.active",
+          "group": "7_plastic@5"
+        },
+        {
+          "command": "plastic-scm.cloaked.add",
+          "when": "plastic-scm.active",
+          "group": "7_plastic@6"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "plastic-scm.active && !explorerResourceIsFolder",
+          "group": "7_plastic@7"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "plastic-scm.checkout",
+          "when": "plastic-scm.active && resourceScheme == file",
+          "group": "7_plastic@1"
+        },
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "plastic-scm.active && resourceScheme == file",
+          "group": "7_plastic@2"
+        },
+        {
+          "command": "plastic-scm.annotate.toggle",
+          "when": "plastic-scm.active && resourceScheme == file",
+          "group": "7_plastic@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "plastic-scm.fileHistory.show",
+          "when": "plastic-scm.active && resourceScheme == file",
+          "group": "7_plastic@1"
+        },
+        {
+          "command": "plastic-scm.annotate.toggle",
+          "when": "plastic-scm.active && resourceScheme == file",
+          "group": "7_plastic@2"
         }
       ]
     },
