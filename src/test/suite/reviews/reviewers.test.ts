@@ -166,7 +166,9 @@ function harness(options: {
       : timeline(13001, "2026-09-22T17:55:00+01:00", `[requested-review-from]${ME}`, ME));
     return undefined;
   };
-  const writer = new ReviewWriter({ cmPath: () => CONFIG.cmPath, log: line => lines.push(line), run: cm.run });
+  const writer = new ReviewWriter({
+    cmPath: () => CONFIG.cmPath, log: line => lines.push(line), platform: "linux", run: cm.run,
+  });
   const test = { cm, lines, links: [] as IReviewLink[], setting: options.setting ?? true, shell, state } as IHarness;
   test.posting = new ReviewPosting(writer, {
     reloadDiscussions: (workspaceId, reviewId) => test.session.reloadDiscussions(workspaceId, reviewId),

@@ -50,8 +50,10 @@ export function resolveMoveDestination(workspacePath: string, input: string): st
   if (text.length === 0 || /[\r\n\0"]/.test(text)) {
     return undefined;
   }
-  const target = resolve(isAbsolute(text) ? text : join(workspacePath, text));
-  return isPathInside(target, workspacePath) && target !== resolve(workspacePath) ? target : undefined;
+  // Resolved as well, so both sides carry the drive letter Windows adds to a rooted path.
+  const root = resolve(workspacePath);
+  const target = resolve(isAbsolute(text) ? text : join(root, text));
+  return isPathInside(target, root) && target !== root ? target : undefined;
 }
 
 /** The problem with a typed destination, for an input box's validateInput; undefined when it is fine. */

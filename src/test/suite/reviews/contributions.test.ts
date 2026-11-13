@@ -467,6 +467,8 @@ describe("Plastic Reviews contributions", () => {
         cm: options.cm,
         extensionId: EXTENSION_ID,
         globalState: options.globalState ?? memento(),
+        // The text on stdin on every platform; the writer's own tests cover the file Windows gets.
+        platform: "linux",
         posting: options.posting,
         session: {
           createService: wk => {

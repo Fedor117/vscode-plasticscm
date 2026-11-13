@@ -75,7 +75,7 @@ describe("Comment edits and review-level comments (fake cm)", () => {
     reloads = [];
     picks = [];
     setting = true;
-    const writer = new ReviewWriter({ cmPath: () => "cm", run: cm.run });
+    const writer = new ReviewWriter({ cmPath: () => "cm", platform: "linux", run: cm.run });
     posting = new ReviewPosting(writer, {
       reloadDiscussions: (workspaceId, reviewId) => {
         reloads.push([ workspaceId, reviewId ]);

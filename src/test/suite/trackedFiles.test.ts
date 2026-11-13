@@ -9,7 +9,7 @@ import { expect } from "chai";
 import { fileTargetUris } from "../../commands/fileTargets";
 import { Uri } from "vscode";
 
-const ROOT = path.join(path.sep, "work", "Nimbus");
+const ROOT = path.resolve(path.sep, "work", "Nimbus");
 
 describe("Tracked delete and move", () => {
   it("drops paths inside another selected path", () => {

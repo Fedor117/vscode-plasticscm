@@ -52,7 +52,10 @@ describe("ReviewWriter (fake cm)", () => {
     cm = new FakeCm();
     log = [];
     cmPath = "cm";
-    writer = new ReviewWriter({ cmPath: () => cmPath, log: message => log.push(message), run: cm.run });
+    // The text on stdin on every platform; "the text on Windows" below covers the file Windows gets.
+    writer = new ReviewWriter({
+      cmPath: () => cmPath, log: message => log.push(message), platform: "linux", run: cm.run,
+    });
   });
 
   describe("arguments", () => {
@@ -490,7 +493,7 @@ describe("ReviewWriter (fake cm)", () => {
       for (const usage of [ exited(0, OLD_USAGE), exited(1, "", "Error: Unknown command"), exited(0, "") ]) {
         const old = new FakeCm();
         old.usage = usage;
-        const other = new ReviewWriter({ cmPath: () => "cm", run: old.run });
+        const other = new ReviewWriter({ cmPath: () => "cm", platform: "linux", run: old.run });
         expect(await other.support()).to.deep.equal({ reason, supported: false });
         expect((await failure(other.send(ROOT, draft, "Hello"))).message).to.equal(reason);
         expect((await failure(other.addReviewer(ROOT, 312))).message).to.equal(reason);

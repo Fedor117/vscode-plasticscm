@@ -49,7 +49,9 @@ describe("Native posting (fake cm)", () => {
   const changed = (section: string) => configuration.fire({ affectsConfiguration: name => name === section });
 
   const create = (fake: FakeCm, postingEditors = editors): ReviewPosting => {
-    const writer = new ReviewWriter({ cmPath: () => "cm", log: message => log.push(message), run: fake.run });
+    const writer = new ReviewWriter({
+      cmPath: () => "cm", log: message => log.push(message), platform: "linux", run: fake.run,
+    });
     const send = writer.send.bind(writer);
     writer.send = async (cwd, sent, text, cancel) => {
       const before = fake.writes().length;
@@ -439,7 +441,7 @@ describe("Native posting (fake cm)", () => {
   });
 
   it("keeps a posted comment marked Posted when the discussions cannot be reloaded", async () => {
-    const failing = new ReviewPosting(new ReviewWriter({ cmPath: () => "cm", run: cm.run }), {
+    const failing = new ReviewPosting(new ReviewWriter({ cmPath: () => "cm", platform: "linux", run: cm.run }), {
       reloadDiscussions: () => Promise.reject(new Error("cm is busy")),
       repository: () => REPOSITORY,
       root: () => ROOT,
