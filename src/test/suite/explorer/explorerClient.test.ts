@@ -125,20 +125,27 @@ const PROBE = `
     return "set";
   }
 
+  const always = value => () => value;
+
   window.addEventListener("message", event => {
     const message = event.data;
     if (!message || typeof message !== "object" || typeof message.probe !== "string") {
       return;
     }
-    let value;
+    let answer;
     switch (message.probe) {
-    case "dump": value = dump(); break;
-    case "click": value = click(message.selector, message.index); break;
-    case "clickText": value = clickText(message.selector, message.text); break;
-    case "setValue": value = setValue(message.selector, message.index, message.value, message.event); break;
+    case "dump": answer = dump; break;
+    case "frame": answer = () => undefined; break;
+    case "click": answer = always(click(message.selector, message.index)); break;
+    case "clickText": answer = always(clickText(message.selector, message.text)); break;
+    case "setValue":
+      answer = always(setValue(message.selector, message.index, message.value, message.event));
+      break;
     default: return;
     }
-    api.postMessage({ id: message.id, probe: message.probe, value });
+    // The client renders on an animation frame. Answering on one too, asked for after the client asked for its own,
+    // puts the answer behind that render and behind whatever the render posted.
+    requestAnimationFrame(() => api.postMessage({ id: message.id, probe: message.probe, value: answer() }));
   });
 `;
 
@@ -209,7 +216,8 @@ class ClientHarness implements Disposable {
 
   public async post(message: unknown): Promise<void> {
     await this.mPanel.webview.postMessage(message);
-    await settle();
+    // Back once the client has rendered the message and posted what that render asks for.
+    await this.probe("frame");
   }
 
   public async probe<T>(probe: string, extra: Record<string, unknown> = {}): Promise<T> {

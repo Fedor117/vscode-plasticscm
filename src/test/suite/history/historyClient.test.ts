@@ -136,6 +136,11 @@ const PROBE = `
     case "rowTooltip":
       api.postMessage({ id: message.id, probe: "rowTooltip", value: rowTooltip(message.key) });
       return;
+    case "frame":
+      // Asked for after the frame the client asked for to draw an earlier message: the answer follows that draw
+      // and whatever the client posted by then.
+      requestAnimationFrame(() => api.postMessage({ id: message.id, probe: "frame" }));
+      return;
     default:
       return;
     }
@@ -210,9 +215,8 @@ class ClientHarness implements Disposable {
 
   public async post(message: unknown): Promise<void> {
     await this.mPanel.webview.postMessage(message);
-    // One render is scheduled synchronously by the client's message handler; a
-    // turn of the event loop is enough for it to finish.
-    await new Promise(resolve => setTimeout(resolve, 60));
+    // Back once the client has handled the message and drawn it.
+    await this.probe("frame");
   }
 
   public probe<T>(probe: string, extra: Record<string, unknown> = {}): Promise<T> {
