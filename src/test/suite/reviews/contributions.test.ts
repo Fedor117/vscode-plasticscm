@@ -707,10 +707,11 @@ describe("Plastic Reviews contributions", () => {
       const readme = await workspace.openTextDocument(Uri.file(path.resolve(__dirname, "..", "..", "..", "..",
         "README.md")));
       await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
-      // Beside, without focus: a preview asked to take focus takes it when its webview has loaded, which can be
-      // after the test has moved on, and its group is then the active one.
+      // Without focus: a preview asked to take focus takes it when its webview has loaded, which can be after the
+      // test has moved on. Its group is the active one all the same, until the README is shown again.
       await commands.executeCommand("vscode.openWith", reviewOverviewUri("wk", CHANGESET_REVIEW_ID),
         MARKDOWN_PREVIEW_EDITOR, { preserveFocus: true, viewColumn: ViewColumn.Two });
+      await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
       const page = (id: number) => `Review ${id}.md`;
       expect(layout()).to.deep.equal([["README.md"], [page(CHANGESET_REVIEW_ID)]]);
 
