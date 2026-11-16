@@ -442,7 +442,8 @@ describe("Plastic Reviews contributions", () => {
     expect(isOverviewTab(custom, "wk", 5)).to.equal(false);
   });
 
-  describe("registered", function() {
+  // eslint-disable-next-line curly
+  for (let suiteRep = 0; suiteRep < 25; suiteRep++) describe.only(`registered ${suiteRep}`, function() {
     this.timeout(30000);
     let reviews: PlasticReviews | undefined;
     let shell: ReviewShell;
@@ -703,8 +704,8 @@ describe("Plastic Reviews contributions", () => {
         expect(overviewTabs()).to.deep.equal([BRANCH_REVIEW_ID]);
       });
 
-    for (let rep = 0; rep < 80; rep++) {
-      it.only(`DIAG keeps the Overview in its own editor group ${rep}`, async function() {
+    for (let rep = 0; rep < 1; rep++) {
+      it(`DIAG keeps the Overview in its own editor group ${rep}`, async function() {
         this.timeout(60000);
         const started = Date.now();
         const timeline: string[] = [];
@@ -734,7 +735,7 @@ describe("Plastic Reviews contributions", () => {
           }
           mark(`after wait ${step}`);
           // eslint-disable-next-line no-console
-          console.log(`DBG FLAKE rep ${rep} step ${step} settled ${settled}\n  ${timeline.join("\n  ")}`);
+          console.log(`DBG FLAKE suite ${suiteRep} step ${step} settled ${settled}\n  ${timeline.join("\n  ")}`);
         };
         try {
           const readme = await workspace.openTextDocument(Uri.file(path.resolve(__dirname, "..", "..", "..", "..",
