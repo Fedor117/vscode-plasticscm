@@ -35,12 +35,12 @@ import { IReviewLink, parseReviewLink } from "../../../reviews/reviewLinks";
 import { ISyntheticComment, ISyntheticDiffRow, ISyntheticReview, SyntheticPlasticServer } from "./syntheticServer";
 import { label, NOW } from "./viewFixtures";
 import { nativeThread, threadsOn, until } from "./editorFixtures";
+import { NEWEST_LIMIT, ReviewListQuery } from "../../../reviews/commands";
 import { noDiffMessage, reviewPickItems } from "../../../reviews/reviewPresentation";
 import { expect } from "chai";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { renderOverview } from "../../../reviews/reviewOverview";
 import { reviewDiff } from "../../../reviews/reviewEditors";
-import { ReviewListQuery } from "../../../reviews/commands";
 import { ReviewService } from "../../../reviews/reviewService";
 import { ReviewSession } from "../../../reviews/reviewSession";
 import { ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
@@ -507,9 +507,10 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
         allOpen: newest(isOpen).slice(0, PAGE),
         assignedOpen: newest(review => review.assignee === ME && isOpen(review)),
         find: newest(),
+        newest: newest().slice(0, NEWEST_LIMIT),
         ownedOpen: newest(review => review.owner === ME && isOpen(review)),
       };
-      for (const query of [ "assignedOpen", "ownedOpen", "allOpen", "all", "find" ] as const) {
+      for (const query of [ "assignedOpen", "ownedOpen", "allOpen", "all", "find", "newest" ] as const) {
         expect(ids(await own.commands.list(query)), query).to.deep.equal(expected[query]);
       }
       expect(ids(await own.needsMyReview())).to.deep.equal(needsMyReview());

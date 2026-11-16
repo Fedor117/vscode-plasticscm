@@ -183,6 +183,27 @@ describe("Branch Explorer graph model", () => {
       expect(rowOf(model, 4).refs).to.eql([]);
     });
 
+    it("puts a branch's review on its pill and a changeset's review on its row", () => {
+      const branchReview = { id: 31, status: "underReview" as const, tooltip: "Under review: review 31, Task" };
+      const changesetReview = { id: 32, status: "reviewed" as const, tooltip: "Reviewed: review 32, Fix" };
+      const reviewed = buildExplorerModel({
+        changesets: HISTORY,
+        currentBranch: MAIN,
+        currentChangesetId: 5,
+        labels: [label("v1.0", 3)],
+        merges: MERGES,
+        reviews: { byBranch: new Map([[ TASK, branchReview ]]), byChangeset: new Map([[ 4, changesetReview ]]) },
+        scope: { kind: "all" },
+      });
+      expect(rowOf(reviewed, 3).refs).to.eql([
+        { isCurrent: false, kind: "branch", review: branchReview, text: TASK },
+        { isCurrent: false, kind: "label", text: "v1.0" },
+      ]);
+      expect(rowOf(reviewed, 4).review).to.eql(changesetReview);
+      expect(rowOf(reviewed, 5).refs).to.eql([{ isCurrent: true, kind: "branch", text: MAIN }]);
+      expect("review" in rowOf(reviewed, 5)).to.equal(false);
+    });
+
     it("puts each label on its changeset once", () => {
       expect(rowOf(model, 2).refs).to.eql([
         { isCurrent: false, kind: "label", text: "v1.0" },

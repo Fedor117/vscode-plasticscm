@@ -37,6 +37,7 @@ describe("Branch Explorer messages", () => {
         { scope: { kind: "current" }, type: "scope" },
         { changesetId: 12, type: "files" },
         { changesetId: 12, path: "/src/a.cs", revisionId: 345, type: "openDiff" },
+        { reviewId: 129, type: "openReview" },
         { text: "fix", type: "search" },
       ]) {
         expect(isExplorerMessage(message), JSON.stringify(message)).to.equal(true);
@@ -49,6 +50,8 @@ describe("Branch Explorer messages", () => {
         { scope: { kind: "nope" }, type: "scope" },
         { changesetId: "12", type: "files" }, { changesetId: 1.5, type: "files" },
         { changesetId: 12, revisionId: 345, type: "openDiff" },
+        { type: "openReview" }, { reviewId: "129", type: "openReview" }, { reviewId: 0, type: "openReview" },
+        { reviewId: 1.5, type: "openReview" },
         { changesetId: 12, path: "/src/a.cs", type: "openDiff" },
         { text: "   ", type: "search" }, { text: 5, type: "search" },
       ]) {
