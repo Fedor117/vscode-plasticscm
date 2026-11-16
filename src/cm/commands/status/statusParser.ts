@@ -9,6 +9,11 @@ function normalizePath(path: string): string {
 }
 
 export class StatusParser extends BaseCmParser<IPendingChanges> {
+  /** `toLocalPath` restates each path cm prints, for a workspace opened through a symlink. */
+  public constructor(private readonly toLocalPath: (path: string) => string = path => path) {
+    super();
+  }
+
   public async parse(): Promise<IPendingChanges | undefined> {
     const options: xml2js.OptionsV2 = {
       explicitArray: false,
@@ -41,9 +46,9 @@ export class StatusParser extends BaseCmParser<IPendingChanges> {
     }
 
     pendingChanges.forEach(change => {
-      const uri: Uri = Uri.file(normalizePath(change.path));
+      const uri: Uri = this.toUri(change.path);
       const newChange: IChangeInfo = {
-        oldPath: change.oldPath ? Uri.file(normalizePath(change.oldPath)) : undefined,
+        oldPath: change.oldPath ? this.toUri(change.oldPath) : undefined,
         path: uri,
         revisionType: REVISION_TYPES[change.revisionType] ?? RevisionType.Unknown,
         type: CHANGE_TYPES[change.type] ?? ChangeType.Controlled,
@@ -61,6 +66,10 @@ export class StatusParser extends BaseCmParser<IPendingChanges> {
         repSpec,
       },
     };
+  }
+
+  private toUri(path: string): Uri {
+    return Uri.file(normalizePath(this.toLocalPath(path)));
   }
 
   private mergeChanges(

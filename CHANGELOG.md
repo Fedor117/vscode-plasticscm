@@ -14,6 +14,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   graph, from the newest 500 reviews of the repository, and are read again while the explorer is on screen, every
   `plastic-scm.reviews.updateCheckInterval` seconds.
 
+### Fixed
+
+- **Workspaces opened through a symlink** (on macOS, anything under `/tmp` or `/var`): editor gutter
+  change marks were missing and the Source Control view listed pending changes by absolute path.
+  `cm` prints paths with symlinks resolved, so the workspace was rooted somewhere other than the
+  folder VS Code had open. The root and the pending changes now use the opened folder's path. Not
+  covered: a folder that is itself a symlink to a directory inside the workspace, below its root.
+
 ## [0.7.0] - 2026-11-16
 
 ### Added
