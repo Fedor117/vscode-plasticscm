@@ -2,10 +2,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ICmParser, ICmResult, ICmShell } from "../../cm/shell";
+import { OutputChannel, Uri } from "vscode";
 import { expect } from "chai";
 import { IConfig } from "../../config";
 import { locateWorkspace } from "../../workspaceLocation";
-import { OutputChannel } from "vscode";
 import { Workspace } from "../../workspace";
 import { WorkspaceOperations } from "../../workspaceOperations";
 
@@ -43,6 +43,11 @@ function cmShell(realRoot: string, changedFile: string): { shell: ICmShell; call
   return { calls, shell };
 }
 
+/** A path as a URI spells it: VS Code lower-cases the Windows drive letter. */
+function fsPath(...segments: string[]): string {
+  return Uri.file(path.join(...segments)).fsPath;
+}
+
 describe("A workspace opened through a symlink", () => {
   const changedFile = path.join("Assets", "Player.cs");
   let base: string;
@@ -78,7 +83,7 @@ describe("A workspace opened through a symlink", () => {
   it("roots source control at the folder VS Code opened, so quick diff matches the editor's files", async () => {
     const { workspace } = await open(linkedRoot);
 
-    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(linkedRoot);
+    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(fsPath(linkedRoot));
     expect(workspace.info.path).to.equal(linkedRoot);
   });
 
@@ -86,17 +91,17 @@ describe("A workspace opened through a symlink", () => {
     const { workspace } = await open(linkedRoot);
 
     expect(workspace.statusResourceGroup.resourceStates.map(state => state.resourceUri.fsPath))
-      .to.eql([path.join(linkedRoot, changedFile)]);
+      .to.eql([fsPath(linkedRoot, changedFile)]);
     expect(workspace.pendingChanges.map(change => change.resourceUri.fsPath))
-      .to.eql([path.join(linkedRoot, changedFile)]);
+      .to.eql([fsPath(linkedRoot, changedFile)]);
   });
 
   it("finds the workspace root above a folder opened inside the symlink", async () => {
     const { workspace } = await open(path.join(linkedRoot, "Assets"));
 
-    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(linkedRoot);
+    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(fsPath(linkedRoot));
     expect(workspace.statusResourceGroup.resourceStates.map(state => state.resourceUri.fsPath))
-      .to.eql([path.join(linkedRoot, changedFile)]);
+      .to.eql([fsPath(linkedRoot, changedFile)]);
   });
 
   it("asks cm for status at the opened path", async () => {
@@ -108,9 +113,9 @@ describe("A workspace opened through a symlink", () => {
   it("leaves a workspace opened at its real path as cm reports it", async () => {
     const { workspace } = await open(realRoot);
 
-    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(realRoot);
+    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(fsPath(realRoot));
     expect(workspace.statusResourceGroup.resourceStates.map(state => state.resourceUri.fsPath))
-      .to.eql([path.join(realRoot, changedFile)]);
+      .to.eql([fsPath(realRoot, changedFile)]);
   });
 
   it("keeps cm's path when the opened folder is a symlink to a folder inside the workspace", async () => {
@@ -119,6 +124,6 @@ describe("A workspace opened through a symlink", () => {
 
     const { workspace } = await open(linkedAssets);
 
-    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(realRoot);
+    expect(workspace.sourceControl.rootUri?.fsPath).to.equal(fsPath(realRoot));
   });
 });
