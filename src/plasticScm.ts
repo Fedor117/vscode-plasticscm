@@ -245,6 +245,9 @@ export class PlasticScm implements Disposable {
           repository: wk.workspaceConfig?.repSpec,
         })),
       });
+      this.mDisposables.push(
+        reviews.session.onDidChangeActive(() => explorer.refreshReviews()),
+        reviews.session.onDidChangeList(() => explorer.refreshReviews()));
       this.mDisposables.push(reviews, new CodeReviewCommands(this, () => {
         const active = reviews.session.active;
         return active && {

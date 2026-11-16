@@ -21,7 +21,7 @@ export type QueryRow = Record<string, unknown>;
  * so none of them needs the user's name. All Open and All Reviews page; Find
  * Review… reads the newest `FIND_LIMIT` reviews of the repository at once.
  */
-export type ReviewListQuery = "assignedOpen" | "ownedOpen" | "allOpen" | "all" | "find";
+export type ReviewListQuery = "assignedOpen" | "ownedOpen" | "allOpen" | "all" | "find" | "newest";
 
 /** Revisions or reviews per `(id = … or …)` query; long enough for a page, short enough for cm's parser. */
 export const IDS_PER_QUERY = 50;
@@ -31,6 +31,9 @@ export const PAGE_SIZE = 50;
 
 /** Reviews Find Review… lists; cm answers this many in about a second. */
 export const FIND_LIMIT = 2000;
+
+/** Reviews the Branch Explorer marks branches with; their branches are named `IDS_PER_QUERY` a query. */
+export const NEWEST_LIMIT = 500;
 
 /** A parser without a class of its own: it only has to buffer and hand the lines to `read`. */
 export function outputParser<T>(read: (lines: string[]) => T | Promise<T>): ICmParser<T> {
@@ -153,6 +156,8 @@ function listWhere(query: ReviewListQuery, offset: number): string {
     return `where id > 0 order by date desc limit ${PAGE_SIZE} offset ${offset}`;
   case "find":
     return `where id > 0 order by date desc limit ${FIND_LIMIT}`;
+  case "newest":
+    return `where id > 0 order by date desc limit ${NEWEST_LIMIT}`;
   default:
     throw new Error(`Unknown review list ${String(query)}.`);
   }

@@ -406,6 +406,16 @@ to it. Each branch has its own colour, merges and cherry-picks are dashed lines
 to their source, branch heads and labels are pills on their changeset, and the
 changeset your workspace is on is marked with a ring and a home icon.
 
+A branch with a code review has the review's status beside its pill: an eye for
+Under review, the request-changes icon for Rework required and a check for
+Reviewed. A changeset with a review of its own has the icon on its row. Click
+the icon to open the review in Plastic Reviews. The icon shows the newest review
+and its tooltip names earlier ones; the newest 500 reviews of the repository are
+read, and read again while the explorer is on screen, as often as
+`plastic-scm.reviews.updateCheckInterval` says (every minute by default, 0 for
+never). Reviewed is the review's status: `cm` does not record which changeset was
+reviewed, so a branch that got changesets afterwards still shows it.
+
 The toolbar decides what is listed:
 
 - **All branches**, **Current branch and its ancestors** (the workspace's

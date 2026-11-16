@@ -6,6 +6,7 @@ import {
 } from "vscode";
 import { describeError, showOperationError } from "../commands/scmUtils";
 import { findFileChange, IFileRow, toFileRow } from "../history/historyViewProvider";
+import { UPDATE_INTERVAL_SETTING, updateCheckInterval } from "../reviews/reviewSession";
 import { IConfig } from "../config";
 import { openChangesetFileDiff } from "../history/openChangesetFileDiff";
 import { PlasticScm } from "../plasticScm";
@@ -71,8 +72,12 @@ export type ExplorerWebviewMessage =
   | { readonly type: "ready" | "refresh" | "loadMore" | "showOutput" }
   | { readonly type: "scope"; readonly scope: ExplorerScope }
   | { readonly type: "files"; readonly changesetId: number }
+  | { readonly type: "openReview"; readonly reviewId: number }
   | { readonly type: "openDiff"; readonly changesetId: number; readonly path: string; readonly revisionId: number }
   | { readonly type: "search"; readonly text: string };
+
+/** A status change fires several review events; the badges are read again once they have settled. */
+const REVIEWS_SETTLE_MILLIS = 2000;
 
 /** Several change events land within one tick while a page loads; one post per frame is plenty. */
 const POST_COALESCE_MILLIS = 50;
@@ -95,6 +100,7 @@ export class BranchExplorer implements Disposable {
   private readonly mExtensionUri: Uri;
   private readonly mGetConfig: () => IConfig;
   private readonly mSessions = new Map<string, ISession>();
+  private mReviewsTimer?: ReturnType<typeof setTimeout>;
 
   public constructor(plasticScm: PlasticScm, extensionUri: Uri, getConfig: () => IConfig) {
     this.mPlasticScm = plasticScm;
@@ -103,10 +109,32 @@ export class BranchExplorer implements Disposable {
   }
 
   public dispose(): void {
+    if (this.mReviewsTimer) {
+      clearTimeout(this.mReviewsTimer);
+      this.mReviewsTimer = undefined;
+    }
     for (const session of Array.from(this.mSessions.values())) {
       session.panel.dispose();
     }
     this.mSessions.clear();
+  }
+
+  /**
+   * Reads the review badges of the visible explorers again, once the events
+   * asking for it have stopped. A hidden explorer reads them when it is shown.
+   */
+  public refreshReviews(): void {
+    if (this.mReviewsTimer) {
+      clearTimeout(this.mReviewsTimer);
+    }
+    this.mReviewsTimer = setTimeout(() => {
+      this.mReviewsTimer = undefined;
+      for (const session of this.mSessions.values()) {
+        if (session.panel.visible) {
+          void session.data.loadReviews();
+        }
+      }
+    }, REVIEWS_SETTLE_MILLIS);
   }
 
   /** Opens the explorer of a workspace, or brings its panel forward when it is already open. */
@@ -154,15 +182,21 @@ export class BranchExplorer implements Disposable {
         if (event.affectsConfiguration(GRAVATAR_SETTING)) {
           this.schedulePost(session);
         }
+        if (event.affectsConfiguration(UPDATE_INTERVAL_SETTING)) {
+          this.syncReviewPolling(session);
+        }
       }),
       panel.onDidChangeViewState(() => {
         if (panel.visible) {
           void data.loadNewer();
+          void data.loadReviews();
         }
+        this.syncReviewPolling(session);
       }),
       panel.onDidDispose(() => this.close(session)));
 
     panel.webview.html = this.getHtml(panel.webview);
+    this.syncReviewPolling(session);
   }
 
   /** Reloads the explorer of a workspace from the top; all open ones when no id is given. */
@@ -182,6 +216,12 @@ export class BranchExplorer implements Disposable {
       }
     }
     return undefined;
+  }
+
+  /** Review statuses are checked as often as Plastic Reviews checks its own, and only while the explorer shows. */
+  private syncReviewPolling(session: ISession): void {
+    const interval = updateCheckInterval(vscodeWorkspace.getConfiguration().get<unknown>(UPDATE_INTERVAL_SETTING));
+    session.data.setReviewPolling(session.panel.visible ? interval : 0);
   }
 
   private close(session: ISession): void {
@@ -229,6 +269,9 @@ export class BranchExplorer implements Disposable {
     case "openDiff":
       await this.openDiff(session, message.changesetId, message.path, message.revisionId);
       return;
+    case "openReview":
+      await this.openReview(session, message.reviewId);
+      return;
     case "search":
       await this.search(session, message.text);
       return;
@@ -261,6 +304,16 @@ export class BranchExplorer implements Disposable {
       await openChangesetFileDiff(session.workspace, changeset, change);
     } catch (e) {
       await showOperationError(this.mPlasticScm, "Open diff", e);
+    }
+  }
+
+  /** Makes the review the active one of Plastic Reviews and shows its Overview. */
+  private async openReview(session: ISession, reviewId: number): Promise<void> {
+    try {
+      await commands.executeCommand("plastic-scm.reviews.open", session.workspace.info.id, reviewId);
+      await commands.executeCommand("plastic-scm.reviews.openOverview");
+    } catch (e) {
+      await showOperationError(this.mPlasticScm, "Open review", e);
     }
   }
 
@@ -302,6 +355,7 @@ export class BranchExplorer implements Disposable {
       currentChangesetId: workspace.currentChangeset,
       labels: data.labels,
       merges: data.merges,
+      reviews: data.reviews,
       scope: session.scope,
     });
     this.post(session, {
@@ -393,6 +447,8 @@ export function isExplorerMessage(value: unknown): value is ExplorerWebviewMessa
     return parseExplorerScope(message.scope) !== undefined;
   case "files":
     return Number.isInteger(message.changesetId);
+  case "openReview":
+    return Number.isSafeInteger(message.reviewId) && (message.reviewId as number) > 0;
   case "openDiff":
     return Number.isInteger(message.changesetId)
       && typeof message.path === "string"

@@ -1,3 +1,4 @@
+import { IExplorerReviewMark, IExplorerReviews } from "./explorerReviews";
 import { IHistoryChangeset, ILabelInfo, IMergeLink } from "../models";
 import { shortOwner, subjectOf, toIsoDate } from "../history/graphModel";
 
@@ -17,6 +18,8 @@ export interface IExplorerInput {
   /** Full name of the branch the workspace is on; undefined on a label or a changeset. */
   readonly currentBranch?: string;
   readonly scope: ExplorerScope;
+  /** Absent until the reviews have loaded, and when they cannot be read. */
+  readonly reviews?: IExplorerReviews;
 }
 
 export interface IExplorerRef {
@@ -24,6 +27,8 @@ export interface IExplorerRef {
   readonly text: string;
   /** The branch the workspace is on. */
   readonly isCurrent: boolean;
+  /** The branch's review; never set on a label. */
+  readonly review?: IExplorerReviewMark;
 }
 
 export interface IExplorerMergeSource {
@@ -47,6 +52,8 @@ export interface IExplorerRow {
   /** The changeset the workspace is on. */
   readonly isCurrent: boolean;
   readonly refs: IExplorerRef[];
+  /** The review of this changeset alone; a branch's review is on its ref. */
+  readonly review?: IExplorerReviewMark;
   readonly mergedFrom: IExplorerMergeSource[];
   /** Lane the changeset's dot sits on. */
   readonly lane: number;
@@ -177,8 +184,9 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
       owner: changeset.owner,
       ownerShort: shortOwner(changeset.owner),
       parentId: changeset.parentId,
-      refs: refsOf(changeset, heads, labelsById, input.currentBranch),
+      refs: refsOf(changeset, heads, labelsById, input.currentBranch, input.reviews),
       subject: subjectOf(changeset.comment),
+      ...reviewOf(input.reviews?.byChangeset.get(changeset.id)),
     });
   }
 
@@ -262,15 +270,26 @@ function refsOf(
     changeset: IHistoryChangeset,
     heads: Map<string, number>,
     labelsById: Map<number, string[]>,
-    currentBranch: string | undefined): IExplorerRef[] {
+    currentBranch: string | undefined,
+    reviews: IExplorerReviews | undefined): IExplorerRef[] {
   const refs: IExplorerRef[] = [];
   if (heads.get(changeset.branch) === changeset.id) {
-    refs.push({ isCurrent: changeset.branch === currentBranch, kind: "branch", text: changeset.branch });
+    refs.push({
+      isCurrent: changeset.branch === currentBranch,
+      kind: "branch",
+      text: changeset.branch,
+      ...reviewOf(reviews?.byBranch.get(changeset.branch)),
+    });
   }
   for (const label of labelsById.get(changeset.id) ?? []) {
     refs.push({ isCurrent: false, kind: "label", text: label });
   }
   return refs;
+}
+
+/** No `review` key at all without a review: the model is compared and posted as plain data. */
+function reviewOf(review: IExplorerReviewMark | undefined): { review?: IExplorerReviewMark } {
+  return review ? { review } : {};
 }
 
 function visibleIds(

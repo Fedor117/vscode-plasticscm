@@ -3,7 +3,9 @@ import { DiffChangeset, FindChangesets, FindMerges, ListLabels } from "../cm/com
 import { Disposable, Event, EventEmitter, OutputChannel } from "vscode";
 import { IChangesetFileChange, IHistoryChangeset, ILabelInfo, IMergeLink, WkConfigType } from "../models";
 import { IConfig, IShellConfig } from "../config";
+import { IExplorerReviews, indexExplorerReviews, NO_EXPLORER_REVIEWS, reviewTargetId } from "./explorerReviews";
 import { describeError } from "../commands/scmUtils";
+import { ReviewCommands } from "../reviews/commands";
 import { Workspace } from "../workspace";
 
 /** Changesets fetched per page, across every branch. */
@@ -57,6 +59,11 @@ export class BranchExplorerData implements Disposable {
     return this.mLabels;
   }
 
+  /** The newest reviews by what they review; empty until `loadReviews` has answered. */
+  public get reviews(): IExplorerReviews {
+    return this.mReviews;
+  }
+
   /** True while older changesets exist that are not loaded. */
   public get hasMore(): boolean {
     return this.mHasMore;
@@ -89,6 +96,14 @@ export class BranchExplorerData implements Disposable {
   private mChangesets: IHistoryChangeset[] = [];
   private mMerges: IMergeLink[] = [];
   private mLabels: ILabelInfo[] = [];
+  private mReviews: IExplorerReviews = NO_EXPLORER_REVIEWS;
+  /** Branch names by object id; undefined for a branch that no longer exists. Emptied by a full load. */
+  private readonly mReviewBranches = new Map<number, string | undefined>();
+  /** Bumped by every review load, so a slower, older one cannot overwrite it. */
+  private mReviewsRun = 0;
+  private mReviewsLoading = 0;
+  private mReviewsTimer?: ReturnType<typeof setInterval>;
+  private mReviewsInterval = 0;
   private mStatus: ExplorerStatus = "idle";
   private mMessage?: string;
   private mHasMore = false;
@@ -117,6 +132,7 @@ export class BranchExplorerData implements Disposable {
       return;
     }
     this.mbIsDisposed = true;
+    this.setReviewPolling(0);
     this.mOnDidChange.dispose();
     if (this.mOwnShell) {
       const shell = this.mOwnShell;
@@ -153,7 +169,10 @@ export class BranchExplorerData implements Disposable {
       this.mLabels = labels;
       this.mHasMore = page.length > EXPLORER_PAGE_SIZE;
       this.mFiles.clear();
+      this.mReviewBranches.clear();
       this.mStatus = "ready";
+      // Not awaited: the graph is drawn first and the badges appear when cm has answered.
+      void this.loadReviews();
     } catch (e) {
       if (generation !== this.mGeneration || this.mbIsDisposed) {
         return;
@@ -231,8 +250,70 @@ export class BranchExplorerData implements Disposable {
       this.mMerges = merges.concat(this.mMerges);
       this.mLabels = labels;
       this.fire();
+      void this.loadReviews();
     } catch (e) {
       this.mChannel.appendLine(`Unable to check the Branch Explorer for new changesets: ${describeError(e)}`);
+    }
+  }
+
+  /**
+   * Reads the newest reviews and names the branches they review. Does nothing
+   * before the first load. Failures are logged and leave the badges as they
+   * were: the graph is worth showing without them.
+   */
+  public async loadReviews(): Promise<void> {
+    if (this.mStatus !== "ready") {
+      return;
+    }
+
+    const run = ++this.mReviewsRun;
+    this.mReviewsLoading++;
+    try {
+      const commands = new ReviewCommands(await this.shell());
+      const reviews = await commands.list("newest");
+      const unnamed = reviews
+        .filter(review => review.targetType === "branch")
+        .map(reviewTargetId)
+        .filter((id): id is number => id !== undefined && !this.mReviewBranches.has(id));
+      if (unnamed.length > 0) {
+        const names = await commands.branchNames(unnamed);
+        for (const id of unnamed) {
+          this.mReviewBranches.set(id, names.get(id));
+        }
+      }
+      if (run !== this.mReviewsRun || this.mbIsDisposed) {
+        return;
+      }
+      this.mReviews = indexExplorerReviews(reviews, this.mReviewBranches);
+      this.fire();
+    } catch (e) {
+      this.mChannel.appendLine(`Unable to load the reviews of the Branch Explorer: ${describeError(e)}`);
+    } finally {
+      this.mReviewsLoading--;
+    }
+  }
+
+  /**
+   * Reads the reviews again every `millis`, so a status a colleague changed
+   * shows up unasked; 0 stops it. A tick is skipped while a read is still
+   * running: a slow server is not asked twice at once.
+   */
+  public setReviewPolling(millis: number): void {
+    const interval = this.mbIsDisposed || !(millis > 0) ? 0 : millis;
+    if (interval === this.mReviewsInterval) {
+      return;
+    }
+    if (this.mReviewsTimer) {
+      clearInterval(this.mReviewsTimer);
+      this.mReviewsTimer = undefined;
+    }
+    this.mReviewsInterval = interval;
+    if (interval > 0) {
+      this.mReviewsTimer = setInterval(() => {
+        if (this.mReviewsLoading === 0) {
+          void this.loadReviews();
+        }
+      }, interval);
     }
   }
 
