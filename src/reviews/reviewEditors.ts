@@ -383,7 +383,8 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
       this.changes,
       workspace.registerTextDocumentContentProvider(reviewScheme, this),
       window.tabGroups.onDidChangeTabs(event => this.onTabsClosed(event.closed)),
-      workspace.onDidCloseTextDocument(document => this.onDocumentClosed(document.uri))
+      workspace.onDidCloseTextDocument(document => this.onDocumentClosed(document.uri)),
+      workspace.onDidOpenTextDocument(document => this.onDocumentOpened(document.uri))
     );
   }
 
@@ -812,6 +813,17 @@ export class ReviewEditors implements Disposable, TextDocumentContentProvider, C
     closed.forEach(tab => tabUris(tab).forEach(uri => uris.add(uri)));
     if (uris.size) {
       this.releaseUnshown(uris);
+    }
+  }
+
+  /**
+   * VS Code drops a change to a document it does not know yet. An Overview read while its review was still coming
+   * back would keep the page it was given then, so it is read again once VS Code knows it.
+   */
+  private onDocumentOpened(uri: Uri): void {
+    const query = uri.scheme === reviewScheme ? parseReviewUri(uri) : undefined;
+    if (query?.kind === "overview" && query.serviceId !== undefined && query.reviewId !== undefined) {
+      this.refreshOverview(query.serviceId, query.reviewId);
     }
   }
 
