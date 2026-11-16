@@ -122,6 +122,12 @@
           "markdownDescription": "Changesets fetched per branch on each page of the Plastic SCM Graph view. Each page is one `cm find` round trip to the server, and the view loads the current branch and its parent branch separately.",
           "scope": "window"
         },
+        "plastic-scm.avatars.gravatar": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show authors' pictures from [Gravatar](https://gravatar.com) in the Plastic SCM Graph view, the Branch Explorer and the review Overview, over their initials. `cm` has no pictures of its own. With this on, the views request `https://www.gravatar.com/avatar/<hash>` for each author whose user name is an email address, where the hash is the SHA-256 of the address, so Gravatar sees the hashes and your IP address. Authors without a Gravatar picture keep their initials.",
+          "scope": "window"
+        },
         "plastic-scm.reviews.fileLayout": {
           "type": "string",
           "enum": [

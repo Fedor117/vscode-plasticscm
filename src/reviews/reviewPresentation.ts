@@ -1,3 +1,4 @@
+import { avatarColor, avatarInitials } from "../avatars";
 import { FileChangeStatus, IChangesetFileChange, RevisionType } from "../models";
 import {
   IReview,
@@ -1042,31 +1043,7 @@ export function toneColor(uri: Uri): string | undefined {
   return Object.prototype.hasOwnProperty.call(TONE_COLORS, tone) ? TONE_COLORS[tone] : undefined;
 }
 
-/**
- * Avatar backgrounds: ten hues, so the few people on one review rarely share
- * one, each dark enough for white initials at 5:1 or better.
- */
-const AVATAR_COLORS = [
-  "#b0385a", "#2f6fc0", "#9a5716", "#7a4fb0", "#1d7586", "#a3452a", "#5b5fc7", "#237257", "#8e4a96", "#4d7a1f",
-];
 const avatars = new Map<string, Uri>();
-
-/** An author's initials: `TO` for tom.okafor, the first two letters of a one-word name. */
-export function avatarInitials(owner: string): string {
-  const name = shortOwner(owner).trim() || "?";
-  const words = name.split(/[._\-\s]+/).filter(Boolean);
-  const letters = words.length > 1 ? words.slice(0, 2).map(word => Array.from(word)[0]) : Array.from(name).slice(0, 2);
-  return letters.join("").toUpperCase();
-}
-
-/** An author's avatar colour, picked from the name so an author keeps it everywhere. */
-export function avatarColor(owner: string): string {
-  let hash = 0;
-  for (const char of (shortOwner(owner).trim() || "?").toLowerCase()) {
-    hash = (hash * 31 + char.charCodeAt(0)) % 1000003;
-  }
-  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
-}
 
 /**
  * A round initials avatar for a comment author, as an inline SVG: the

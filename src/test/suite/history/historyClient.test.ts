@@ -1,5 +1,6 @@
 import { Disposable, Uri, ViewColumn, Webview, WebviewPanel, window } from "vscode";
 import { IFileRow, IWorkspaceState } from "../../../history/historyViewProvider";
+import { avatarsOf } from "../../../avatars";
 import { expect } from "chai";
 import { IGraphModel } from "../../../history/graphModel";
 import { join } from "path";
@@ -22,6 +23,10 @@ interface IRowDump {
   readonly status?: string;
   readonly labels: string[];
   readonly disabled: boolean;
+  /** The initials of the row's avatar, when it has one. */
+  readonly avatar?: string;
+  /** Whether a picture covers the initials. */
+  readonly picture: boolean;
 }
 
 interface IDump {
@@ -55,6 +60,8 @@ const PROBE = `
   function dump() {
     const root = document.getElementById("root");
     const rows = Array.from(root.querySelectorAll(".row")).map(row => ({
+      avatar: row.querySelector(".avatar") ? textOf(row.querySelector(".avatar")) : undefined,
+      picture: !!row.querySelector(".avatar img"),
       disabled: row.classList.contains("disabled"),
       key: row.dataset.key || "",
       kind: row.dataset.kind || "",
@@ -391,6 +398,33 @@ describe("Graph webview client", function() {
     expect(dump.links, "two full links and a stub for each unloaded end").to.equal(4);
     expect(dump.banner).to.be.undefined;
     expect(dump.progress).to.be.false;
+  });
+
+  it("draws no avatars until the state brings them", async () => {
+    await harness.post({ type: "state", workspaces: [workspace()] });
+    const changesets = (await harness.dump()).rows.filter(row => row.kind === "changeset");
+
+    expect(changesets.map(row => row.avatar)).to.eql([ undefined, undefined, undefined ]);
+  });
+
+  it("draws each author's initials, and keeps them when the picture does not load", async () => {
+    const owners = [ "dana.kim@example.com", "someone.else@example.com", "build@example.com" ];
+    await harness.post({ avatars: avatarsOf(owners), type: "state", workspaces: [workspace()] });
+
+    // This page's CSP allows no images, so every picture fails as one Gravatar does not have would.
+    let changesets: IRowDump[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      changesets = (await harness.dump()).rows.filter(row => row.kind === "changeset");
+      if (changesets.every(row => !row.picture)) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    expect(changesets.map(row => row.avatar)).to.eql([ "DK", "SE", "BU" ]);
+    expect(changesets.map(row => row.picture)).to.eql([ false, false, false ]);
+
+    await harness.post({ type: "state", workspaces: [workspace()] });
   });
 
   it("keeps the rows and explains itself when a reload fails", async () => {

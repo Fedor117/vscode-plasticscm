@@ -700,3 +700,29 @@ select.control {
   color: var(--vscode-descriptionForeground);
   font-size: 0.92em;
 }
+
+/* An author's initials on their colour; the picture covers them when Gravatar has one. */
+.avatar {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 5px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: text-bottom;
+}
+
+.avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}

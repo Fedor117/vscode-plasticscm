@@ -26,6 +26,8 @@
   /** Last `state` message, verbatim. */
   let workspaces = [];
   let hasState = false;
+  /** owner -> { initials, color, url? } from the last `state` message; null while avatars are off. */
+  let avatars = null;
   /** wkId -> Set of expanded changeset ids. */
   const expanded = new Map();
   /**
@@ -107,6 +109,38 @@
       node.textContent = text;
     }
     return node;
+  }
+
+  /** Pictures that failed to load, mostly authors Gravatar has none for, so a redraw does not ask again. */
+  const missingPictures = new Set();
+
+  /**
+   * An author's initials on their colour, covered by their picture when it
+   * loads; null while avatars are off or the author has none.
+   */
+  function avatarEl(owner) {
+    const avatar = avatarOf(owner);
+    if (!avatar) {
+      return null;
+    }
+    const node = el("span", "avatar", avatar.initials);
+    node.style.backgroundColor = avatar.color;
+    node.setAttribute("aria-hidden", "true");
+    if (avatar.url && !missingPictures.has(avatar.url)) {
+      const picture = document.createElement("img");
+      picture.alt = "";
+      picture.addEventListener("error", () => {
+        missingPictures.add(avatar.url);
+        picture.remove();
+      });
+      picture.src = avatar.url;
+      node.appendChild(picture);
+    }
+    return node;
+  }
+
+  function avatarOf(owner) {
+    return avatars && Object.prototype.hasOwnProperty.call(avatars, owner) ? avatars[owner] : null;
   }
 
   function svgEl(tag, attributes) {
@@ -291,6 +325,10 @@
       div.appendChild(labels);
     }
 
+    const avatar = avatarEl(row.owner);
+    if (avatar) {
+      div.appendChild(avatar);
+    }
     const owner = el("span", "owner", row.ownerShort || row.owner);
     owner.title = row.owner;
     div.appendChild(owner);
@@ -1040,6 +1078,7 @@
     case "state": {
       const previousStatus = new Map(workspaces.map(ws => [ ws.id, ws.status ]));
       workspaces = Array.isArray(message.workspaces) ? message.workspaces : [];
+      avatars = message.avatars || null;
       hasState = true;
       for (const ws of workspaces) {
         if (ws.status === "loading" && previousStatus.get(ws.id) !== "loading") {

@@ -1,7 +1,5 @@
 import {
   ageInWords,
-  avatarColor,
-  avatarInitials,
   avatarUri,
   changeKind,
   changesetTooltip,
@@ -49,6 +47,7 @@ import {
   updateNotice,
   updateSummary,
 } from "../../../reviews/reviewPresentation";
+import { avatarColor, avatarInitials } from "../../../avatars";
 import { BRANCH_NAME, comment, file } from "./fixtures";
 import { FileChangeStatus, RevisionType } from "../../../models";
 import { groupReviewThreads, IReviewChangeset, IReviewComment, IReviewThread } from "../../../reviews/models";

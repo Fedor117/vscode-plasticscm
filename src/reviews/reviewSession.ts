@@ -21,6 +21,7 @@ import {
   unnamedBranchId,
   updateNotice,
 } from "./reviewPresentation";
+import { gravatarEnabled, gravatarUrl } from "../avatars";
 import { IActiveReview, IReviewGroup, IReviewSessionView, ReviewGroupKey, Stage } from "./sessionTypes";
 import {
   IFoundReviews,
@@ -1039,6 +1040,7 @@ export class ReviewSession implements IReviewSessionView, Disposable {
         workspaceId,
       })),
       now: this.now(),
+      picture: gravatarEnabled() ? gravatarUrl : undefined,
       whoami: this.whoami(active),
     });
   }

@@ -1,6 +1,9 @@
+import { Avatars, avatarsWhenOn, GRAVATAR_ORIGIN, GRAVATAR_SETTING } from "../avatars";
 import { BranchExplorerData, ExplorerStatus } from "./explorerData";
 import { buildExplorerModel, ExplorerScope, IExplorerModel, IExplorerRow, toFlatExplorerRow } from "./explorerGraph";
-import { commands, Disposable, Uri, ViewColumn, Webview, WebviewPanel, window } from "vscode";
+import {
+  commands, Disposable, Uri, ViewColumn, workspace as vscodeWorkspace, Webview, WebviewPanel, window,
+} from "vscode";
 import { describeError, showOperationError } from "../commands/scmUtils";
 import { findFileChange, IFileRow, toFileRow } from "../history/historyViewProvider";
 import { IConfig } from "../config";
@@ -25,6 +28,8 @@ export interface IExplorerStateMessage {
   readonly hasMore: boolean;
   readonly loadingMore: boolean;
   readonly model: IExplorerModel;
+  /** The authors' avatars by owner; absent while the Gravatar setting is off, and the rows show names only. */
+  readonly avatars?: Avatars;
 }
 
 export interface IExplorerFilesMessage {
@@ -43,6 +48,8 @@ export interface IExplorerSearchResultsMessage {
   readonly type: "searchResults";
   readonly text: string;
   readonly rows: IExplorerRow[];
+  /** The avatars of the found rows' authors, who may have no loaded changeset. */
+  readonly avatars?: Avatars;
 }
 
 export interface IExplorerSearchErrorMessage {
@@ -142,6 +149,11 @@ export class BranchExplorer implements Disposable {
         this.onMessage(session, message).catch((e: unknown) => {
           this.mPlasticScm.channel.appendLine(`Branch Explorer message failed: ${describeError(e)}`);
         });
+      }),
+      vscodeWorkspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration(GRAVATAR_SETTING)) {
+          this.schedulePost(session);
+        }
       }),
       panel.onDidChangeViewState(() => {
         if (panel.visible) {
@@ -257,6 +269,7 @@ export class BranchExplorer implements Disposable {
       const found = await session.data.search(text);
       const current = session.workspace.currentChangeset;
       this.post(session, {
+        avatars: avatarsWhenOn(found.map(changeset => changeset.owner)),
         rows: found.map(changeset => toFlatExplorerRow(changeset, current)),
         text,
         type: "searchResults",
@@ -283,20 +296,22 @@ export class BranchExplorer implements Disposable {
 
     const { data, workspace } = session;
     const currentBranch = data.currentBranch;
+    const model = buildExplorerModel({
+      changesets: data.changesets,
+      currentBranch,
+      currentChangesetId: workspace.currentChangeset,
+      labels: data.labels,
+      merges: data.merges,
+      scope: session.scope,
+    });
     this.post(session, {
+      avatars: avatarsWhenOn(model.owners),
       currentBranch,
       currentChangesetId: workspace.currentChangeset,
       hasMore: data.hasMore,
       loadingMore: data.isLoadingMore,
       message: data.message,
-      model: buildExplorerModel({
-        changesets: data.changesets,
-        currentBranch,
-        currentChangesetId: workspace.currentChangeset,
-        labels: data.labels,
-        merges: data.merges,
-        scope: session.scope,
-      }),
+      model,
       scope: session.scope,
       status: data.status,
       type: "state",
@@ -321,6 +336,7 @@ export class BranchExplorer implements Disposable {
       "default-src 'none'",
       `style-src ${webview.cspSource}`,
       `font-src ${webview.cspSource}`,
+      `img-src ${GRAVATAR_ORIGIN}`,
       `script-src 'nonce-${nonce}'`,
     ].join("; ");
 

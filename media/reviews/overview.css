@@ -432,6 +432,20 @@ body.scrollBeyondLastLine:has(.plastic-review) {
   color: #ffffff;
 }
 
+/* A Gravatar picture over the initials; one that does not load draws nothing. */
+.plastic-review .av {
+  position: relative;
+  overflow: hidden;
+}
+
+.plastic-review .av img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+}
+
 .plastic-review .body {
   display: flex;
   flex: 1;

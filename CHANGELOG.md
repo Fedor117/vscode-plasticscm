@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Author avatars from Gravatar**, behind `plastic-scm.avatars.gravatar` (off by default). The
+  Plastic SCM Graph view, the Branch Explorer and the review Overview show each author's Gravatar
+  picture over their initials. `cm` has no pictures, so the views ask
+  `https://www.gravatar.com/avatar/<SHA-256 of the email address>` for authors whose user name is an
+  email address; an author without a picture keeps their initials. Review comment threads in the
+  editor keep the initials.
+
 ## [0.6.0] - 2026-11-13
 
 ### Added

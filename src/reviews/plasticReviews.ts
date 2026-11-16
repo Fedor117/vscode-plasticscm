@@ -25,6 +25,7 @@ import { IReviewPostingOptions, ReviewPosting } from "./reviewPosting";
 import { ReviewListNode, ReviewListProvider, reviewListViewId } from "./reviewListProvider";
 import { ReviewTreeNode, ReviewTreeProvider, reviewTreeViewId, scopeKey } from "./reviewTreeProvider";
 import { CmRunner } from "./cmRunner";
+import { GRAVATAR_SETTING } from "../avatars";
 import { IShellConfig } from "../config";
 import { ReviewActions } from "./reviewActions";
 import { ReviewDecorations } from "./reviewDecorations";
@@ -179,6 +180,10 @@ export class PlasticReviews implements Disposable {
         }
         if (event.affectsConfiguration(UPDATE_INTERVAL_SETTING)) {
           this.session.applySettings();
+        }
+        const active = this.session.active;
+        if (active && event.affectsConfiguration(GRAVATAR_SETTING)) {
+          this.editors.refreshOverview(active.workspaceId, active.review.id);
         }
       }));
 
