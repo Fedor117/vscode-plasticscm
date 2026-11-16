@@ -256,7 +256,7 @@ export class Workspace implements Disposable, QuickDiffProvider {
     // Improvement: measure status time and update the 'this.mbIsStatusSlow' flag.
     // ! Status XML output does not print performance warnings!
     const pendingChanges: IPendingChanges =
-      await CmStatusCommand.run(this.mWkInfo.path, this.mShell);
+      await CmStatusCommand.run(this.mWkInfo.path, this.mShell, this.mWkInfo.cmPath);
 
     this.mWorkspaceConfig = pendingChanges.workspaceConfig;
     this.mCurrentChangeset = pendingChanges.changeset;
