@@ -6,6 +6,27 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Merge from Branch…** merges the latest changeset of a branch into the branch the workspace is
+  on: from the Command Palette with a branch picker, from a branch row of the Repository view, and
+  as **Merge from This Branch…** on the changesets of other branches in the Branch Explorer. It
+  previews first (`cm merge br:<branch> --machinereadable`), asks to confirm naming source and
+  destination, then runs `cm merge br:<branch> --merge --conflict-markers
+  --nointeractiveresolution`. The result is left as pending changes with the merge link, to review
+  and check in from Source Control; the status, the Graph and the Branch Explorer refresh
+  afterwards. It refuses a workspace that is not on a branch, is behind its branch or has pending
+  changes (`cm` refuses the last one too, and it is what makes the undo below safe).
+- **Merge conflicts never open a tool or hang.** A directory conflict stops at the preview, named,
+  with nothing changed. `cm`'s preview cannot tell whether a file changed on both branches merges
+  cleanly, and a plain `cm merge --merge` opens the merge tool for one that does not and waits (seen
+  with cm 11.0.16, also with `--nointeractiveresolution`). So the merge runs with
+  `--conflict-markers`, which launches nothing and names the files `cm` could not merge; when there
+  are any, the extension undoes the whole merge (`cm undo -r`) and lists them, to be merged in the
+  Plastic SCM GUI. Run against a throwaway local repository with cm 11.0.16: a clean merge and its
+  checked-in merge link, a file changed on both sides that merges cleanly, a text conflict, a binary
+  conflict and an evil twin. The dialogs and menus are covered by unit tests only.
+
 ## [0.7.0] - 2026-11-16
 
 ### Added

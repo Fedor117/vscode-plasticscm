@@ -46,6 +46,9 @@ With this plugin, you can use Plastic SCM as your SCM tool.
 11. **Shelves**: shelve all or selected pending changes, browse the files of a shelve
     and diff them, apply or delete a shelve, and shelve pending changes when a switch
     or update would meet them
+12. **Merge a branch** into the branch the workspace is on, from the Branch Explorer, the
+    Repository view or the Command Palette, leaving the result as pending changes to review and
+    check in
 
 ## Plastic Reviews
 
@@ -427,7 +430,8 @@ file to open its diff against the parent changeset; right-click it for **Show
 File History**. Arrow keys, Page Up/Down, Home and End move the selection.
 
 Right-click a changeset for **Switch Workspace to This Changeset…**, **Switch
-Workspace to This Branch…**, **Create Branch from This Changeset…**, **Label This
+Workspace to This Branch…**, **Merge from This Branch…** (on changesets of other branches than
+the workspace's), **Create Branch from This Changeset…**, **Label This
 Changeset…**, **Create Code Review for This Branch…**, **Compare with Selected
 Changeset** (select one, right-click another), **Compare with Workspace
 Changeset**, and copying its id, branch name or comment. These run the same
@@ -536,6 +540,36 @@ of it against the changeset the shelve was made on. Binary files and directories
   first if you want to avoid that. If `cm` reports a conflict in its output, a warning says so.
   `cm merge sh:N --conflict-markers` would write conflict markers in the files instead, but it is a
   merge (with traceability) rather than an apply, so it is not used.
+
+### Merge
+
+**Merge from Branch…** (Command Palette, with a branch picker; a branch row of the Repository
+view; **Merge from This Branch…** on a changeset of that branch in the Branch Explorer) merges the
+latest changeset of a branch into the branch the workspace is on. Nothing is checked in: the result
+is left as pending changes with the merge link, so you review it and check it in from Source
+Control. The link shows in the Graph and the Branch Explorer once it is checked in.
+
+1. **The workspace must be ready.** The command refuses, with the reason, when the workspace is
+   not on a branch, is on the branch you picked, is behind its branch (update first), or has
+   pending changes (private files do not count). `cm` itself refuses to merge over pending changes
+   unless `MergeWithPendingChanges` is set in `client.conf`, and a clean workspace is what lets a
+   merge that met conflicts be undone without touching your work. Check in, shelve or undo first.
+2. **Preview.** `cm merge br:<branch> --machinereadable` lists what the merge would do. A directory
+   conflict (an evil twin, a change against a delete, and so on) stops here, named, with nothing
+   changed. Nothing to merge is reported as such.
+3. **Confirm.** A dialog names the source and the destination and says how many items are merged
+   and how many files changed on both branches.
+4. **Merge.** `cm merge br:<branch> --merge --conflict-markers --nointeractiveresolution`.
+
+**Conflicts.** The preview cannot tell whether a file changed on both branches merges cleanly;
+`cm` only finds out by merging it. Without `--conflict-markers`, `cm` opens its merge tool for a
+file whose changes overlap and waits, which would hang `cm shell`. With it `cm` launches nothing,
+merges what it can and names the files it could not: text files whose changes overlap, and binary
+files, symlinks and recursive merges changed on both sides. When it names any, the extension undoes
+the whole merge (`cm undo <workspace> -r`), so the workspace is as it was, and a dialog lists the
+conflicting files and tells you to do the merge in the Plastic SCM GUI. The extension does not
+resolve conflicts. If the undo itself fails, the error says so and the partial merge stays as
+pending changes for you to undo.
 
 ### Locks, checkout, delete, move and ignore rules
 

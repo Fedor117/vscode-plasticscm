@@ -549,6 +549,11 @@
         "title": "Switch to Changeset…"
       },
       {
+        "command": "plastic-scm.merge.fromBranch",
+        "category": "Plastic SCM",
+        "title": "Merge from Branch…"
+      },
+      {
         "command": "plastic-scm.switch.label",
         "category": "Plastic SCM",
         "title": "Switch to Label…",
@@ -811,6 +816,11 @@
         "command": "plastic-scm.explorer.switchToBranch",
         "category": "Plastic SCM",
         "title": "Switch Workspace to This Branch…"
+      },
+      {
+        "command": "plastic-scm.explorer.mergeFromBranch",
+        "category": "Plastic SCM",
+        "title": "Merge from This Branch…"
       },
       {
         "command": "plastic-scm.explorer.createBranch",
@@ -1330,6 +1340,11 @@
           "group": "1_switch@1"
         },
         {
+          "command": "plastic-scm.merge.fromBranch",
+          "when": "view == plastic-scm.repository && viewItem == branch",
+          "group": "1_switch@2"
+        },
+        {
           "command": "plastic-scm.branch.create",
           "when": "view == plastic-scm.repository && viewItem =~ /^branch(\\.current)?$/",
           "group": "2_create@1"
@@ -1582,6 +1597,11 @@
           "command": "plastic-scm.explorer.switchToBranch",
           "group": "1_switch@2",
           "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset"
+        },
+        {
+          "command": "plastic-scm.explorer.mergeFromBranch",
+          "group": "1_switch@3",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && !explorerIsWorkspaceBranch"
         },
         {
           "command": "plastic-scm.explorer.createBranch",
@@ -1863,6 +1883,10 @@
           "when": "plastic-scm.active"
         },
         {
+          "command": "plastic-scm.merge.fromBranch",
+          "when": "plastic-scm.active"
+        },
+        {
           "command": "plastic-scm.switch.label",
           "when": "plastic-scm.active"
         },
@@ -2056,6 +2080,10 @@
         },
         {
           "command": "plastic-scm.explorer.switchToBranch",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.explorer.mergeFromBranch",
           "when": "false"
         },
         {

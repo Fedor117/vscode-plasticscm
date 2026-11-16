@@ -16,6 +16,7 @@ export const EXPLORER_COMMANDS = {
   createBranch: "plastic-scm.explorer.createBranch",
   createLabel: "plastic-scm.explorer.createLabel",
   createReview: "plastic-scm.explorer.createReview",
+  mergeFromBranch: "plastic-scm.explorer.mergeFromBranch",
   open: "plastic-scm.explorer.open",
   refresh: "plastic-scm.explorer.refresh",
   switchToBranch: "plastic-scm.explorer.switchToBranch",
@@ -55,10 +56,11 @@ export class ExplorerCommands implements Disposable {
         (_, row) => this.copy(String(row.changesetId), `cs:${row.changesetId}`)),
       onRow(EXPLORER_COMMANDS.copyBranch, (_, row) => this.copy(row.branch, row.branch)),
       onRow(EXPLORER_COMMANDS.copyComment, (workspace, row) => this.copyComment(workspace, row)),
-      // These three take the row as it is: the commands they run know a Branch Explorer row.
+      // These take the row as it is: the commands they run know a Branch Explorer row.
       forward(EXPLORER_COMMANDS.createBranch, "plastic-scm.branch.create"),
       forward(EXPLORER_COMMANDS.createLabel, "plastic-scm.label.create"),
       forward(EXPLORER_COMMANDS.createReview, "plastic-scm.codeReview.create"),
+      forward(EXPLORER_COMMANDS.mergeFromBranch, "plastic-scm.merge.fromBranch"),
     ];
   }
 

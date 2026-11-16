@@ -55,3 +55,11 @@ export {
   reviewTitleProblem,
 } from "./codeReview/codeReview";
 export { ReviewerListParser } from "./codeReview/reviewerListParser";
+export { IMergeResult, Merge } from "./merge/merge";
+export {
+  IDirectoryConflict,
+  IMergeReport,
+  IUnresolvedFile,
+  MERGE_FIELD_SEPARATOR,
+  parseMergeLines,
+} from "./merge/mergeParser";

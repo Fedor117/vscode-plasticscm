@@ -399,6 +399,7 @@ describe("Branch Explorer client", function() {
       branch: TASK,
       changesetId: 3,
       explorerCanCompare: false,
+      explorerIsWorkspaceBranch: false,
       explorerIsWorkspaceChangeset: false,
       preventDefaultContextMenuItems: true,
       webviewSection: "explorerChangeset",
