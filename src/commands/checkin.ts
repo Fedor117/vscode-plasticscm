@@ -46,6 +46,10 @@ export class CheckinCommand implements Disposable {
       return;
     }
 
+    if (await this.hasMergeConflicts(workspace)) {
+      return;
+    }
+
     const comment: string | undefined = await this.getComment(workspace);
     if (comment === undefined) {
       return;
@@ -72,6 +76,30 @@ export class CheckinCommand implements Disposable {
         await showOperationError(this.mPlasticScm, "Checkin", e);
       }
     });
+  }
+
+  /**
+   * cm refuses a check-in while a file still has the conflict markers a merge
+   * wrote; this says so first and offers the files. The status is refreshed
+   * before deciding, because the last one may predate the user's fix.
+   */
+  private async hasMergeConflicts(workspace: Workspace): Promise<boolean> {
+    if (workspace.mergeConflicts.length === 0) {
+      return false;
+    }
+    await workspace.updateWorkspaceStatus();
+    const count = workspace.mergeConflicts.length;
+    if (count === 0) {
+      return false;
+    }
+
+    const open = "Open Conflicts";
+    void window.showWarningMessage(
+      `${count} ${count === 1 ? "file still contains" : "files still contain"} merge conflict markers. ` +
+      "Resolve them and save, then check in.",
+      open,
+    ).then(answer => answer === open && commands.executeCommand("plastic-scm.merge.openConflicts", workspace));
+    return true;
   }
 
   private async getComment(workspace: Workspace): Promise<string | undefined> {

@@ -9,7 +9,11 @@ import {
   IWorkspaceInfo,
   WkConfigType,
 } from "./models";
-import { GetFile as CmGetFileCommand, Status as CmStatusCommand } from "./cm/commands";
+import {
+  GetFile as CmGetFileCommand,
+  Merge as CmMergeCommand,
+  Status as CmStatusCommand,
+} from "./cm/commands";
 import {
   Command,
   Disposable,
@@ -40,6 +44,26 @@ import { toRevisionUri } from "./revisionContentProvider";
  */
 const REVISION_CACHE_MAX_AGE_MILLIS = 24 * 60 * 60 * 1000;
 
+/** The Source Control group of the files a merge left conflict markers in; menus match it as `scmResourceGroup`. */
+export const MERGE_CONFLICTS_GROUP_ID = "conflicts";
+
+function conflictResource(uri: Uri): SourceControlResourceState {
+  return {
+    command: { arguments: [uri], command: "vscode.open", title: "Open" },
+    contextValue: "mergeConflict",
+    decorations: {
+      dark: { iconPath: conflictIcon("dark") },
+      light: { iconPath: conflictIcon("light") },
+      tooltip: "Contains merge conflict markers. Resolve them and save, then check in.",
+    },
+    resourceUri: uri,
+  };
+}
+
+function conflictIcon(theme: string): Uri {
+  return Uri.file(path.join(__dirname, "..", "images", "icons", theme, "status-conflicted.svg"));
+}
+
 export class Workspace implements Disposable, QuickDiffProvider {
 
   public get sourceControl(): SourceControl {
@@ -57,6 +81,16 @@ export class Workspace implements Disposable, QuickDiffProvider {
    */
   public get pendingChanges(): ReadonlyArray<{ isPrivate: boolean; resourceUri: Uri; type: ChangeType }> {
     return this.mPendingChanges;
+  }
+
+  /** A merge's changes are pending: it is not checked in yet. */
+  public get isMerging(): boolean {
+    return this.mbIsMerging;
+  }
+
+  /** Files that still contain the conflict markers a merge wrote into them, as of the last status. */
+  public get mergeConflicts(): readonly Uri[] {
+    return this.mMergeConflicts;
   }
 
   public get workspaceConfig(): IWorkspaceConfig | undefined {
@@ -95,6 +129,9 @@ export class Workspace implements Disposable, QuickDiffProvider {
   private readonly mWkInfo: IWorkspaceInfo;
   private readonly mSourceControl: SourceControl;
   private readonly mStatusResourceGroup: SourceControlResourceGroup;
+  private readonly mConflictsResourceGroup: SourceControlResourceGroup;
+  private mbIsMerging = false;
+  private mMergeConflicts: Uri[] = [];
   private readonly mUnrealLevelsResourceGroup: SourceControlResourceGroup;
 
   private readonly mOperations: IWorkspaceOperations;
@@ -147,6 +184,10 @@ export class Workspace implements Disposable, QuickDiffProvider {
       `${constants.extensionId}:${workspaceInfo.id}`,
       constants.extensionDisplayName,
       Uri.file(workspaceInfo.path));
+    // Created first so it is listed first: conflicts are what stands between a merge and its check-in.
+    this.mConflictsResourceGroup = this.mSourceControl.createResourceGroup(
+      MERGE_CONFLICTS_GROUP_ID, "Merge Conflicts");
+    this.mConflictsResourceGroup.hideWhenEmpty = true;
     this.mUnrealLevelsResourceGroup = this.mSourceControl.createResourceGroup(
       "unreal-levels", "Dirty Unreal Levels");
     this.mStatusResourceGroup = this.mSourceControl.createResourceGroup(
@@ -168,6 +209,7 @@ export class Workspace implements Disposable, QuickDiffProvider {
 
     this.mDisposables = Disposable.from(
       this.mSourceControl,
+      this.mConflictsResourceGroup,
       this.mUnrealLevelsResourceGroup,
       this.mStatusResourceGroup,
       fsWatcher,
@@ -291,6 +333,9 @@ export class Workspace implements Disposable, QuickDiffProvider {
       }
     }
 
+    this.mbIsMerging = pendingChanges.merging ?? false;
+    this.mMergeConflicts = await this.findMergeConflicts();
+    this.mConflictsResourceGroup.resourceStates = this.mMergeConflicts.map(conflictResource);
     this.mStatusResourceGroup.resourceStates = sourceControlResources;
     this.mUnrealLevelsResourceGroup.resourceStates = unrealLevelResources;
     this.mSourceControl.count = sourceControlResources.length + unrealLevelResources.length;
@@ -312,6 +357,24 @@ export class Workspace implements Disposable, QuickDiffProvider {
     this.mKnownBranchHead = head;
     if (wasIncoming !== this.hasIncomingChanges) {
       this.updateStatusBar();
+    }
+  }
+
+  /**
+   * `cm status --xml` does not say which files still have conflict markers, so
+   * cm is asked, but only while a merge is pending. A failure is logged and
+   * read as no conflicts: cm refuses the check-in anyway while markers remain.
+   */
+  private async findMergeConflicts(): Promise<Uri[]> {
+    if (!this.mbIsMerging) {
+      return [];
+    }
+    try {
+      const serverPaths = await CmMergeCommand.conflictMarkers(this.mShell);
+      return serverPaths.map(serverPath => Uri.file(path.join(this.mWkInfo.path, serverPath)));
+    } catch (e) {
+      this.mChannel.appendLine(`Unable to list the merge conflicts: ${(e as Error).message}`);
+      return [];
     }
   }
 

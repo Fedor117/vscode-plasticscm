@@ -584,6 +584,7 @@
       changesetId: row.id,
       compareWithId: ui.selectedId === null ? undefined : ui.selectedId,
       explorerCanCompare: ui.selectedId !== null && ui.selectedId !== row.id,
+      explorerIsWorkspaceBranch: Boolean(state && state.currentBranch === row.branch),
       explorerIsWorkspaceChangeset: row.isCurrent,
       preventDefaultContextMenuItems: true,
       webviewSection: "explorerChangeset",

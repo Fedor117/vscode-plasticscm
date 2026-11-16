@@ -20,6 +20,8 @@ export const enum WorkspaceOperation {
   TrackedFileChange = "TrackedFileChange",
   /** `cm revert`: loading an earlier revision of a file into the workspace. */
   Revert = "Revert",
+  /** `cm merge`: merging a branch into the workspace. */
+  Merge = "Merge",
 }
 
 /** Reports progress text inside a running operation, e.g. `{ message: "Downloading…" }`. */

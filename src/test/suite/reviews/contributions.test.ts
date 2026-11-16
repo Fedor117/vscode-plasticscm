@@ -1036,7 +1036,9 @@ describe("Plastic Reviews contributions", () => {
         expect(session.active).to.equal(undefined);
       });
 
-    it("activates a review by id without opening an editor, then walks its files from the editor", async () => {
+    it("activates a review by id without opening an editor, then walks its files from the editor", async function() {
+      // Opens four diff editors in a row, which a CI runner does not manage in the default two seconds.
+      this.timeout(30000);
       const session = reviews!.session;
       await commands.executeCommand("plastic-scm.reviews.open", "wk", BRANCH_REVIEW_ID);
       expect(session.active?.review.id).to.equal(BRANCH_REVIEW_ID);

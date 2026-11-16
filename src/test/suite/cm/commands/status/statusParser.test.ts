@@ -215,6 +215,18 @@ describe("Status Parser", () => {
     it("doesn't produce any error", () => {
       expect(error).to.be.undefined;
     });
+
+    it("sees no merge in changes that carry no merge info", () => {
+      expect(result!.merging).to.equal(false);
+    });
+
+    it("sees a pending merge in a change that came from one", async () => {
+      const merged = new StatusParser();
+      stdout
+        .map(line => line.replace("<MergesInfo />", "<MergesInfo> (Merge from 4)</MergesInfo>"))
+        .forEach(line => merged.readLineOut(line));
+      expect((await merged.parse())?.merging).to.equal(true);
+    });
   });
 
   context("When there are error lines", () => {

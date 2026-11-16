@@ -8,6 +8,37 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 
+- **Merge from Branch…** merges the latest changeset of a branch into the branch the workspace is
+  on: from the Command Palette with a branch picker, from a branch row of the Repository view, and
+  as **Merge from This Branch…** on the changesets of other branches in the Branch Explorer. It
+  previews first (`cm merge br:<branch> --machinereadable`), asks to confirm naming source and
+  destination, then runs `cm merge br:<branch> --merge --conflict-markers
+  --nointeractiveresolution`. The result is left as pending changes with the merge link, to review
+  and check in from Source Control, with `Merge <source> into <destination>` offered as the
+  comment; the status, the Graph and the Branch Explorer refresh afterwards. It refuses a
+  workspace that is not on a branch, is behind its branch or has pending changes (`cm` refuses the
+  last one too).
+- **Merge conflicts are resolved in VS Code, the way `cm merge` expects of a plugin.** `cm`'s
+  preview cannot tell whether a file changed on both branches merges cleanly, and a plain
+  `cm merge --merge` opens the merge tool for one that does not and waits (seen with cm 11.0.16,
+  also with `--nointeractiveresolution`), so nothing here runs it that way.
+  - Directory conflicts are asked about one at a time before anything changes (take the merged
+    branch's side, keep the workspace branch's, or keep both by renaming for an evil twin) and
+    recorded with `cm merge --resolveconflict`.
+  - Binary files and symlinks changed on both branches: a dialog asks which branch's versions to
+    use, for all of them (`--keepsource` / `--keepdestination`).
+  - Text files whose changes overlap get conflict markers. The first one opens, and a **Merge
+    Conflicts** group at the top of Source Control lists the files that still contain markers
+    (`cm merge --list-conflict-markers`, asked only while a merge is pending).
+  - **Checkin** stops with a message while a file still has markers. **Mark as Resolved…** runs
+    `cm merge --mark-resolved`. **Abort Merge…** undoes the workspace's pending changes
+    (`cm undo -r`) after confirming.
+
+  Run against a throwaway local repository with cm 11.0.16: a clean merge and its checked-in merge
+  link, a file changed on both sides that merges cleanly, a text conflict (markers, listing,
+  resolving by editing, mark-resolved, undo), a text and a binary conflict together with each
+  side kept, and three directory conflicts answered three ways. The dialogs, the menus and the
+  Source Control group are covered by unit tests only.
 - **Review status in the Branch Explorer.** A branch with a code review shows the review's status
   beside its pill (Under review, Rework required or Reviewed), and a changeset with a review of its
   own shows it on its row. A click opens the review in Plastic Reviews. The icons load after the

@@ -30,6 +30,7 @@ import { IWorkspaceInfo } from "./models";
 import { LabelCommands } from "./commands/label";
 import { locateWorkspace } from "./workspaceLocation";
 import { LockCommands } from "./commands/locks";
+import { MergeCommands } from "./commands/merge";
 import { OpenFileCommand } from "./commands/openFile";
 import { PlasticReviews } from "./reviews/plasticReviews";
 import { PlasticScmDecorations } from "./decorations";
@@ -219,6 +220,7 @@ export class PlasticScm implements Disposable {
       this.mDisposables.push(new LabelCommands(this, refreshRepository));
       this.mDisposables.push(new ShelveCommands(this, refreshRepository));
       this.mDisposables.push(new SwitchCommands(this));
+      this.mDisposables.push(new MergeCommands(this));
       this.mDisposables.push(new LockCommands(this, refreshRepository));
       this.mDisposables.push(new TrackedFileCommands(this));
       this.mDisposables.push(new IgnoreRuleCommands(this));
