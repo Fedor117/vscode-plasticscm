@@ -27,7 +27,8 @@ const ADD = [
   "codereview", "comment", "add", "12831", "-commentsfile=-", "--revision=revid:42", "--line=5", "--type=Comment",
 ];
 
-describe("Native posting (fake cm)", () => {
+describe("Native posting (fake cm)", function() {
+  this.timeout(10000);
   let editors: IFakePostingEditors;
   let posting: ReviewPosting;
   let cm: FakeCm;

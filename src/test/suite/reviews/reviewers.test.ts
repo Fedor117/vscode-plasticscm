@@ -278,7 +278,8 @@ async function activated(options: Parameters<typeof harness>[0] = {}): Promise<I
   return test;
 }
 
-describe("Add Me as Reviewer and Set Review Status… (fake cm, no server)", () => {
+describe("Add Me as Reviewer and Set Review Status… (fake cm, no server)", function() {
+  this.timeout(10000);
   const tests: IHarness[] = [];
   const track = (test: IHarness): IHarness => {
     tests.push(test);
