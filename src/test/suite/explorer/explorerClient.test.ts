@@ -1,3 +1,4 @@
+import { avatarInitials, avatarsOf } from "../../../avatars";
 import { buildExplorerModel, ExplorerScope, toFlatExplorerRow } from "../../../explorer/explorerGraph";
 import { Disposable, Uri, ViewColumn, Webview, WebviewPanel, window } from "vscode";
 import { IHistoryChangeset, RevisionType } from "../../../models";
@@ -22,6 +23,8 @@ interface IRowDump {
   readonly lines: number;
   readonly dashed: number;
   readonly context: Record<string, unknown>;
+  /** The initials of the author's avatar, when the row has one. */
+  readonly avatar?: string;
 }
 
 interface IFileDump {
@@ -68,6 +71,7 @@ const PROBE = `
 
   function dump() {
     const rows = Array.from(document.querySelectorAll(".row:not(.footer)")).map(row => ({
+      avatar: row.querySelector(".cell.author .avatar") ? textOf(row.querySelector(".cell.author .avatar")) : undefined,
       context: contextOf(row),
       current: row.classList.contains("current"),
       dashed: row.querySelectorAll("svg .line.merge").length,
@@ -357,6 +361,19 @@ describe("Branch Explorer client", function() {
     expect(dump.count).to.equal("5 loaded");
     expect(dump.footer).to.equal("Beginning of the history.");
     expect(dump.scope).to.equal("all");
+  });
+
+  it("draws an author's initials beside the name only when the state brings avatars", async () => {
+    await client.post(state());
+    expect((await client.dump()).rows.map(row => row.avatar)).to.eql(Array(5).fill(undefined));
+
+    const model = state().model;
+    await client.post(state({ avatars: avatarsOf(model.owners) }));
+    const rows = (await client.dump()).rows;
+    expect(rows.map(row => row.avatar)).to.eql(model.rows.map(row => avatarInitials(row.owner)));
+    expect(rows[2].avatar).to.equal("LP");
+
+    await client.post(state());
   });
 
   it("draws branch and label pills, the workspace's row and a dashed merge line", async () => {

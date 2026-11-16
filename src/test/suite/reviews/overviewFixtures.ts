@@ -30,13 +30,14 @@ function scopeName(scope: FileScope): string {
 
 /** Every tag the page writes, and every attribute; nothing else may reach the preview. */
 const TAGS = new Set([
-  "a", "blockquote", "br", "circle", "code", "details", "div", "h1", "h2", "li", "p", "path", "section", "span",
+  "a", "blockquote", "br", "circle", "code", "details", "div", "h1", "h2", "img", "li", "p", "path", "section", "span",
   "strong", "summary", "svg", "ul",
 ]);
 const SELF_CLOSING = new Set([ "circle", "path" ]);
+const VOID = new Set([ "br", "img" ]);
 const ATTRIBUTES = new Set([
-  "aria-hidden", "aria-label", "aria-valuemax", "aria-valuemin", "aria-valuenow", "class", "cx", "cy", "d", "fill",
-  "height", "href", "r", "role", "stroke", "stroke-width", "style", "title", "viewBox", "width",
+  "alt", "aria-hidden", "aria-label", "aria-valuemax", "aria-valuemin", "aria-valuenow", "class", "cx", "cy", "d",
+  "fill", "height", "href", "r", "role", "src", "stroke", "stroke-width", "style", "title", "viewBox", "width",
 ]);
 const STYLES = /^(?:background-color: #[0-9a-f]{6}|width: \d{1,3}%)$/;
 const TAG = /^<(\/?)([a-z][a-z0-9]*)((?:\s+[a-z][\w-]*="[^"<>]*")*)\s*(\/?)>$/i;
@@ -46,7 +47,7 @@ const ATTRIBUTE = /\s+([a-z][\w-]*)="([^"]*)"/gi;
  * One HTML block as markdown-it reads it: the wrapper opens on the first line
  * and closes on the last, no line is blank (a blank line would end the block),
  * every tag and attribute is one the page writes, tags balance, links use a
- * scheme the preview opens, and text and values are escaped.
+ * scheme the preview opens, pictures come from Gravatar, and text and values are escaped.
  */
 export function expectWellFormed(html: string): void {
   expect(html.startsWith("<div class=\"plastic-review\">\n"), "opens with the wrapper").to.equal(true);
@@ -72,6 +73,10 @@ export function expectWellFormed(html: string): void {
       if (key === "href") {
         expect(decode(value), "a link the preview opens").to.match(/^(?:https?|vscode):\/\/[^/?#]/i);
       }
+      if (key === "src") {
+        expect(decode(value), "a picture from Gravatar")
+          .to.match(/^https:\/\/www\.gravatar\.com\/avatar\/[0-9a-f]{64}\?/);
+      }
       if (key === "style") {
         expect(value, "a style the page sets").to.match(STYLES);
       }
@@ -80,7 +85,7 @@ export function expectWellFormed(html: string): void {
       expect(open.pop(), `an unbalanced ${part}`).to.equal(name);
     } else if (selfClosing) {
       expect(SELF_CLOSING.has(name), `a self-closed ${name}`).to.equal(true);
-    } else if (name !== "br") {
+    } else if (!VOID.has(name)) {
       open.push(name);
     }
   });

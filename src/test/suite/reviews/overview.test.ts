@@ -28,6 +28,7 @@ import {
 } from "../../../reviews/reviewOverview";
 import { IScenario, loadScenario, NOW, readyReview, review } from "./viewFixtures";
 import { expect } from "chai";
+import { gravatarUrl } from "../../../avatars";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { parseTimeline } from "../../../reviews/timeline";
 
@@ -1126,6 +1127,22 @@ describe("Review overview", () => {
     expect(html.match(/<p class="tl-line"><span class="av sm"/g)?.length).to.be.greaterThan(5);
     expect(html).not.to.match(/<li class="tl-item[^"]*"><span class="av"/);
     expectEveryGeneralThread(html, discussionsOf(rows));
+  });
+
+  it("loads nothing remote unless it is given pictures, which then cover the initials", () => {
+    const active = readyReview(scenario);
+    expect(renderOverview(active, options({ whoami: ME }))).to.not.match(/<img\b/);
+
+    const html = renderOverview(active, options({
+      picture: user => (user === ME ? gravatarUrl("me@example.com") : undefined),
+      whoami: ME,
+    }));
+    expectWellFormed(html);
+    const pictures = html.match(/<span class="av[^>]*>[^<]*<img [^>]*>/g) ?? [];
+    expect(pictures.length).to.be.greaterThan(0);
+    expect(new Set(pictures.map(picture => picture.replace(/^.*<img /, "<img "))))
+      .to.deep.equal(new Set([`<img src="${gravatarUrl("me@example.com")?.replace("&", "&amp;")}" alt="">`]));
+    expect(html.match(/<img\b/g)?.length).to.equal(pictures.length);
   });
 
   it("leaves Open items out when nothing is open, and prints each item's first line only", () => {

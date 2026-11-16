@@ -1,7 +1,5 @@
 import {
   ageInWords,
-  avatarColor,
-  avatarInitials,
   canReplyToThread,
   changeKind,
   commentTypeLabel,
@@ -21,6 +19,7 @@ import {
   threadTypeLabel,
   updateSummary,
 } from "./reviewPresentation";
+import { avatarColor, avatarInitials } from "../avatars";
 import { FileChangeStatus, IChangesetFileChange } from "../models";
 import {
   fileKey,
@@ -96,6 +95,8 @@ export interface IOverviewOptions {
    * opened. Without one the only links are the URLs people wrote.
    */
   link?: (target: OverviewLinkTarget) => string | undefined;
+  /** A person's picture on Gravatar, drawn over their initials; without it the page loads nothing remote. */
+  picture?: (user: string) => string | undefined;
 }
 
 /**
@@ -164,6 +165,7 @@ interface IPage {
   readonly isViewed?: (file: IChangesetFileChange) => boolean;
   /** The caller's link builder, limited to URIs the preview opens. */
   readonly link: (target: OverviewLinkTarget) => string | undefined;
+  readonly picture?: (user: string) => string | undefined;
   /** Set once the discussions stage is ready. */
   readonly discussions?: IReviewDiscussions;
   readonly reviewers: readonly IReviewer[];
@@ -199,6 +201,7 @@ export function renderOverview(active: IActiveReview, options: IOverviewOptions)
       return href && OPENABLE.test(href) ? href : undefined;
     },
     now: options.now,
+    picture: options.picture,
     removed: discussions ? removedReviewers(discussions.timeline, active.review) : [],
     reviewers,
     whoami: options.whoami,
@@ -493,7 +496,7 @@ function reviewerCard(page: IPage, reviewer: IReviewer): string {
   const tags = [ isMe(page, reviewer.user) && "you", reviewer.author && "author", reviewer.assignee && "assignee" ]
     .filter(Boolean).map(tag => `<span class="tag">${tag}</span>`);
   const row = [ name(reviewer.user, "name"), ...tags, `<span class="pill ${tone}">${label}</span>` ].join(" ");
-  return `<li class="person">${avatar(reviewer.user)}<div class="body"><div class="row">${row}</div>` +
+  return `<li class="person">${avatar(page, reviewer.user)}<div class="body"><div class="row">${row}</div>` +
     `<div class="when">${escapeHtml(whenLine(page, reviewer))}</div></div></li>`;
 }
 
@@ -629,7 +632,7 @@ function composer(page: IPage): string[] {
     return [];
   }
   const link = escapeHtml(href);
-  const me = page.whoami ? avatar(page.whoami) : "<span class=\"av anon\" aria-hidden=\"true\"></span>";
+  const me = page.whoami ? avatar(page, page.whoami) : "<span class=\"av anon\" aria-hidden=\"true\"></span>";
   return [
     `<div class="composer">${me}<div class="card"><div class="card-top"><strong>Add a comment</strong></div>` +
       "<div class=\"body compose\"><p class=\"dim\">Write it in the input box at the top of the window.</p>" +
@@ -653,7 +656,7 @@ function openingCard(page: IPage): string {
   }
   // The title's rest is the author's, from when the review was opened.
   const by = latest?.text ? latest : { date: review.date, owner: review.owner };
-  const head = `<div class="head">${avatar(by.owner, true)}${name(by.owner, "name")} ` +
+  const head = `<div class="head">${avatar(page, by.owner, true)}${name(by.owner, "name")} ` +
     `<span class="kind">Description</span>${stamp(page, by.date)}</div>`;
   const thread = latest?.text ? page.discussions?.threads.find(candidate => candidate.id === latest.id) : undefined;
   return `<li class="tl-item tl-comment opening">${timelineMark("description", "blue")}` +
@@ -718,7 +721,7 @@ function eventItem(page: IPage, entry: ReviewHistoryEntry, thread?: IReviewThrea
     ? `<blockquote class="quote">${richText(entry.event.text)}</blockquote>` : "";
   const replies = thread ? replyList(page, thread.comments.slice(1)) : "";
   return `<li class="tl-item tl-event">${timelineMark(icon, tone)}` +
-    `<div class="tl-body"><p class="tl-line">${avatar(owner, true)}${text}${stamp(page, date)}</p>` +
+    `<div class="tl-body"><p class="tl-line">${avatar(page, owner, true)}${text}${stamp(page, date)}</p>` +
     `${quote}${replies}</div></li>`;
 }
 
@@ -830,7 +833,8 @@ function appliedChanges(page: IPage): Map<number, IReviewThread[]> {
 function changesetGroup(page: IPage, group: readonly IReviewChangeset[], applied: Map<number, IReviewThread[]>):
     string {
   const what = group.length === 1 ? `cs:${group[0].id}` : count(group.length, "changeset");
-  const line = `${avatar(group[0].owner, true)}${name(group[0].owner)} checked in ${what}${stamp(page, group[0].date)}`;
+  const line = `${avatar(page, group[0].owner, true)}${name(group[0].owner)} checked in ${what}` +
+    stamp(page, group[0].date);
   const rows = group.map(changeset => changesetRow(page, changeset, applied.get(changeset.id) ?? []));
   return `<li class="tl-item tl-changesets">${timelineMark("commit", "grey")}` +
     `<div class="tl-body"><p class="tl-line">${line}</p><ul class="cs-list">${rows.join("")}</ul></div></li>`;
@@ -874,7 +878,7 @@ function replyList(page: IPage, replies: readonly IReviewComment[], actions = tr
 
 function commentHead(page: IPage, comment: IReviewComment, label: string): string {
   const kind = label ? ` <span class="kind">${escapeHtml(label)}</span>` : "";
-  return `<div class="head">${avatar(comment.owner, true)}${name(comment.owner, "name")}${kind}` +
+  return `<div class="head">${avatar(page, comment.owner, true)}${name(comment.owner, "name")}${kind}` +
     `${stamp(page, comment.date)}</div>`;
 }
 
@@ -1053,10 +1057,17 @@ function statusPill(status: string): string {
     `${escapeHtml(status || "Unknown status")}</span>`;
 }
 
-/** A person's initials in their colour; `small` beside their name in a line. */
-function avatar(user: string, small = false): string {
+/**
+ * A person's initials in their colour, under their picture when the page has
+ * one for them; `small` beside their name in a line. The preview runs no
+ * script, so a picture that does not load is left as it is: an image with an
+ * empty `alt` then draws nothing, and the initials show.
+ */
+function avatar(page: IPage, user: string, small = false): string {
+  const url = page.picture?.(user);
+  const picture = url ? `<img src="${escapeHtml(url)}" alt="">` : "";
   return `<span class="av${small ? " sm" : ""}" style="background-color: ${avatarColor(user)}" aria-hidden="true">` +
-    `${escapeHtml(avatarInitials(user))}</span>`;
+    `${escapeHtml(avatarInitials(user))}${picture}</span>`;
 }
 
 /** A timeline entry's kind on the line: a circle with its icon, in `tone`. */

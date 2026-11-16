@@ -56,6 +56,44 @@
     return node;
   }
 
+  /** Pictures that failed to load, mostly authors Gravatar has none for, so a redraw does not ask again. */
+  const missingPictures = new Set();
+
+  /**
+   * An author's initials on their colour, covered by their picture when it
+   * loads; null while avatars are off or the author has none.
+   */
+  function avatarEl(owner) {
+    const avatar = avatarOf(owner);
+    if (!avatar) {
+      return null;
+    }
+    const node = el("span", "avatar", avatar.initials);
+    node.style.backgroundColor = avatar.color;
+    node.setAttribute("aria-hidden", "true");
+    if (avatar.url && !missingPictures.has(avatar.url)) {
+      const picture = document.createElement("img");
+      picture.alt = "";
+      picture.addEventListener("error", () => {
+        missingPictures.add(avatar.url);
+        picture.remove();
+      });
+      picture.src = avatar.url;
+      node.appendChild(picture);
+    }
+    return node;
+  }
+
+  /** Found rows may be by authors with no loaded changeset, so a search brings its own avatars. */
+  function avatarOf(owner) {
+    for (const avatars of [ ui.repoSearch && ui.repoSearch.avatars, ui.state && ui.state.avatars ]) {
+      if (avatars && Object.prototype.hasOwnProperty.call(avatars, owner)) {
+        return avatars[owner];
+      }
+    }
+    return null;
+  }
+
   function icon(name) {
     return el("span", `codicon codicon-${name}`);
   }
@@ -558,13 +596,19 @@
     desc.appendChild(el("span", row.subject ? "subject" : "subject empty", row.subject || "No comment"));
     desc.title = row.comment;
 
+    const author = cellWithTitle("author", row.ownerShort, row.owner);
+    const avatar = avatarEl(row.owner);
+    if (avatar) {
+      author.prepend(avatar);
+    }
+
     const date = new Date(row.date);
     node.append(
       graph,
       desc,
       el("div", "cell cs", String(row.id)),
       cellWithTitle("branch", row.branch),
-      cellWithTitle("author", row.ownerShort, row.owner),
+      author,
       cellWithTitle("date", formatDate(date), date.toLocaleString()));
 
     node.addEventListener("click", () => select(row.id));
@@ -810,7 +854,12 @@
     info.appendChild(title);
 
     const date = new Date(row.date);
-    info.appendChild(el("div", "details-meta", `${row.owner} · ${date.toLocaleString()}`));
+    const meta = el("div", "details-meta", `${row.owner} · ${date.toLocaleString()}`);
+    const avatar = avatarEl(row.owner);
+    if (avatar) {
+      meta.prepend(avatar);
+    }
+    info.appendChild(meta);
 
     const links = el("div", "details-links");
     if (row.parentId >= 0) {
@@ -1054,7 +1103,9 @@
       break;
     case "searchResults":
       if (ui.repoSearch && ui.repoSearch.text === message.text) {
-        ui.repoSearch = { error: null, pending: false, rows: message.rows, text: message.text };
+        ui.repoSearch = {
+          avatars: message.avatars || null, error: null, pending: false, rows: message.rows, text: message.text,
+        };
         refreshRows(true);
       }
       break;

@@ -1,8 +1,10 @@
+import { Avatars, avatarsWhenOn, GRAVATAR_ORIGIN, GRAVATAR_SETTING } from "../avatars";
 import {
   CancellationToken,
   commands,
   Disposable,
   Uri,
+  workspace as vscodeWorkspace,
   Webview,
   WebviewView,
   WebviewViewProvider,
@@ -100,6 +102,8 @@ export type HistoryWebviewMessage =
 export interface IStateMessage {
   readonly type: "state";
   readonly workspaces: IWorkspaceState[];
+  /** The authors' avatars by owner; absent while the Gravatar setting is off, and the rows show names only. */
+  readonly avatars?: Avatars;
 }
 
 export interface IFilesMessage {
@@ -160,6 +164,11 @@ export class HistoryViewProvider implements WebviewViewProvider, Disposable {
         // new workspace position.
         workspace.onDidRunStatus(() => this.onWorkspaceStatus(history)));
     }
+    this.mDisposables.push(vscodeWorkspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration(GRAVATAR_SETTING)) {
+        this.schedulePost();
+      }
+    }));
   }
 
   public dispose(): void {
@@ -409,7 +418,8 @@ export class HistoryViewProvider implements WebviewViewProvider, Disposable {
         status: history.status,
       });
     }
-    this.post({ type: "state", workspaces });
+    const avatars = avatarsWhenOn(workspaces.flatMap(state => state.model?.rows ?? []).map(row => row.owner));
+    this.post({ avatars, type: "state", workspaces });
   }
 
   private post(message: HistoryExtensionMessage): void {
@@ -432,6 +442,7 @@ export class HistoryViewProvider implements WebviewViewProvider, Disposable {
       "default-src 'none'",
       `style-src ${webview.cspSource}`,
       `font-src ${webview.cspSource}`,
+      `img-src ${GRAVATAR_ORIGIN}`,
       `script-src 'nonce-${nonce}'`,
     ].join("; ");
 
