@@ -22,6 +22,8 @@ export interface IPendingChanges {
   readonly workspaceConfig: IWorkspaceConfig;
   readonly changes: Map<string, IChangeInfo>;
   readonly changeset: number;
+  /** Some pending change came from a merge that is not checked in yet. */
+  readonly merging?: boolean;
 }
 
 export interface IWorkspaceConfig {

@@ -55,6 +55,8 @@ export class StatusParser extends BaseCmParser<IPendingChanges> {
     return {
       changes,
       changeset: statusOutput.workspaceStatus.status.changeset,
+      // e.g. `<MergesInfo> (Merge from 4)</MergesInfo>`; empty for a change that is not a merge's.
+      merging: pendingChanges.some(change => typeof change.mergesInfo === "string" && change.mergesInfo.length > 0),
       workspaceConfig: {
         configType: statusOutput.wkConfigType,
         location: statusOutput.wkConfigName.replace(`@${repSpec}`, ""),

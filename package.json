@@ -554,6 +554,24 @@
         "title": "Merge from Branch…"
       },
       {
+        "command": "plastic-scm.merge.openConflicts",
+        "category": "Plastic SCM",
+        "title": "Open Merge Conflicts…",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "plastic-scm.merge.markResolved",
+        "category": "Plastic SCM",
+        "title": "Mark as Resolved…",
+        "icon": "$(check)"
+      },
+      {
+        "command": "plastic-scm.merge.abort",
+        "category": "Plastic SCM",
+        "title": "Abort Merge…",
+        "icon": "$(discard)"
+      },
+      {
         "command": "plastic-scm.switch.label",
         "category": "Plastic SCM",
         "title": "Switch to Label…",
@@ -987,7 +1005,39 @@
           "when": "scmProvider =~ /^plastic-scm/"
         }
       ],
+      "scm/resourceGroup/context": [
+        {
+          "command": "plastic-scm.merge.openConflicts",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.merge.abort",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "inline@2"
+        },
+        {
+          "command": "plastic-scm.merge.openConflicts",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "1_merge@1"
+        },
+        {
+          "command": "plastic-scm.merge.abort",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "1_merge@2"
+        }
+      ],
       "scm/resourceState/context": [
+        {
+          "command": "plastic-scm.merge.markResolved",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.merge.markResolved",
+          "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == conflicts",
+          "group": "1_merge@1"
+        },
         {
           "command": "plastic-scm.openFile",
           "when": "scmProvider =~ /^plastic-scm/ && scmResourceGroup == status && scmResourceState =~ /file/",
@@ -1884,6 +1934,18 @@
         },
         {
           "command": "plastic-scm.merge.fromBranch",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.merge.openConflicts",
+          "when": "plastic-scm.active"
+        },
+        {
+          "command": "plastic-scm.merge.markResolved",
+          "when": "false"
+        },
+        {
+          "command": "plastic-scm.merge.abort",
           "when": "plastic-scm.active"
         },
         {

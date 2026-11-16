@@ -55,11 +55,18 @@ export {
   reviewTitleProblem,
 } from "./codeReview/codeReview";
 export { ReviewerListParser } from "./codeReview/reviewerListParser";
-export { IMergeResult, Merge } from "./merge/merge";
+export {
+  DirectoryResolution,
+  IMergeResolutionFiles,
+  IMergeResult,
+  IMergeRunOptions,
+  Merge,
+} from "./merge/merge";
 export {
   IDirectoryConflict,
   IMergeReport,
   IUnresolvedFile,
   MERGE_FIELD_SEPARATOR,
+  parseConflictMarkerLines,
   parseMergeLines,
 } from "./merge/mergeParser";

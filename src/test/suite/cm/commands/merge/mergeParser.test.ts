@@ -1,4 +1,4 @@
-import { MERGE_FIELD_SEPARATOR, parseMergeLines } from "../../../../../cm/commands";
+import { MERGE_FIELD_SEPARATOR, parseConflictMarkerLines, parseMergeLines } from "../../../../../cm/commands";
 import { expect } from "chai";
 
 /** Lines as cm 11.0.16 printed them with `--fieldseparator=|`, rewritten with the separator the extension passes. */
@@ -40,7 +40,7 @@ describe("parseMergeLines", () => {
       "FILE_SRC|/del.txt|6|8|46"));
 
     expect(report.directoryConflicts).to.eql([
-      { destination: "Added /twin.txt", source: "Added /twin.txt", title: "Evil twin conflict" },
+      { destination: "Added /twin.txt", source: "Added /twin.txt", title: "Evil twin conflict", type: "EVIL" },
     ]);
     expect(report.incoming).to.equal(1);
   });
@@ -71,5 +71,17 @@ describe("parseMergeLines", () => {
   it("keeps lines of an unknown kind and skips blank ones", () => {
     const report = parseMergeLines([ "", "  ", "Error: Object reference not set to an instance of an object." ]);
     expect(report.other).to.eql(["Error: Object reference not set to an instance of an object."]);
+  });
+});
+
+describe("parseConflictMarkerLines", () => {
+  it("reads the paths cm lists, spaces included, and nothing else", () => {
+    expect(parseConflictMarkerLines([
+      "CONFLICT_MARKERS /b.txt",
+      "CONFLICT_MARKERS /dir with space/d.txt",
+      "",
+      "Error: something",
+    ])).to.eql([ "/b.txt", "/dir with space/d.txt" ]);
+    expect(parseConflictMarkerLines([])).to.eql([]);
   });
 });

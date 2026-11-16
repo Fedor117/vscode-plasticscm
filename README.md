@@ -48,7 +48,7 @@ With this plugin, you can use Plastic SCM as your SCM tool.
     or update would meet them
 12. **Merge a branch** into the branch the workspace is on, from the Branch Explorer, the
     Repository view or the Command Palette, leaving the result as pending changes to review and
-    check in
+    check in; resolve conflicts in the editor, with the conflicting files listed in Source Control
 
 ## Plastic Reviews
 
@@ -546,30 +546,46 @@ of it against the changeset the shelve was made on. Binary files and directories
 **Merge from Branch…** (Command Palette, with a branch picker; a branch row of the Repository
 view; **Merge from This Branch…** on a changeset of that branch in the Branch Explorer) merges the
 latest changeset of a branch into the branch the workspace is on. Nothing is checked in: the result
-is left as pending changes with the merge link, so you review it and check it in from Source
+is left as pending changes with the merge link, and the check-in box is filled with
+`Merge <source> into <destination>` when it is empty. Review it and check it in from Source
 Control. The link shows in the Graph and the Branch Explorer once it is checked in.
+
+The extension drives `cm merge` the way its help describes for plugins, so conflicts are resolved
+in VS Code and `cm` never opens its merge tool:
 
 1. **The workspace must be ready.** The command refuses, with the reason, when the workspace is
    not on a branch, is on the branch you picked, is behind its branch (update first), or has
    pending changes (private files do not count). `cm` itself refuses to merge over pending changes
-   unless `MergeWithPendingChanges` is set in `client.conf`, and a clean workspace is what lets a
-   merge that met conflicts be undone without touching your work. Check in, shelve or undo first.
-2. **Preview.** `cm merge br:<branch> --machinereadable` lists what the merge would do. A directory
-   conflict (an evil twin, a change against a delete, and so on) stops here, named, with nothing
-   changed. Nothing to merge is reported as such.
-3. **Confirm.** A dialog names the source and the destination and says how many items are merged
-   and how many files changed on both branches.
+   unless `MergeWithPendingChanges` is set in `client.conf`, and starting clean is what makes
+   **Abort Merge…** undo the merge and nothing else.
+2. **Preview and confirm.** `cm merge br:<branch> --machinereadable` lists what the merge would
+   do. A dialog names the source and the destination, how many items are merged, how many files
+   changed on both branches and how many directory conflicts there are.
+3. **Directory conflicts** (the same name added on both branches, a change against a delete, and
+   so on) are asked about one at a time, before anything changes: **Take** the merged branch's
+   side, **Keep** the workspace branch's side, or, for an evil twin, **Keep both** by renaming the
+   workspace branch's item. Each answer is recorded with `cm merge --resolveconflict`; Escape
+   cancels the merge with nothing changed.
 4. **Merge.** `cm merge br:<branch> --merge --conflict-markers --nointeractiveresolution`.
+5. **Files that cannot be merged as text** (binary files, symlinks) and changed on both branches:
+   a dialog lists them and asks whether to take the merged branch's versions or keep the
+   workspace branch's. `cm` applies one choice to all of them (`--keepsource` or
+   `--keepdestination`); to choose per file, use the Plastic SCM GUI. Cancel aborts the merge.
+6. **Text conflicts.** A file whose changes overlap gets conflict markers (`<<<<<<<`, `|||||||`,
+   `=======`, `>>>>>>>`), with the workspace branch's side first. The first such file opens, where
+   VS Code offers **Accept Current / Incoming / Both** above each conflict, and the files are
+   listed in a **Merge Conflicts** group at the top of Source Control (click one to open it).
+   Resolve, save, and the file leaves the group at the next refresh.
 
-**Conflicts.** The preview cannot tell whether a file changed on both branches merges cleanly;
-`cm` only finds out by merging it. Without `--conflict-markers`, `cm` opens its merge tool for a
-file whose changes overlap and waits, which would hang `cm shell`. With it `cm` launches nothing,
-merges what it can and names the files it could not: text files whose changes overlap, and binary
-files, symlinks and recursive merges changed on both sides. When it names any, the extension undoes
-the whole merge (`cm undo <workspace> -r`), so the workspace is as it was, and a dialog lists the
-conflicting files and tells you to do the merge in the Plastic SCM GUI. The extension does not
-resolve conflicts. If the undo itself fails, the error says so and the partial merge stays as
-pending changes for you to undo.
+While a file still contains markers, **Checkin** stops with a message and offers the files (`cm`
+would refuse the check-in too). **Mark as Resolved…** on a file of the group tells `cm` its marker
+text is intentional (`cm merge --mark-resolved`); a file you resolved and saved needs no marking.
+**Abort Merge…** (the group's title, the conflict notification, the palette) undoes every pending
+change of the workspace with `cm undo -r` after confirming, which takes the merge back.
+
+Why not a plain `cm merge --merge`: the preview cannot tell whether a file changed on both
+branches merges cleanly, and without `--conflict-markers` `cm` opens its merge tool for one that
+does not and waits for it, which hangs `cm shell`.
 
 ### Locks, checkout, delete, move and ignore rules
 

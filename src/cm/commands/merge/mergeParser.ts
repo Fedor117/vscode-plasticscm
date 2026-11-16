@@ -1,8 +1,10 @@
 /** Passed to cm as `--fieldseparator`, so a path with spaces stays one field. */
 export const MERGE_FIELD_SEPARATOR = "#|#";
 
-/** A conflict about the tree (an evil twin, a change against a delete), which cm never resolves by itself. */
+/** A conflict about the tree (an evil twin, a change against a delete), which someone has to decide. */
 export interface IDirectoryConflict {
+  /** cm's code for the kind, e.g. `EVIL`, `CHG_RM`. */
+  readonly type: string;
   /** cm's name for the kind, e.g. `Evil twin conflict`. */
   readonly title: string;
   /** What the merged branch did, e.g. `Added /twin.txt`. */
@@ -28,7 +30,7 @@ export interface IMergeReport {
   /** Server paths of files changed on both branches. Only the merge itself tells whether they merge cleanly. */
   readonly changedOnBoth: readonly string[];
   readonly directoryConflicts: readonly IDirectoryConflict[];
-  /** Only after `--merge --conflict-markers`. */
+  /** Only after `--merge --conflict-markers`: the files that still need someone. */
   readonly unresolved: readonly IUnresolvedFile[];
   /** Operations cm carried out (`DO_` lines). Zero means the workspace was not touched. */
   readonly applied: number;
@@ -45,6 +47,7 @@ export interface IMergeReport {
  *     APPLY|MV|/mv.txt|/moved.txt
  *     FILE_CONFLICT|/b.txt|1|4|5|18
  *     DIR_CONFLICT|EVIL|Evil twin conflict|<explanation>|Added /twin.txt|Added /twin.txt|60|False|ADD|/twin.txt|...
+ *     DIR_CONFLICT|CHG_RM|Change/Delete conflict|<explanation>|Modified /c.txt|Deleted /c.txt|29|False|CHG|...
  *     STATUS|ALREADY_CONNECTED|No merges detected
  *     DO_MERGE|/abs/path/b.txt
  *     CONFLICT_MARKERS|/b.txt
@@ -76,7 +79,7 @@ export function parseMergeLines(lines: readonly string[], separator: string = ME
     } else if (kind === "FILE_CONFLICT" && fields.length > 1) {
       changedOnBoth.push(fields[1]);
     } else if (kind === "DIR_CONFLICT" && fields.length > 5) {
-      directoryConflicts.push({ destination: fields[5], source: fields[4], title: fields[2] });
+      directoryConflicts.push({ destination: fields[5], source: fields[4], title: fields[2], type: fields[1] });
     } else if (kind === "CONFLICT_MARKERS" && fields.length > 1) {
       unresolved.push({ path: fields[1], reason: "markers" });
     } else if (kind === "UNRESOLVED" && fields.length > 1) {
@@ -89,4 +92,13 @@ export function parseMergeLines(lines: readonly string[], separator: string = ME
   }
 
   return { applied, changedOnBoth, directoryConflicts, incoming, nothingToMerge, other, unresolved };
+}
+
+/**
+ * Reads `cm merge --list-conflict-markers`, which prints `CONFLICT_MARKERS <path>`
+ * for every file that still contains the markers a merge wrote into it.
+ */
+export function parseConflictMarkerLines(lines: readonly string[]): string[] {
+  const prefix = "CONFLICT_MARKERS ";
+  return lines.filter(line => line.startsWith(prefix)).map(line => line.substring(prefix.length).trim());
 }
