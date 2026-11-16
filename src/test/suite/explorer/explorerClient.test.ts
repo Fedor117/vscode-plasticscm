@@ -20,6 +20,8 @@ interface IRowDump {
   readonly selected: boolean;
   readonly current: boolean;
   readonly refs: string[];
+  /** The review badges of the row: status class, review id and tooltip. */
+  readonly reviews: Array<{ status: string; id: string; title: string }>;
   readonly lines: number;
   readonly dashed: number;
   readonly context: Record<string, unknown>;
@@ -78,6 +80,11 @@ const PROBE = `
       id: Number(row.dataset.id),
       lines: row.querySelectorAll("svg .line").length,
       refs: Array.from(row.querySelectorAll(".ref:not(.home)")).map(textOf),
+      reviews: Array.from(row.querySelectorAll(".review-badge")).map(badge => ({
+        id: badge.dataset.reviewId,
+        status: badge.className.replace("review-badge", "").trim(),
+        title: badge.title,
+      })),
       selected: row.classList.contains("selected"),
       text: textOf(row),
     }));
@@ -389,6 +396,30 @@ describe("Branch Explorer client", function() {
     expect(dump.rows.every(row => row.lines > 0)).to.equal(true);
     // Two lanes of 14px plus the margin.
     expect(dump.graphWidth).to.equal("38px");
+  });
+
+  it("draws a review badge beside its branch pill and opens the review on click", async () => {
+    const reviews = {
+      byBranch: new Map([[ TASK, { id: 129, status: "underReview" as const, tooltip: "Under review: review 129" }]]),
+      byChangeset: new Map([[ 4, { id: 130, status: "reviewed" as const, tooltip: "Reviewed: review 130" }]]),
+    };
+    const model = buildExplorerModel({
+      changesets: HISTORY, currentBranch: MAIN, currentChangesetId: 5, labels: [], merges: [], reviews,
+      scope: { kind: "all" },
+    });
+    await client.post(state({ model }));
+    const dump = await client.dump();
+
+    expect(dump.rows[2].reviews).to.eql([{ id: "129", status: "underReview", title: "Under review: review 129" }]);
+    expect(dump.rows[1].reviews).to.eql([{ id: "130", status: "reviewed", title: "Reviewed: review 130" }]);
+    expect(dump.rows[0].reviews).to.eql([]);
+    expect(dump.rows[2].refs).to.eql(["task"]);
+
+    expect(await client.click(".review-badge")).to.equal("clicked");
+    expect(client.sent("openReview")).to.eql([{ reviewId: 130, type: "openReview" }]);
+    // The click is the badge's alone: the row is not selected and no files are asked for.
+    expect((await client.dump()).rows.some(row => row.selected)).to.equal(false);
+    expect(client.sent("files")).to.eql([]);
   });
 
   it("gives each row the context its menu commands need", async () => {

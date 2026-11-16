@@ -19,6 +19,9 @@ export function testLink(target: OverviewLinkTarget): string {
   if (target.kind === "comment") {
     return `${HANDLER}?${target.action}=${target.commentId}`;
   }
+  if (target.kind === "changeset") {
+    return `${HANDLER}?changeset=${target.changesetId}`;
+  }
   return target.kind === "thread"
     ? `${HANDLER}?thread=${target.threadId}`
     : `${HANDLER}?scope=${scopeName(target.scope)}&file=${encodeURIComponent(target.fileKey)}`;
@@ -147,6 +150,7 @@ export function links(html: string): Array<{ href: string; text: string }> {
 export function expectLinksOpen(html: string, active: IActiveReview): number {
   const threads = active.discussions.state === "ready" ? active.discussions.value.threads : [];
   const files = active.files.state === "ready" ? active.files.value : undefined;
+  const changesets = active.changesets.state === "ready" ? active.changesets.value.items : [];
   let handled = 0;
   for (const { href } of links(html)) {
     if (/^https?:\/\/[^/?#]/i.test(href)) {
@@ -160,6 +164,11 @@ export function expectLinksOpen(html: string, active: IActiveReview): number {
     if (thread) {
       const named = threads.find(candidate => candidate.id === Number(thread[1]));
       expect(!!named && hasLocation(named), `${href} names a thread with a line`).to.equal(true);
+      continue;
+    }
+    const changeset = /^vscode:\/\/plastic\.test\/open\?changeset=(\d+)$/.exec(href);
+    if (changeset) {
+      expect(changesets.some(item => item.id === Number(changeset[1])), `${href} names a changeset`).to.equal(true);
       continue;
     }
     const file = /^vscode:\/\/plastic\.test\/open\?scope=(changes|merged)&file=([^&]+)$/.exec(href);
@@ -180,6 +189,7 @@ export function expectLinksOpen(html: string, active: IActiveReview): number {
 export function expectHandlerLinksOpen(html: string, active: IActiveReview, prefix: string): IReviewLink[] {
   const threads = active.discussions.state === "ready" ? active.discussions.value.threads : [];
   const files = active.files.state === "ready" ? active.files.value : undefined;
+  const changesets = active.changesets.state === "ready" ? active.changesets.value.items : [];
   const found: IReviewLink[] = [];
   for (const { href } of links(html)) {
     if (/^https?:\/\/[^/?#]/i.test(href)) {
@@ -198,6 +208,8 @@ export function expectHandlerLinksOpen(html: string, active: IActiveReview, pref
       expect(target.scope, href).to.be.oneOf([ "changes", "merged" ]);
       const rows = files ? viewableRows(scopeRows(files, target.scope as "changes" | "merged")) : [];
       expect(rows.some(row => fileKey(row) === target.fileKey), `${href} names a file row`).to.equal(true);
+    } else if (target.kind === "changeset") {
+      expect(changesets.some(item => item.id === target.changesetId), `${href} names a changeset`).to.equal(true);
     } else {
       expect(link.key, `${href} carries the session's key`).to.match(/^[A-Za-z0-9_-]+$/);
     }

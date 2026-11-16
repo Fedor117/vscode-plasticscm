@@ -98,6 +98,23 @@
     return el("span", `codicon codicon-${name}`);
   }
 
+  const REVIEW_ICONS = { reviewed: "pass", reworkRequired: "request-changes", underReview: "eye" };
+
+  /** The review of a branch or a changeset; a click opens it instead of selecting the row. */
+  function reviewBadge(review) {
+    const badge = el("button", `review-badge ${review.status}`);
+    badge.type = "button";
+    badge.title = review.tooltip;
+    badge.setAttribute("aria-label", review.tooltip);
+    badge.dataset.reviewId = String(review.id);
+    badge.appendChild(icon(REVIEW_ICONS[review.status] || "circle-large-outline"));
+    badge.addEventListener("click", event => {
+      event.stopPropagation();
+      post({ reviewId: review.id, type: "openReview" });
+    });
+    return badge;
+  }
+
   function iconButton(name, title, onClick) {
     const button = el("button", "icon-button");
     button.type = "button";
@@ -587,6 +604,12 @@
       pill.appendChild(el("span", "", ref.kind === "label" ? ref.text : shortBranch(ref.text)));
       pill.title = ref.kind === "label" ? `Label ${ref.text}` : `Head of ${ref.text}`;
       desc.appendChild(pill);
+      if (ref.review) {
+        desc.appendChild(reviewBadge(ref.review));
+      }
+    }
+    if (row.review) {
+      desc.appendChild(reviewBadge(row.review));
     }
     if (row.isCurrent) {
       const home = el("span", "ref home");

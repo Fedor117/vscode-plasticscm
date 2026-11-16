@@ -66,6 +66,8 @@ import { toFileRow } from "../history/historyViewProvider";
 export type OverviewLinkTarget =
   | { kind: "thread"; threadId: number }
   | { kind: "file"; scope: FileScope; fileKey: string }
+  /** A changeset of a branch review: its row in the Review view, with its files. */
+  | { kind: "changeset"; changesetId: number }
   /** Add Me as Reviewer, on the review the page shows. */
   | { kind: "addMeAsReviewer" }
   /** Reply to, edit or delete a comment of the review, by its id; the description's edit names its row. */
@@ -832,7 +834,7 @@ function appliedChanges(page: IPage): Map<number, IReviewThread[]> {
 
 function changesetGroup(page: IPage, group: readonly IReviewChangeset[], applied: Map<number, IReviewThread[]>):
     string {
-  const what = group.length === 1 ? `cs:${group[0].id}` : count(group.length, "changeset");
+  const what = group.length === 1 ? changesetLink(page, group[0].id, false) : count(group.length, "changeset");
   const line = `${avatar(page, group[0].owner, true)}${name(group[0].owner)} checked in ${what}` +
     stamp(page, group[0].date);
   const rows = group.map(changeset => changesetRow(page, changeset, applied.get(changeset.id) ?? []));
@@ -959,7 +961,13 @@ function changesetRow(page: IPage, changeset: IReviewChangeset, applied: readonl
   const on = applied.map(thread => fileReference(page, thread));
   const changes = on.length ? ` <span class="applied dim">· applied the change request${on.length === 1 ? "" : "s"} ` +
     `on</span> ${on.join(", ")}` : "";
-  return `<li class="cs"><code>cs:${changeset.id}</code> <span class="what">${what}</span>${changes}</li>`;
+  return `<li class="cs">${changesetLink(page, changeset.id, true)} <span class="what">${what}</span>${changes}</li>`;
+}
+
+/** `cs:3715`, opening the changeset's row in the Review view; `chip` draws it as the row's code chip. */
+function changesetLink(page: IPage, changesetId: number, chip: boolean): string {
+  const text = `cs:${changesetId}`;
+  return linkTo(page, { changesetId, kind: "changeset" }, chip ? `<code>${text}</code>` : text);
 }
 
 /**

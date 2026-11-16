@@ -1016,8 +1016,13 @@ describe("Review session", () => {
     await test.session.activate("wk", BRANCH_REVIEW_ID);
     const html = test.session.overview("wk", BRANCH_REVIEW_ID);
     // Open items, then the Conversation's threads with a line, oldest first.
-    expect(written.map(link => link.target)).to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
-      .map(threadId => ({ kind: "thread", threadId })));
+    const targets = written.map(link => link.target);
+    expect(targets.filter(target => target.kind === "thread"))
+      .to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
+        .map(threadId => ({ kind: "thread", threadId })));
+    // Each changeset of the branch, to its row in the Review view.
+    expect(targets.filter(target => target.kind !== "thread"))
+      .to.deep.equal([ 3477, 3699, 3715 ].map(changesetId => ({ changesetId, kind: "changeset" })));
     expect(written.every(link => link.reviewId === BRANCH_REVIEW_ID && link.workspaceId === "wk")).to.equal(true);
     expect(html).to.contain("<a href=\"vscode://plastic.test/link2\">SaveSystem.cs:154</a>");
   });

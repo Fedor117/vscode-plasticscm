@@ -39,6 +39,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   resolving by editing, mark-resolved, undo), a text and a binary conflict together with each
   side kept, and three directory conflicts answered three ways. The dialogs, the menus and the
   Source Control group are covered by unit tests only.
+- **Review status in the Branch Explorer.** A branch with a code review shows the review's status
+  beside its pill (Under review, Rework required or Reviewed), and a changeset with a review of its
+  own shows it on its row. A click opens the review in Plastic Reviews. The icons load after the
+  graph, from the newest 500 reviews of the repository, and are read again while the explorer is on screen, every
+  `plastic-scm.reviews.updateCheckInterval` seconds.
 
 ## [0.7.0] - 2026-11-16
 
