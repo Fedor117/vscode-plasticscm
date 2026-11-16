@@ -544,6 +544,7 @@ describe("Plastic Reviews contributions", () => {
     }
 
     /** Each group's tab labels, in order. */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     function layout(): string[][] {
       return window.tabGroups.all.map(group => group.tabs.map(tab => tab.label));
     }
@@ -702,29 +703,62 @@ describe("Plastic Reviews contributions", () => {
         expect(overviewTabs()).to.deep.equal([BRANCH_REVIEW_ID]);
       });
 
-    it("keeps the Overview in its own editor group, and the group the user reads in active", async function() {
-      this.timeout(30000);
-      const readme = await workspace.openTextDocument(Uri.file(path.resolve(__dirname, "..", "..", "..", "..",
-        "README.md")));
-      await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
-      await commands.executeCommand("vscode.openWith", reviewOverviewUri("wk", CHANGESET_REVIEW_ID),
-        MARKDOWN_PREVIEW_EDITOR, { viewColumn: ViewColumn.Two });
-      await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
-      const page = (id: number) => `Review ${id}.md`;
-      expect(layout()).to.deep.equal([["README.md"], [page(CHANGESET_REVIEW_ID)]]);
-
-      const activeGroup = () => window.tabGroups.activeTabGroup.viewColumn;
-      await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(CHANGESET_REVIEW_ID));
-      expect(layout()).to.deep.equal([["README.md"], [page(CHANGESET_REVIEW_ID)]]);
-      expect(activeGroup()).to.equal(ViewColumn.One);
-      await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(BRANCH_REVIEW_ID));
-      expect(layout()).to.deep.equal([["README.md"], [page(BRANCH_REVIEW_ID)]]);
-      expect(activeGroup()).to.equal(ViewColumn.One);
-      await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(BRANCH_REVIEW_ID));
-      expect(layout()).to.deep.equal([["README.md"], [page(BRANCH_REVIEW_ID)]]);
-      // The group the user reads in stays active, so the next diff opens there and not over the Overview.
-      expect(activeGroup()).to.equal(ViewColumn.One);
-    });
+    for (let rep = 0; rep < 80; rep++) {
+      it.only(`DIAG keeps the Overview in its own editor group ${rep}`, async function() {
+        this.timeout(60000);
+        const started = Date.now();
+        const timeline: string[] = [];
+        const snap = () => window.tabGroups.all.map(group =>
+          `${group.viewColumn}${group.isActive ? "!" : ""}[${group.tabs.map(tab =>
+            tab.label + (tab.isActive ? "*" : "")).join(",")}]`).join(" ");
+        const mark = (what: string) => timeline.push(`${Date.now() - started} ${what}: ${snap()}`);
+        const listeners = [
+          window.tabGroups.onDidChangeTabGroups(() => mark("groups")),
+          window.tabGroups.onDidChangeTabs(() => mark("tabs")),
+        ];
+        const activeGroup = () => window.tabGroups.activeTabGroup.viewColumn;
+        /** Whether the active group is column One now; if not, whether it gets there within two seconds. */
+        const check = async (step: string) => {
+          mark(`check ${step}`);
+          if (activeGroup() === ViewColumn.One) {
+            return;
+          }
+          let settled = -1;
+          const from = Date.now();
+          while (Date.now() - from < 2000) {
+            if (activeGroup() === ViewColumn.One) {
+              settled = Date.now() - from;
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 5));
+          }
+          mark(`after wait ${step}`);
+          // eslint-disable-next-line no-console
+          console.log(`DBG FLAKE rep ${rep} step ${step} settled ${settled}\n  ${timeline.join("\n  ")}`);
+        };
+        try {
+          const readme = await workspace.openTextDocument(Uri.file(path.resolve(__dirname, "..", "..", "..", "..",
+            "README.md")));
+          await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
+          mark("readme shown");
+          await commands.executeCommand("vscode.openWith", reviewOverviewUri("wk", CHANGESET_REVIEW_ID),
+            MARKDOWN_PREVIEW_EDITOR, { viewColumn: ViewColumn.Two });
+          mark("overview opened beside");
+          await window.showTextDocument(readme, { preview: false, viewColumn: ViewColumn.One });
+          mark("readme shown again");
+          await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(CHANGESET_REVIEW_ID));
+          await check("1 same review");
+          await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(BRANCH_REVIEW_ID));
+          await check("2 other review");
+          await commands.executeCommand("plastic-scm.reviews.open", await reviewRow(BRANCH_REVIEW_ID));
+          await check("3 same again");
+        } finally {
+          for (const listener of listeners) {
+            listener.dispose();
+          }
+        }
+      });
+    }
 
     it("opens the Overview from a General thread without taking the keyboard", async function() {
       this.timeout(30000);

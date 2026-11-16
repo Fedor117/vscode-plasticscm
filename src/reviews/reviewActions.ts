@@ -427,11 +427,20 @@ export class ReviewActions implements Disposable {
       // `background`, which VS Code reads though its typings leave it out, keeps the active group where it is. Only
       // for a page that takes the place of its group's visible tab: in the background it is not revealed otherwise.
       const background = preserveFocus && !!target?.isActive && !target.group.isActive;
+      // eslint-disable-next-line no-console
+      console.log("DBG showOverview", JSON.stringify({
+        act: window.tabGroups.activeTabGroup.viewColumn, background, own: own?.isActive, preserveFocus,
+        tA: target?.isActive, tCol: target?.group.viewColumn, tG: target?.group.isActive, viewColumn,
+      }));
       // Without the Markdown extension, VS Code opens the document as text instead.
       await commands.executeCommand("vscode.openWith", reviewOverviewUri(active.workspaceId, active.review.id),
         MARKDOWN_PREVIEW_EDITOR, { preserveFocus, preview: false, viewColumn, ...(background ? { background } : {}) });
     }
+    // eslint-disable-next-line no-console
+    console.log("DBG opened, active group", window.tabGroups.activeTabGroup.viewColumn);
     await this.closeOtherOverviews();
+    // eslint-disable-next-line no-console
+    console.log("DBG closed others, active group", window.tabGroups.activeTabGroup.viewColumn);
   }
 
   /**
