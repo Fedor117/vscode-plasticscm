@@ -23,12 +23,12 @@ import { CodeReviewCommands } from "./commands/codeReview";
 import { CompareCommands } from "./commands/compare";
 import { ExplorerCommands } from "./commands/explorer";
 import { FileHistoryCommands } from "./commands/fileHistory";
-import { GetWorkspaceFromPath } from "./cm/commands";
 import { HistoryCommands } from "./commands/history";
 import { IConfig } from "./config";
 import { IgnoreRuleCommands } from "./commands/ignoreRules";
 import { IWorkspaceInfo } from "./models";
 import { LabelCommands } from "./commands/label";
+import { locateWorkspace } from "./workspaceLocation";
 import { LockCommands } from "./commands/locks";
 import { OpenFileCommand } from "./commands/openFile";
 import { PlasticReviews } from "./reviews/plasticReviews";
@@ -158,7 +158,7 @@ export class PlasticScm implements Disposable {
 
       try {
         const wkInfo: IWorkspaceInfo | undefined =
-          await GetWorkspaceFromPath.run(workingDir, globalShell);
+          await locateWorkspace(workingDir, globalShell);
 
         if (!wkInfo || this.mWorkspaces.has(wkInfo.id)) {
           this.mChannel.appendLine(`No workspace found at '${workingDir}'`);
