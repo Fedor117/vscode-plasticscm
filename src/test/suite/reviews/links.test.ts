@@ -36,6 +36,7 @@ describe("Review links", () => {
       },
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: "merged" }, workspaceId: "wk & co=1/2?#" },
       { reviewId: 7551, target: { fileKey: odd, kind: "file", scope: { changesetId: 3699 }}, workspaceId: "wk" },
+      { reviewId: 7551, target: { changesetId: 3699, kind: "changeset" }, workspaceId: "wk" },
       { key: "Zm9v_-9", reviewId: 12831, target: { kind: "addMeAsReviewer" }, workspaceId: "wk" },
       { key: "Zm9v_-9", reviewId: 12831, target: { kind: "addComment" }, workspaceId: "wk" },
       { key: "k", reviewId: 12831, target: { action: "reply", commentId: 12915, kind: "comment" }, workspaceId: "wk" },
@@ -142,10 +143,13 @@ describe("Review links", () => {
       const found = expectHandlerLinksOpen(html, active, PREFIX);
       // Open items link the pending change request and the open question; the Conversation every thread with a line.
       const thread = (threadId: number) => ({ kind: "thread", threadId });
-      expect(found.map(link => link.target)).to.deep.equal([
+      expect(found.map(link => link.target).filter(target => target.kind === "thread")).to.deep.equal([
         thread(12907), thread(12915), thread(12907), thread(12915), thread(12918), thread(12919), thread(12961),
         thread(12981),
       ]);
+      // Each changeset of the branch links its row in the Review view.
+      expect(found.map(link => link.target).filter(target => target.kind !== "thread"))
+        .to.deep.equal([ 3477, 3699, 3715 ].map(changesetId => ({ changesetId, kind: "changeset" })));
       expect(html).to.contain("Change request</span> GhostRunAnalyticsCollector.cs <span class=\"dim\">");
       expect(links(html).map(link => link.text)).to.include.members(["GhostRunAnalyticsCollector.cs:287"]);
 

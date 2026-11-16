@@ -194,10 +194,11 @@ describe("Review overview", () => {
     // Names are plain text with the address in their title; only file references are links.
     expect(html).to.contain("<span class=\"who\" title=\"erin.author@example.com\">erin.author</span>");
     expect(html).to.contain(`<a href="${HANDLER}?thread=12907">GhostRunAnalyticsCollector.cs:287</a>`);
-    // Open items, then every thread with a line in the Conversation.
+    expect(html).to.contain(`<a href="${HANDLER}?changeset=3715"><code>cs:3715</code></a>`);
+    // Open items, then every thread with a line in the Conversation, and the branch's three changesets.
     const located = scenario.discussions.threads.filter(hasLocation).length;
     expect(located).to.equal(6);
-    expect(expectLinksOpen(html, active)).to.equal(2 + located);
+    expect(expectLinksOpen(html, active)).to.equal(2 + located + 3);
     expect(visible(html)).to.not.match(EMAIL);
     expectEveryGeneralThread(html, scenario.discussions);
     // Resolved change requests look resolved; every file thread is marked as one.
@@ -321,8 +322,8 @@ describe("Review overview", () => {
     };
     const html = renderOverview(active, options({ link: testLink, whoami: evil("owner") }));
     expectWellFormed(html);
-    // Open items, and the same two threads in the Conversation.
-    expect(expectLinksOpen(html, active)).to.equal(4);
+    // Open items, the same two threads in the Conversation, and two changesets, each named on its line and its row.
+    expect(expectLinksOpen(html, active)).to.equal(8);
     expectEveryGeneralThread(html, discussions);
     const text = visible(html);
     const fields = [
@@ -438,8 +439,12 @@ describe("Review overview", () => {
       },
     }));
     // Open items, then the Conversation's threads with a line, oldest first.
-    expect(targets).to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
-      .map(threadId => ({ kind: "thread", threadId })));
+    expect(targets.filter(target => target.kind === "thread"))
+      .to.deep.equal([ 12907, 12915, 12907, 12915, 12918, 12919, 12961, 12981 ]
+        .map(threadId => ({ kind: "thread", threadId })));
+    // Each changeset of the branch, to its row in the Review view.
+    expect(targets.filter(target => target.kind !== "thread"))
+      .to.deep.equal([ 3477, 3699, 3715 ].map(changesetId => ({ changesetId, kind: "changeset" })));
     expect(linked).to.contain(`<a href="${HANDLER}?thread=12915">SaveSystem.cs:154</a>`);
     // A URI is an attribute value, escaped as one.
     const quoted = renderOverview(active, options({ link: () => `${HANDLER}?x="><script>` }));

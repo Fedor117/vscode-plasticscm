@@ -155,6 +155,7 @@ export class PlasticReviews implements Disposable {
       channel: host.channel,
       editors: this.editors,
       posting: this.posting,
+      revealChangeset: changesetId => this.revealChangeset(changesetId),
       session: this.session,
       tree: this.treeProvider,
     });
@@ -294,6 +295,13 @@ export class PlasticReviews implements Disposable {
       this.discussionsProvider.refresh();
       this.editors.refreshOverview(active.workspaceId, active.review.id);
     }, () => undefined);
+  }
+
+  private async revealChangeset(changesetId: number): Promise<void> {
+    const node = this.treeProvider.changesetRow(changesetId);
+    if (node) {
+      await this.treeView.reveal(node, { expand: true, focus: true, select: true });
+    }
   }
 
   /**

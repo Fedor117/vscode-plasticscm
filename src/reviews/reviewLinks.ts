@@ -4,8 +4,8 @@ import { FileScope } from "./sessionTypes";
 import { Uri } from "vscode";
 
 /**
- * The Overview's links to discussions and files: `vscode://<extension id>/thread?…`
- * and `/file?…` URIs, which the extension's URI handler opens, and the
+ * The Overview's links to discussions, files and changesets: `vscode://<extension id>/thread?…`,
+ * `/file?…` and `/changeset?…` URIs, which the extension's URI handler opens, and the
  * links that write: `/addMeAsReviewer?…`, which runs Add Me as Reviewer, and
  * `/comment?…` and `/addComment?…`, which reply to, edit or delete a comment
  * or add one to the whole review (review writes). The Markdown
@@ -48,6 +48,7 @@ export type ParsedReviewLink =
 const PATHS: { [kind in OverviewLinkTarget["kind"]]: string } = {
   addComment: "/addComment",
   addMeAsReviewer: "/addMeAsReviewer",
+  changeset: "/changeset",
   comment: "/comment",
   file: "/file",
   thread: "/thread",
@@ -55,6 +56,7 @@ const PATHS: { [kind in OverviewLinkTarget["kind"]]: string } = {
 const PARAMETERS: { [kind in OverviewLinkTarget["kind"]]: readonly string[] } = {
   addComment: [ "workspace", "review", "key" ],
   addMeAsReviewer: [ "workspace", "review", "key" ],
+  changeset: [ "workspace", "review", "changeset" ],
   comment: [ "workspace", "review", "action", "comment", "key" ],
   file: [ "workspace", "review", "scope", "file" ],
   thread: [ "workspace", "review", "thread" ],
@@ -71,6 +73,8 @@ export function reviewLinkUri(base: IReviewLinkBase, link: IReviewLink): string 
     query.push(`thread=${target.threadId}`);
   } else if (target.kind === "file") {
     query.push(`scope=${scopeName(target.scope)}`, `file=${encode(target.fileKey)}`);
+  } else if (target.kind === "changeset") {
+    query.push(`changeset=${target.changesetId}`);
   } else {
     if (target.kind === "comment") {
       query.push(`action=${target.action}`, `comment=${target.commentId}`);
@@ -150,6 +154,12 @@ export function parseReviewLink(uri: Uri): ParsedReviewLink {
     return threadId === undefined
       ? malformed("a malformed thread id")
       : { kind: "link", link: { reviewId, target: { kind, threadId }, workspaceId }};
+  }
+  if (kind === "changeset") {
+    const changesetId = id(values.get("changeset")!);
+    return changesetId === undefined
+      ? malformed("a malformed changeset id")
+      : { kind: "link", link: { reviewId, target: { changesetId, kind }, workspaceId }};
   }
   const scope = parseScope(values.get("scope")!);
   const key = decode(values.get("file")!);
