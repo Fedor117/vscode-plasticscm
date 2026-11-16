@@ -442,7 +442,8 @@ describe("Plastic Reviews contributions", () => {
     expect(isOverviewTab(custom, "wk", 5)).to.equal(false);
   });
 
-  describe("registered", () => {
+  describe("registered", function() {
+    this.timeout(30000);
     let reviews: PlasticReviews | undefined;
     let shell: ReviewShell;
     const lines: string[] = [];

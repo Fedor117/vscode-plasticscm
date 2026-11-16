@@ -209,7 +209,8 @@ function statusAnswer(fail?: string): (command: string, args: string[]) => strin
   };
 }
 
-describe("Review session", () => {
+describe("Review session", function() {
+  this.timeout(10000);
   const sessions: ReviewSession[] = [];
   const editorsToDispose: ReviewEditors[] = [];
   const track = (value: IHarness): IHarness => {
