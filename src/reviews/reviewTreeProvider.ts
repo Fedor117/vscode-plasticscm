@@ -349,6 +349,19 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
     return this.scopeTree(scope)?.tree.byKey.get(fileKey(file));
   }
 
+  /** The row of a loaded changeset of the active review, for `reveal`. */
+  public changesetRow(changesetId: number): IReviewChangesetNode | undefined {
+    const active = this.session.active;
+    const changeset = active?.changesets.state === "ready"
+      ? active.changesets.value.items.find(item => item.id === changesetId)
+      : undefined;
+    if (!active || !changeset) {
+      return undefined;
+    }
+    this.rootNodes(active);
+    return this.changesetNode(changeset);
+  }
+
   /** Viewed files among Changes, the count the review's progress shows. */
   public progress(): { viewed: number; total: number } | undefined {
     const files = this.scopeFiles("changes");

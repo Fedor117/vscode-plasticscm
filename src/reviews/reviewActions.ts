@@ -130,6 +130,8 @@ export interface IReviewActionsOptions {
   channel: OutputChannel;
   /** Runs after a diff opened from a command, so context keys and the tree selection follow it. */
   afterOpen?: () => void;
+  /** Shows a changeset's row in the Review view, selected and expanded to its files. */
+  revealChangeset?: (changesetId: number) => Thenable<void>;
 }
 
 /** What the commands need from ReviewEditors. */
@@ -859,6 +861,8 @@ export class ReviewActions implements Disposable {
       await this.openThreadLink(workspaceId, reviewId, target.threadId);
     } else if (target.kind === "file") {
       await this.openFileLink(reviewId, target.scope, target.fileKey);
+    } else if (target.kind === "changeset") {
+      await this.openChangesetLink(reviewId, target.changesetId);
     } else if (target.kind === "addMeAsReviewer") {
       await this.addMeFromLink(reviewId, parsed.link.key);
     } else if (parsed.link.key !== this.options.session.linkKey) {
@@ -1026,6 +1030,25 @@ export class ReviewActions implements Disposable {
       return;
     }
     await this.openDiscussion({ general, kind: "thread", reviewId, thread, workspaceId });
+  }
+
+  /** A changeset link: its row in the Review view, selected and expanded to its files. */
+  private async openChangesetLink(reviewId: number, changesetId: number): Promise<void> {
+    const stage = this.options.session.active!.changesets;
+    if (stage.state !== "ready") {
+      void window.showInformationMessage(stage.state === "error"
+        ? `The changesets of review #${reviewId} did not load. Retry them in the Review view.`
+        : `The changesets of review #${reviewId} are still loading. Follow the link again in a moment.`);
+      return;
+    }
+    if (!stage.value.items.some(changeset => changeset.id === changesetId)) {
+      void window.showInformationMessage(stage.value.hasMore
+        ? `cs:${changesetId} is not among the changesets of review #${reviewId} loaded so far. ` +
+          "Load more in the Review view, then follow the link again."
+        : `cs:${changesetId} is not part of review #${reviewId}.`);
+      return;
+    }
+    await this.options.revealChangeset?.(changesetId);
   }
 
   /** A file link: what clicking the file's row in the Review view does. */

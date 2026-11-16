@@ -11,6 +11,7 @@ import {
   Range,
   TabInputTextDiff,
   TextDocument,
+  TreeView,
   Uri,
   window,
   workspace,
@@ -36,6 +37,7 @@ import { ISyntheticComment, ISyntheticDiffRow, ISyntheticReview, SyntheticPlasti
 import { label, NOW } from "./viewFixtures";
 import { nativeThread, threadsOn, until } from "./editorFixtures";
 import { noDiffMessage, reviewPickItems } from "../../../reviews/reviewPresentation";
+import { ReviewTreeNode, ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
 import { expect } from "chai";
 import { IActiveReview } from "../../../reviews/sessionTypes";
 import { renderOverview } from "../../../reviews/reviewOverview";
@@ -43,7 +45,6 @@ import { reviewDiff } from "../../../reviews/reviewEditors";
 import { ReviewListQuery } from "../../../reviews/commands";
 import { ReviewService } from "../../../reviews/reviewService";
 import { ReviewSession } from "../../../reviews/reviewSession";
-import { ReviewTreeProvider } from "../../../reviews/reviewTreeProvider";
 import { splitLines } from "../../../reviews/anchors";
 
 /**
@@ -995,6 +996,14 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       shown.push(message);
       return Promise.resolve(undefined);
     };
+    // The test host shows no Plastic views: record what the Review view is asked to reveal.
+    const treeView = (reviews as unknown as { treeView: TreeView<ReviewTreeNode> }).treeView;
+    const reveal = treeView.reveal.bind(treeView);
+    const revealed: Array<{ node: ReviewTreeNode; options: unknown }> = [];
+    treeView.reveal = (node, options) => {
+      revealed.push({ node, options });
+      return Promise.resolve();
+    };
     let opened = 0;
     let explained = 0;
     try {
@@ -1022,6 +1031,15 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
           await closeAllEditors();
           const before = shown.length;
           await settle(reviews.actions.handleUri(Uri.parse(href)), `link ${href}`);
+          if (linked.kind === "changeset") {
+            // A changeset selects its row in the Review view, open to its files.
+            expect(shown.slice(before), href).to.deep.equal([]);
+            const row = revealed.pop();
+            expect(row?.node.kind === "changeset" && row.node.changeset.id, href).to.equal(linked.changesetId);
+            expect(row?.options, href).to.deep.equal({ expand: true, focus: true, select: true });
+            opened++;
+            continue;
+          }
           if (file && noDiffMessage(file)) {
             // A row without a text diff says why, as its row in the Review view does.
             expect(shown.slice(before), href).to.deep.equal([noDiffMessage(file)]);
@@ -1044,6 +1062,7 @@ describe("Synthetic end-to-end Plastic Reviews", function() {
       }
     } finally {
       api.showInformationMessage = original;
+      treeView.reveal = reveal;
     }
     expect(shown.length, `links that could not open: ${shown.join(" | ")}`).to.equal(explained);
     expect(output.filter(line => line.includes("openLink failed"))).to.deep.equal([]);
