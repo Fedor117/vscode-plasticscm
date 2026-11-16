@@ -76,8 +76,12 @@ describe("A workspace opened through a symlink", () => {
     workspaces.splice(0).forEach(workspace => workspace.dispose());
   });
 
-  after(() => {
-    fs.rmSync(base, { force: true, recursive: true });
+  after(async function() {
+    this.timeout(10000);
+    // Each workspace watched the folder, and VS Code lets go of a disposed watcher a moment later. Until then
+    // Windows keeps the watched folders, and removing their parent fails. The waits are asynchronous: the
+    // watchers' disposal is sent from this thread.
+    await fs.promises.rm(base, { force: true, maxRetries: 10, recursive: true, retryDelay: 100 });
   });
 
   it("roots source control at the folder VS Code opened, so quick diff matches the editor's files", async () => {
