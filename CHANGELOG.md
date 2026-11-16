@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
 ### Added
 
 - **Merge from Branch…** merges the latest changeset of a branch into the branch the workspace is
@@ -44,8 +46,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   own shows it on its row. A click opens the review in Plastic Reviews. The icons load after the
   graph, from the newest 500 reviews of the repository, and are read again while the explorer is on screen, every
   `plastic-scm.reviews.updateCheckInterval` seconds.
+- **Changesets on the review Overview are links.** A branch review's Conversation names each
+  changeset as `cs:N`; a click selects that changeset's row in the Review view and expands it to
+  its files.
 
 ### Fixed
+
+- **The review Overview could stay on "Open this review in Plastic Reviews"** when a review went
+  inactive and came back within a moment, as when VS Code restores the Overview on startup. The
+  Overview is now read again after every change VS Code makes to its document.
 
 - **Workspaces opened through a symlink** (on macOS, anything under `/tmp` or `/var`): editor gutter
   change marks were missing and the Source Control view listed pending changes by absolute path.
