@@ -1,4 +1,4 @@
-import { IShellMock, mockShell } from "../findChangesets/shellMock";
+import { IShellMock, mockShell, mockShellAnswering } from "../findChangesets/shellMock";
 import { expect } from "chai";
 import { FindBranch } from "../../../../../cm/commands/findBranch/findBranch";
 import { IBranchInfo } from "../../../../../models";
@@ -47,6 +47,34 @@ describe("FindBranch command", () => {
         args: [ "branch", "where name='main'", ...XML_ARGS ],
         command: "find",
       }]);
+    });
+  });
+
+  context("When the branch is hidden", () => {
+    const task = branch("/main/task", "/main", 41);
+    const shell: IShellMock = mockShellAnswering<IBranchInfo[]>(call => ({
+      result: call.args[1].includes("hidden") ? [task] : [],
+      success: true,
+    }));
+
+    it("is not found unless hidden branches are included", async () => {
+      shell.calls.length = 0;
+      expect(await FindBranch.run(shell.mock.object, "/main/task")).to.equal(undefined);
+      expect(shell.calls.map(call => call.args[1])).to.eql(["where name='task'"]);
+    });
+
+    it("asks only once when a visible branch matches", async () => {
+      const visible = mockShell({ result: [task], success: true });
+      expect(await FindBranch.run(visible.mock.object, "/main/task", { includeHidden: true })).to.eql(task);
+      expect(visible.calls).to.have.lengthOf(1);
+    });
+
+    it("is found by the hidden query, and marked hidden", async () => {
+      shell.calls.length = 0;
+      expect(await FindBranch.run(shell.mock.object, "/main/task", { includeHidden: true }))
+        .to.eql({ ...task, hidden: true });
+      expect(shell.calls.map(call => call.args[1]))
+        .to.eql([ "where name='task'", "where name='task' and hidden = 'true'" ]);
     });
   });
 

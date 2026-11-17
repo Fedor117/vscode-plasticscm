@@ -31,6 +31,8 @@ export interface IBranchInfo {
   readonly guid: string;
   readonly repository: string;
   readonly server: string;
+  /** True for a branch Plastic hides; only set by listings that include hidden branches. */
+  readonly hidden?: boolean;
 }
 
 /** A merge, cherry pick or interval merge link between two changesets. */

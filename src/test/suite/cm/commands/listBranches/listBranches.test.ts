@@ -1,14 +1,14 @@
 import { IBranchInfo, IListPage } from "../../../../../models";
-import { IShellMock, mockShell } from "../findChangesets/shellMock";
+import { IShellMock, mockShell, mockShellAnswering } from "../findChangesets/shellMock";
 import { expect } from "chai";
 import { ListBranches } from "../../../../../cm/commands";
 
 const XML_ARGS = [ "--xml", "--nototal", "--encoding=utf-8" ];
 
-function branch(name: string): IBranchInfo {
+function branch(name: string, date = "2026-08-31T12:59:54+01:00"): IBranchInfo {
   return {
     comment: "",
-    date: new Date("2026-08-31T12:59:54+01:00"),
+    date: new Date(date),
     guid: "b2a4c6d8-0e1f-4a3b-8c5d-6e7f8a9b0c1d",
     headChangesetId: 7,
     name,
@@ -66,6 +66,55 @@ describe("ListBranches command", () => {
     it("says there is no more", () => {
       expect(page.hasMore).to.be.false;
       expect(page.items).to.have.lengthOf(1);
+    });
+  });
+
+  context("When hidden branches are included", () => {
+    const visible = [
+      branch("/main/v3", "2026-08-05"), branch("/main/v2", "2026-08-03"), branch("/main", "2026-01-01"),
+    ];
+    const hidden = [ branch("/main/h2", "2026-08-04"), branch("/main/h1", "2026-08-02") ];
+    const shell: IShellMock = mockShellAnswering<IBranchInfo[]>(call => ({
+      result: call.args[1].includes("hidden") ? hidden : visible,
+      success: true,
+    }));
+    let first: IListPage<IBranchInfo>;
+    let second: IListPage<IBranchInfo>;
+
+    before(async () => {
+      first = await ListBranches.run(shell.mock.object, { limit: 2 }, { includeHidden: true });
+      second = await ListBranches.run(shell.mock.object, { limit: 2, offset: 2 }, { includeHidden: true });
+    });
+
+    it("asks cm for the visible and the hidden branches up to the end of the page", () => {
+      expect(shell.calls.map(call => call.args[1])).to.eql([
+        "order by date desc limit 3",
+        "where hidden = 'true' order by date desc limit 3",
+        "order by date desc limit 5",
+        "where hidden = 'true' order by date desc limit 5",
+      ]);
+    });
+
+    it("merges both newest first, marking the hidden ones", () => {
+      expect(first.items.map(b => [ b.name, b.hidden ?? false ])).to.eql([[ "/main/v3", false ], [ "/main/h2", true ]]);
+      expect(first.hasMore).to.be.true;
+      expect(second.items.map(b => b.name)).to.eql([ "/main/v2", "/main/h1" ]);
+      expect(second.hasMore).to.be.true;
+    });
+  });
+
+  context("When hidden branches are included and the last page is reached", () => {
+    const visible = [ branch("/main/v", "2026-08-03"), branch("/main", "2026-01-01") ];
+    const hidden = [branch("/main/h", "2026-08-03")];
+    const shell: IShellMock = mockShellAnswering<IBranchInfo[]>(call => ({
+      result: call.args[1].includes("hidden") ? hidden : visible,
+      success: true,
+    }));
+
+    it("puts the visible branch first on equal dates and says there is no more", async () => {
+      const page = await ListBranches.run(shell.mock.object, { limit: 2, offset: 1 }, { includeHidden: true });
+      expect(page.items.map(b => b.name)).to.eql([ "/main/h", "/main" ]);
+      expect(page.hasMore).to.be.false;
     });
   });
 
