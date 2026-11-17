@@ -219,9 +219,15 @@ link. It works whatever the review writes setting says. The desktop app must be 
   you pick, or a changeset you pick. It asks for a title, an optional description (passed to `cm`
   in a file) and optional reviewers, then offers to open the new review.
 * **Add Reviewers…**, **Remove Reviewers…** and **Request Review Again…** (the Review view's `…`
-  menu, a review's context menu in Reviews, and the Command Palette with a review open). Reviewers
-  are a comma-separated list of users; write `group:<name>` for a group. Remove and Request Review
-  Again pick from the reviewers `cm codereview reviewer list` prints; removing asks first.
+  menu, a review's context menu in Reviews, and the Command Palette with a review open). Remove
+  and Request Review Again pick from the reviewers `cm codereview reviewer list` prints; removing
+  asks first.
+* Reviewers are picked from a list: the groups and users of the workspace's server
+  (`cm listusers <server>`), to check and to filter by typing. Add Reviewers… leaves out who
+  reviews already. The groups Unity Version Control Cloud makes for a project's roles
+  (`<project id>-ro`, `-rw`, `-admin`) are not listed. The pencil in the list's title bar takes
+  typed names instead, for someone the list lacks: users separated by commas, `group:<name>` for a
+  group. The same box is asked when `cm` cannot list the server's users.
 
 They run `cm codereview <spec> <title>`, `cm codereview reviewer add|remove` and
 `cm codereview review --re-request` with your `cm` sign-in, whatever the review writes setting

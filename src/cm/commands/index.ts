@@ -55,6 +55,8 @@ export {
   reviewTitleProblem,
 } from "./codeReview/codeReview";
 export { ReviewerListParser } from "./codeReview/reviewerListParser";
+export { IServerMember, ListUsers, repositoryServer } from "./listUsers/listUsers";
+export { ServerMembersParser } from "./listUsers/serverMembersParser";
 export {
   DirectoryResolution,
   IMergeResolutionFiles,

@@ -1,5 +1,13 @@
 import { branchFromNode, explorerChangesetFromArg, guarded, resolveWorkspace } from "./targets";
-import { CodeReview, IListedReviewer, IReviewerNames, reviewerNameProblem, reviewTitleProblem } from "../cm/commands";
+import { candidateItems, GROUP_PREFIX, IReviewerItem, IReviewerRef, namesOf, pickReviewers } from "./reviewerPicker";
+import {
+  CodeReview,
+  IListedReviewer,
+  IReviewerNames,
+  ListUsers,
+  repositoryServer,
+  reviewTitleProblem,
+} from "../cm/commands";
 import { commands, Disposable, QuickPickItem, window } from "vscode";
 import { pickBranch, pickChangeset } from "../repository/pickers";
 import { runWorkspaceOperation, WorkspaceOperation } from "../workspaceOperations";
@@ -15,39 +23,12 @@ export const CODE_REVIEW_COMMANDS = {
   requestReviewAgain: "plastic-scm.codeReview.requestReviewAgain",
 };
 
-/** The prefix that names a group in a reviewers box: `group:Developers`. */
-export const GROUP_PREFIX = "group:";
-
 /** The review a reviewer command acts on. */
 export interface IReviewRef {
   workspaceId: string;
   id: number;
   title: string;
   owner: string;
-}
-
-/** A reviewer to pick: a user or a group, by the name cm knows; `all` is every reviewer. */
-export interface IReviewerItem extends QuickPickItem {
-  readonly reviewer?: { name: string; type: "user" | "group" };
-}
-
-/**
- * `alice@example.com, group:Developers` as users and groups; a reason instead
- * when a name cannot be passed to cm or nothing was named.
- */
-export function parseReviewerNames(text: string): { names?: IReviewerNames; problem?: string } {
-  const users: string[] = [];
-  const groups: string[] = [];
-  for (const part of text.split(",").map(entry => entry.trim()).filter(Boolean)) {
-    const group = part.toLowerCase().startsWith(GROUP_PREFIX);
-    const name = group ? part.substring(GROUP_PREFIX.length).trim() : part;
-    const problem = reviewerNameProblem(name);
-    if (problem) {
-      return { problem: `${part}: ${problem}` };
-    }
-    (group ? groups : users).push(name);
-  }
-  return users.length || groups.length ? { names: { groups, users }} : { problem: "Name at least one reviewer." };
 }
 
 /** The rows of `cm codereview reviewer list`, to pick from. */
@@ -57,13 +38,6 @@ export function reviewerItems(listed: readonly IListedReviewer[]): IReviewerItem
     label: row.name,
     reviewer: { name: row.name, type: row.type },
   }));
-}
-
-/** Users and groups of picked reviewer rows. */
-export function namesOf(items: readonly IReviewerItem[]): IReviewerNames {
-  const of = (type: "user" | "group") => items
-    .filter(item => item.reviewer?.type === type).map(item => item.reviewer?.name ?? "");
-  return { groups: of("group"), users: of("user") };
 }
 
 /** `alice@example.com and the group Developers`, for a message. */
@@ -178,17 +152,15 @@ export class CodeReviewCommands implements Disposable {
       if (description === undefined) {
         return;
       }
-      const reviewerText = await window.showInputBox({
-        ignoreFocusOut: true,
-        placeHolder: "someone@example.com, group:Developers",
-        prompt: "Reviewers (optional): user names separated by commas, groups as group:<name>.",
+      const reviewers = await pickReviewers(this.candidates(workspace), {
+        optional: true,
+        placeHolder: "Reviewers (optional): type to filter",
+        prompt: `Reviewers (optional): user names separated by commas, groups as ${GROUP_PREFIX}<name>.`,
         title: "Create Code Review",
-        validateInput: text => (text.trim() ? parseReviewerNames(text).problem : undefined),
       });
-      if (reviewerText === undefined) {
+      if (!reviewers) {
         return;
       }
-      const reviewers: IReviewerNames = reviewerText.trim() ? parseReviewerNames(reviewerText).names ?? {} : {};
       if (description.trim() && !(await CodeReview.support(workspace.shell)).descriptionFile) {
         throw new Error("This cm can't read a review description from a file. Update Unity Version Control, or " +
           "leave the description empty.");
@@ -246,14 +218,14 @@ export class CodeReviewCommands implements Disposable {
   }
 
   private async addReviewers(workspace: Workspace, review: IReviewRef): Promise<void> {
-    const text = await window.showInputBox({
-      ignoreFocusOut: true,
-      placeHolder: "someone@example.com, group:Developers",
+    const already = CodeReview.listReviewers(workspace.shell, review.id).catch(() => []);
+    const names = await pickReviewers(this.candidates(workspace, already), {
+      optional: false,
+      placeHolder: `Reviewers to add to review #${review.id}: type to filter`,
       prompt: `Reviewers to add to review #${review.id}: user names separated by commas, groups as ` +
         `${GROUP_PREFIX}<name>`,
-      validateInput: value => parseReviewerNames(value).problem,
+      title: "Add Reviewers",
     });
-    const names = text === undefined ? undefined : parseReviewerNames(text).names;
     if (!names) {
       return;
     }
@@ -297,6 +269,13 @@ export class CodeReviewCommands implements Disposable {
     await this.writeReviewers(workspace, review, `Asking for review #${review.id} again`,
       () => CodeReview.reRequest(workspace.shell, review.id, who),
       `Asked ${who === "all" ? "all reviewers" : describeReviewers(who)} to review #${review.id} again`);
+  }
+
+  /** The server's users and groups to pick reviewers from, without those in `already`; none without a server. */
+  private async candidates(
+      workspace: Workspace, already: Promise<readonly IReviewerRef[]> = Promise.resolve([])): Promise<IReviewerItem[]> {
+    const server = repositoryServer(workspace.workspaceConfig?.repSpec);
+    return server ? candidateItems(await ListUsers.run(workspace.shell, server), await already) : [];
   }
 
   private async listReviewers(workspace: Workspace, review: IReviewRef): Promise<IReviewerItem[]> {
