@@ -23,11 +23,13 @@ import {
 import { IRepositorySection, IRepositoryWorkspace, REPOSITORY_CONTEXT } from "./repositoryTreeProvider";
 import { ThemeColor, ThemeIcon, TreeItem, TreeItemCollapsibleState } from "vscode";
 import { posix } from "path";
+import { showHiddenBranches } from "./hiddenBranches";
 
 /** Rows per page in every built-in section. */
 export const REPOSITORY_PAGE_SIZE = 50;
 
 const CURRENT_COLOR = new ThemeColor("charts.green");
+const HIDDEN_COLOR = new ThemeColor("disabledForeground");
 
 function icon(id: string, current: boolean): ThemeIcon {
   return current ? new ThemeIcon(id, CURRENT_COLOR) : new ThemeIcon(id);
@@ -43,18 +45,19 @@ export const branchesSection: IRepositorySection<IBranchInfo> = {
   id: "branches",
   key: branch => branch.name,
   label: "Branches",
-  load: (workspace, query) => ListBranches.run(workspace.shell, query),
+  load: (workspace, query) => ListBranches.run(workspace.shell, query, { includeHidden: showHiddenBranches() }),
   pageSize: REPOSITORY_PAGE_SIZE,
   toTreeItem: (branch: IBranchInfo, workspace: IRepositoryWorkspace) => {
     const current = isCurrentBranch(branch, workspace.workspaceConfig);
     const item = new TreeItem(branch.name, TreeItemCollapsibleState.None);
-    item.description = describe(current, ownerAndDate(branch.owner, branch.date));
+    item.description = describe(current, branch.hidden ? "hidden" : "", ownerAndDate(branch.owner, branch.date));
     item.tooltip = branchTooltip(branch);
-    item.iconPath = icon("git-branch", current);
+    item.iconPath = branch.hidden && !current ? new ThemeIcon("git-branch", HIDDEN_COLOR) : icon("git-branch", current);
     item.contextValue = current ? REPOSITORY_CONTEXT.currentBranch : REPOSITORY_CONTEXT.branch;
     return item;
   },
-  tooltip: "Branches of this workspace's repository, newest first. Hidden branches are not listed.",
+  tooltip: "Branches of this workspace's repository, newest first. Hidden branches are listed only while " +
+    "Show Hidden Branches is on.",
 };
 
 export const labelsSection: IRepositorySection<ILabelInfo> = {

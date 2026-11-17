@@ -329,6 +329,7 @@ This fork is distributed as a `.vsix` rather than through the Marketplace.
 |`plastic-scm.cmConfiguration.millisToWaitUntilUp`    |`number` |`5000`   |Time to wait for the shell to start
 |`plastic-scm.cmConfiguration.millisToStop`           |`number` |`5000`   |Grace time to wait for a shell to close
 |`plastic-scm.cmConfiguration.millisCommandTimeout`   |`number` |`120000` |How long a single `cm` command may run before it is abandoned and the shell restarted. `0` means no limit
+|`plastic-scm.showHiddenBranches`                     |`boolean`|`false`  |List hidden branches in the Repository view and the branch pickers. Each page then takes two `cm find` queries, and each **Load More** reads every row before the page again
 |`plastic-scm.history.pageSize`                       |`number` |`50`     |Changesets fetched per branch on each page of the Plastic SCM Graph view (10–500). Each page is one `cm find` round trip
 |`plastic-scm.reviews.fileLayout`                     |`string` |`tree`   |How Plastic Reviews lists changed files: `tree` (folders) or `list` (sorted by path)
 |`plastic-scm.reviews.updateCheckInterval`            |`number` |`60`     |Seconds between two checks for changes in Plastic Reviews: the open review, whatever is on screen, and the review queue while the Reviews view is visible. The shortest interval is 15 seconds; `0` turns the checks off
@@ -477,7 +478,11 @@ per workspace when several are open). A section runs no `cm` query until you
 expand it, then loads the newest 50 rows; **Load More** fetches the next 50.
 Branches and labels are newest by creation date. Shelves are newest by number:
 `cm find shelve` cannot sort, so the view reads every shelve once and pages them
-itself. Hidden branches are not listed.
+itself. Hidden branches are left out, as `cm` does; the eye button on the
+**Branches** row (or **Show Hidden Branches** in the Command Palette) lists them
+too, dimmed and marked *hidden*, and so do the branch pickers. Turn it off with
+the same button. It is the `plastic-scm.showHiddenBranches` setting. Typing the
+full name of a hidden branch in a picker finds it either way.
 
 The branch, label or shelve your workspace is on is marked *current*, and moves
 when the workspace does. Hover a row for its owner, date, changeset and full

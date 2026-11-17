@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Hidden branches can be listed.** The eye button on the Branches row of the Repository view
+  (or **Show Hidden Branches** in the Command Palette) adds the branches Plastic hides to the
+  view and to every branch picker, dimmed and marked `hidden`. Typing the full name of a hidden
+  branch in a branch picker now finds it, with the setting on or off. The `plastic-scm.showHiddenBranches` setting holds the choice.
+
 ## [0.9.0] - 2026-11-17
 
 ### Added

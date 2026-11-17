@@ -61,6 +61,11 @@ describe("Repository pickers", () => {
       expect(item.detail).to.be.undefined;
     });
 
+    it("marks a hidden branch", () => {
+      const item = branchItem({ ...MAIN, hidden: true }, config(WkConfigType.Label, "/main"));
+      expect(item.description).to.equal("hidden · someone@example.com");
+    });
+
     it("describes labels by changeset and branch", () => {
       const item = labelItem({
         branch: "/main", changesetId: 9, comment: "", date: new Date(0), id: 1, name: "v1",

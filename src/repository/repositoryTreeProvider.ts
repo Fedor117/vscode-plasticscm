@@ -16,12 +16,16 @@ export const repositoryViewId = "plastic-scm.repository";
 
 /** Commands the view's rows and title bar run; `RepositoryCommands` registers them. */
 export const REPOSITORY_COMMANDS = {
+  /** Inline on the Branches section while hidden branches are listed: stops listing them. */
+  hideHiddenBranches: "plastic-scm.repository.hideHiddenBranches",
   /** Row command of a Load More row; receives the {@link IRepositoryLoadMoreNode}. */
   loadMore: "plastic-scm.repository.loadMore",
   /** View title button: forgets every loaded section and reloads what is expanded. */
   refresh: "plastic-scm.repository.refresh",
   /** Row command of an error row; receives the {@link IRepositoryErrorNode}. */
   retry: "plastic-scm.repository.retry",
+  /** Inline on the Branches section while hidden branches are left out: lists them too. */
+  showHiddenBranches: "plastic-scm.repository.showHiddenBranches",
 };
 
 /**
