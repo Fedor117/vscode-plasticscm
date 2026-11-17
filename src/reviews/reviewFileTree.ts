@@ -182,10 +182,14 @@ export function fileDescription(
   if (move) {
     parts.push(move);
   }
+  const permissions = permissionDescription(file);
+  if (permissions) {
+    parts.push(permissions);
+  }
   return parts.join(" · ");
 }
 
-/** What cm recorded for a directory itself: `added`, `deleted`, `← Old` or `moved`. */
+/** What cm recorded for a directory itself: `added`, `deleted`, `← Old`, `moved` or its permissions. */
 export function folderDescription(folder: IFileTreeFolder<unknown>, layout: FileLayout): string {
   const parts: string[] = [];
   if (layout === "list" && !folder.children.length) {
@@ -203,8 +207,30 @@ export function folderDescription(folder: IFileTreeFolder<unknown>, layout: File
     } else if (record.status & FileChangeStatus.Deleted) {
       parts.push("deleted");
     }
+    const permissions = permissionDescription(record);
+    if (permissions) {
+      parts.push(permissions);
+    }
   }
   return Array.from(new Set(parts)).join(" · ");
+}
+
+/**
+ * `not set → r-xr-xr-x` for a row whose recorded Unix mode changed; the mode's
+ * leading type letter is dropped.
+ */
+export function permissionChangeText(file: IChangesetFileChange): string | undefined {
+  const change = file.permissionChange;
+  if (!change) {
+    return undefined;
+  }
+  const mode = (value: string | undefined) => value ? value.substring(1) : "not set";
+  return `${mode(change.from)} → ${mode(change.to)}`;
+}
+
+function permissionDescription(file: IChangesetFileChange): string | undefined {
+  const change = permissionChangeText(file);
+  return change && `permissions ${change}`;
 }
 
 /** `Assets/Code` for `/Assets/Code/Foo.cs`; empty at the repository root. */

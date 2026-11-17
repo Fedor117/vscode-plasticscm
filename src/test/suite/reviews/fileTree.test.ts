@@ -191,6 +191,25 @@ describe("Review file tree", () => {
     expect(navigationOrder(buildFileNodes([ file(), sourceless ], "list", "p", "g").roots)).to.deep.equal([file()]);
   });
 
+  it("says why a directory with no changed files is listed: its permissions changed", () => {
+    const texture = file({
+      baseRevisionId: -1,
+      path: "/Assets/Art/Circuits/Dunes/Textures",
+      permissionChange: { to: "dr-xr-xr-x" },
+      revisionType: RevisionType.Directory,
+    });
+    const tree = buildFileNodes([texture], "tree", "p", "g");
+    expect(folderDescription(folder(tree.roots, "Assets/Art/Circuits/Dunes/Textures"), "tree"))
+      .to.equal("permissions not set → r-xr-xr-x");
+    const list = buildFileNodes([texture], "list", "p", "g");
+    expect(folderDescription(list.roots[0] as IFileTreeFolder<string>, "list"))
+      .to.equal("Assets/Art/Circuits/Dunes · permissions not set → r-xr-xr-x");
+    const script = file({ permissionChange: { from: "-rw-r--r--", to: "-rwxr-xr-x" }});
+    expect(fileDescription(script, "tree")).to.equal("permissions rw-r--r-- → rwxr-xr-x");
+    expect(fileDescription(file({ permissionChange: { from: "-rwxr-xr-x" }}), "tree"))
+      .to.equal("permissions rwxr-xr-x → not set");
+  });
+
   it("builds the realistic branch review into Changes and Merged scopes", async () => {
     const scenario = await loadScenario();
     const final = scenario.files.final.files;

@@ -1,4 +1,4 @@
-import { FileChangeStatus, IChangesetFileChange, RevisionType } from "../../../models";
+import { FileChangeStatus, IChangesetFileChange, IPermissionChange, RevisionType } from "../../../models";
 import { BaseCmParser } from "../baseCmParser";
 
 const STATUS_FLAGS: { [letter: string]: FileChangeStatus } = {
@@ -14,7 +14,10 @@ const REVISION_TYPES: { [letter: string]: RevisionType } = {
   F: RevisionType.TextFile,
 };
 
-const FIELD_LINE = /^(S|T|P|R|PR|B|SP|DP|RP):(.*)$/;
+const FIELD_LINE = /^(S|T|P|R|PR|B|SP|DP|FP|SFP|RP):(.*)$/;
+
+/** `dr-xr-xr-x`; a cm that does not know the field prints something else. */
+const MODE = /^[a-z-][rwxsStT-]{9}$/;
 
 /** Fields of one record as printed by `cm diff --format`, in the format's own order. */
 interface IDiffRecord {
@@ -26,17 +29,21 @@ interface IDiffRecord {
   baseRevisionId: string;
   sourcePath: string;
   destinationPath: string;
+  permissions: string;
+  sourcePermissions: string;
   repository: string;
 }
 
 const FIELD_KEYS: { [prefix: string]: keyof IDiffRecord } = {
   B: "baseRevisionId",
   DP: "destinationPath",
+  FP: "permissions",
   P: "path",
   PR: "parentRevisionId",
   R: "revisionId",
   RP: "repository",
   S: "status",
+  SFP: "sourcePermissions",
   SP: "sourcePath",
   T: "type",
 };
@@ -51,6 +58,22 @@ function unquote(value: string): string {
 function parseRevisionId(value: string): number {
   const id = parseInt(value, 10);
   return isNaN(id) ? -1 : id;
+}
+
+/**
+ * Only a `C` row compares two modes: an added, deleted or moved row prints an
+ * empty source mode for an item whose mode did not change.
+ */
+function permissionChange(record: IDiffRecord): IPermissionChange | undefined {
+  if (record.status !== "C") {
+    return undefined;
+  }
+  const to = unquote(record.permissions);
+  const from = unquote(record.sourcePermissions);
+  if (to === from || [ to, from ].some(mode => mode !== "" && !MODE.test(mode))) {
+    return undefined;
+  }
+  return { from: from || undefined, to: to || undefined };
 }
 
 function comparePaths(left: IChangesetFileChange, right: IChangesetFileChange): number {
@@ -84,11 +107,13 @@ export class DiffChangesetParser extends BaseCmParser<IChangesetFileChange[]> {
 
   private static toChange(record: IDiffRecord): IChangesetFileChange {
     const oldPath = unquote(record.sourcePath);
+    const permissions = permissionChange(record);
     return {
       baseRevisionId: parseRevisionId(record.baseRevisionId),
       oldPath: oldPath === "" ? undefined : oldPath,
       parentRevisionId: parseRevisionId(record.parentRevisionId),
       path: unquote(record.path),
+      ...(permissions ? { permissionChange: permissions } : {}),
       repository: unquote(record.repository),
       revisionId: parseRevisionId(record.revisionId),
       revisionType: REVISION_TYPES[record.type] ?? RevisionType.Unknown,
@@ -97,11 +122,13 @@ export class DiffChangesetParser extends BaseCmParser<IChangesetFileChange[]> {
   }
 
   private static merge(destination: IChangesetFileChange, source: IChangesetFileChange): IChangesetFileChange {
+    const permissions = destination.permissionChange ?? source.permissionChange;
     return {
       baseRevisionId: Math.max(destination.baseRevisionId, source.baseRevisionId),
       oldPath: destination.oldPath ?? source.oldPath,
       parentRevisionId: Math.max(destination.parentRevisionId, source.parentRevisionId),
       path: destination.path,
+      ...(permissions ? { permissionChange: permissions } : {}),
       repository: destination.repository,
       revisionId: destination.revisionId,
       revisionType: destination.revisionType !== RevisionType.Unknown
@@ -129,9 +156,11 @@ export class DiffChangesetParser extends BaseCmParser<IChangesetFileChange[]> {
           destinationPath: "",
           parentRevisionId: "",
           path: "",
+          permissions: "",
           repository: "",
           revisionId: "",
           sourcePath: "",
+          sourcePermissions: "",
           status: "",
           type: "",
         };
