@@ -13,6 +13,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   no explanation. The row's description and tooltip now read `permissions not set → r-xr-xr-x`;
   a file whose mode changed gets the same note.
 
+### Changed
+
+- **Reviewers are picked from a list.** Create Code Review… and Add Reviewers… show the groups and
+  users of the workspace's server (`cm listusers <server>`) to check, filtered by typing, instead
+  of a box to type names into. Add Reviewers… leaves out who reviews already, and the groups Unity
+  Version Control Cloud makes for project roles are not listed. The pencil in the list's title bar
+  still takes typed names (`someone@example.com, group:Developers`), and that box is what you get
+  when `cm` cannot list the server's users.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added

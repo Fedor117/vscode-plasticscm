@@ -75,6 +75,12 @@ jobs:
       - name: compile the extension and the tests
         run: npm run compile
 
+      # setup-xvfb installs x11-xserver-utils without refreshing the package index,
+      # and some runner images ship an index that does not list it.
+      - name: refresh the apt package index (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update
+
       - name: run tests
         uses: coactions/setup-xvfb@v1
         with:

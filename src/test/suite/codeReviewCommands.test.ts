@@ -1,13 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import {
-  CODE_REVIEW_COMMANDS,
-  describeReviewers,
-  namesOf,
-  parseReviewerNames,
-  reviewerItems,
-  reviewRefFromArg,
-} from "../../commands/codeReview";
+import { CODE_REVIEW_COMMANDS, describeReviewers, reviewerItems, reviewRefFromArg } from "../../commands/codeReview";
+import { namesOf, parseReviewerNames } from "../../commands/reviewerPicker";
 import { expect } from "chai";
 
 describe("Code review commands", () => {
