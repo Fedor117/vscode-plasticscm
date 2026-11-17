@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
 ### Added
 
 - **A review row says when only its permissions changed.** `cm diff` lists a directory as changed
@@ -28,9 +30,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **The workspace's branch stands out in the Branch Explorer.** Its pill was told apart by a
   thicker border only; it is now filled with the branch's colour, as the Plastic SCM Graph view
   fills its current branch, and the branch's line through the graph is drawn heavier.
-
-### Changed
-
 - **Reviewers are picked from a list.** Create Code Review… and Add Reviewers… show the groups and
   users of the workspace's server (`cm listusers <server>`) to check, filtered by typing, instead
   of a box to type names into. Add Reviewers… leaves out who reviews already, and the groups Unity
