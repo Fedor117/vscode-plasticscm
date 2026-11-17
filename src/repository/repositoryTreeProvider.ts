@@ -10,6 +10,7 @@ import {
 import { IListPage, IListQuery, IWorkspaceConfig, IWorkspaceInfo } from "../models";
 import { describeError } from "../commands/scmUtils";
 import { ICmShell } from "../cm/shell";
+import { IKnownBranchHead } from "../incomingChanges";
 import { LockSnapshot } from "../locks/lockSnapshot";
 
 export const repositoryViewId = "plastic-scm.repository";
@@ -62,6 +63,10 @@ export interface IRepositoryWorkspace {
   readonly shell: ICmShell;
   /** The workspace's current location, from its last status run. */
   readonly workspaceConfig?: IWorkspaceConfig;
+  /** The changeset the workspace is at; negative or absent while unknown. */
+  readonly currentChangeset?: number;
+  /** Takes the head the Branches section saw for the workspace's branch; the status bar's Update follows it. */
+  setKnownBranchHead?(head: IKnownBranchHead): void;
   /** Fires after every status run; the view re-marks the current branch/label/shelve then. */
   readonly onDidRunStatus: Event<void>;
   /** The workspace's lock list; the Locks section reloads it. Without it the section queries cm itself. */

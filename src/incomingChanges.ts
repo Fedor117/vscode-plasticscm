@@ -23,3 +23,17 @@ export function hasIncomingChanges(
     && currentChangeset !== undefined
     && head.changesetId > currentChangeset;
 }
+
+/**
+ * The head to remember once a view reports one. Several views report what they
+ * last saw, so a report never replaces a newer one for the same branch, and a
+ * view that knows nothing yet changes nothing.
+ */
+export function mergeKnownBranchHead(
+    known: IKnownBranchHead | undefined,
+    reported: IKnownBranchHead | undefined): IKnownBranchHead | undefined {
+  if (!reported || (known?.branch === reported.branch && known.changesetId >= reported.changesetId)) {
+    return known;
+  }
+  return reported;
+}

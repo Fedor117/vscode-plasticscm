@@ -275,6 +275,42 @@ describe("Repository view", () => {
       expect(String(other.description)).to.match(/^someone@example\.com · /);
     });
 
+    it("says an update is available when the current branch has a newer head", () => {
+      const describe = (currentChangeset: number | undefined, on: string): string => {
+        const workspace = { ...fakeWorkspace("w1", undefined, branchConfig(on)), currentChangeset };
+        return String(branchesSection.toTreeItem(branch("/main/task001"), workspace).description);
+      };
+
+      expect(describe(10, "/main/task001")).to.match(/^current · update available · /);
+      expect(describe(12, "/main/task001")).to.match(/^current · someone@example\.com/);
+      expect(describe(-1, "/main/task001")).to.match(/^current · someone@example\.com/);
+      expect(describe(undefined, "/main/task001")).to.match(/^current · someone@example\.com/);
+      expect(describe(10, "/main")).to.match(/^someone@example\.com/);
+    });
+
+    it("reports the head of the workspace's branch, looking it up when the page does not list it", async () => {
+      const reported: Array<{ branch: string; changesetId: number }> = [];
+      const load = async (listed: string[], on: string): Promise<IShellMock> => {
+        const shell: IShellMock = mockShellAnswering(call => ({
+          result: call.args[1].startsWith("where name=") ? [branch(on)] : listed.map(branch), success: true,
+        }));
+        const workspace = {
+          ...fakeWorkspace("w1", shell.mock.object, branchConfig(on)),
+          setKnownBranchHead: (head: { branch: string; changesetId: number }) => reported.push(head),
+        };
+        await branchesSection.load(workspace, { limit: 50 });
+        await settle();
+        return shell;
+      };
+
+      expect((await load([ "/main/task001", "/main" ], "/main/task001")).calls).to.have.length(1);
+      expect(reported).to.eql([{ branch: "/main/task001", changesetId: 12 }]);
+
+      const lookedUp = await load(["/main/task001"], "/main");
+      expect(lookedUp.calls[1].args[1]).to.equal("where name='main'");
+      expect(reported[1]).to.eql({ branch: "/main", changesetId: 12 });
+    });
+
     it("names shelves sh:N and describes them by comment", () => {
       const shelve: IShelveInfo = {
         comment: "WIP: inventory\nmore",

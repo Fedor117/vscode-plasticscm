@@ -1156,6 +1156,11 @@
           "when": "view == plastic-scm.history"
         },
         {
+          "command": "plastic-scm.update",
+          "group": "navigation",
+          "when": "view == plastic-scm.history"
+        },
+        {
           "command": "plastic-scm.codeReview.create",
           "when": "view == plastic-scm.reviews.list",
           "group": "navigation@0"
@@ -1396,6 +1401,16 @@
           "command": "plastic-scm.reviews.deleteComment",
           "when": "view == plastic-scm.reviews.discussions && viewItem =~ /^thread;.*;delete(;|$)/ && plastic-scm.reviews.postingEnabled",
           "group": "2_write@3"
+        },
+        {
+          "command": "plastic-scm.update",
+          "when": "view == plastic-scm.repository && viewItem == branch.current",
+          "group": "inline@1"
+        },
+        {
+          "command": "plastic-scm.update",
+          "when": "view == plastic-scm.repository && viewItem == branch.current",
+          "group": "1_switch@1"
         },
         {
           "command": "plastic-scm.switch.branch",
@@ -1680,6 +1695,11 @@
           "command": "plastic-scm.explorer.mergeFromBranch",
           "group": "1_switch@3",
           "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && !explorerIsWorkspaceBranch"
+        },
+        {
+          "command": "plastic-scm.update",
+          "group": "1_switch@4",
+          "when": "webviewId == plastic-scm.branchExplorer && webviewSection == explorerChangeset && explorerIsWorkspaceBranch"
         },
         {
           "command": "plastic-scm.explorer.createBranch",
