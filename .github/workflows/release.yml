@@ -39,8 +39,3 @@ jobs:
           fi
           gh release create "$TAG" "$RUNNER_TEMP/plastic-scm-${TAG#v}.vsix" \
             --verify-tag --title "$TAG" --generate-notes
-
-      - name: Publish the same package to the VS Code Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npm run deploy -- --packagePath "$RUNNER_TEMP/plastic-scm-${TAG#v}.vsix" --skip-duplicate
