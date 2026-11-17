@@ -11,7 +11,7 @@ import {
   shelveTooltip,
 } from "./presentation";
 import { buildEntries, lockKey } from "../locks/lockSnapshot";
-import { DiffChangeset, ListBranches, ListLabels, ListLocks, ListShelves } from "../cm/commands";
+import { DiffChangeset, FindBranch, ListBranches, ListLabels, ListLocks, ListShelves } from "../cm/commands";
 import {
   FileChangeStatus,
   IBranchInfo,
@@ -19,9 +19,11 @@ import {
   ILabelInfo,
   ILockEntry,
   IShelveInfo,
+  WkConfigType,
 } from "../models";
 import { IRepositorySection, IRepositoryWorkspace, REPOSITORY_CONTEXT } from "./repositoryTreeProvider";
 import { ThemeColor, ThemeIcon, TreeItem, TreeItemCollapsibleState } from "vscode";
+import { hasIncomingChanges } from "../incomingChanges";
 import { posix } from "path";
 import { showHiddenBranches } from "./hiddenBranches";
 
@@ -39,18 +41,58 @@ function describe(current: boolean, ...parts: string[]): string {
   return [ current ? "current" : "", ...parts ].filter(part => part.length > 0).join(" · ");
 }
 
+/** True when the workspace is on this branch and the listing saw a newer head than the workspace's changeset. */
+function isBehindBranchHead(branch: IBranchInfo, workspace: IRepositoryWorkspace): boolean {
+  const changeset = workspace.currentChangeset;
+  return hasIncomingChanges(
+    workspace.workspaceConfig,
+    changeset !== undefined && changeset >= 0 ? changeset : undefined,
+    { branch: branch.name, changesetId: branch.headChangesetId });
+}
+
+/**
+ * Tells the workspace the head of the branch it is on. Branches are listed by
+ * creation date, so an old branch such as /main is often not on the first page
+ * and is looked up on its own. A failed lookup only leaves the status bar as it was.
+ */
+async function reportBranchHead(workspace: IRepositoryWorkspace, listed: readonly IBranchInfo[]): Promise<void> {
+  const config = workspace.workspaceConfig;
+  if (!workspace.setKnownBranchHead || config?.configType !== WkConfigType.Branch) {
+    return;
+  }
+  try {
+    const branch = listed.find(item => item.name === config.location)
+      ?? await FindBranch.run(workspace.shell, config.location, { includeHidden: true });
+    if (branch) {
+      workspace.setKnownBranchHead({ branch: branch.name, changesetId: branch.headChangesetId });
+    }
+  } catch {
+    // The list itself loaded; the head stays unknown until the next refresh.
+  }
+}
+
 export const branchesSection: IRepositorySection<IBranchInfo> = {
   emptyMessage: "No branches",
   icon: "git-branch",
   id: "branches",
   key: branch => branch.name,
   label: "Branches",
-  load: (workspace, query) => ListBranches.run(workspace.shell, query, { includeHidden: showHiddenBranches() }),
+  load: async (workspace, query) => {
+    const page = await ListBranches.run(workspace.shell, query, { includeHidden: showHiddenBranches() });
+    if ((query.offset ?? 0) === 0) {
+      void reportBranchHead(workspace, page.items);
+    }
+    return page;
+  },
   pageSize: REPOSITORY_PAGE_SIZE,
   toTreeItem: (branch: IBranchInfo, workspace: IRepositoryWorkspace) => {
     const current = isCurrentBranch(branch, workspace.workspaceConfig);
     const item = new TreeItem(branch.name, TreeItemCollapsibleState.None);
-    item.description = describe(current, branch.hidden ? "hidden" : "", ownerAndDate(branch.owner, branch.date));
+    item.description = describe(
+      current,
+      isBehindBranchHead(branch, workspace) ? "update available" : "",
+      branch.hidden ? "hidden" : "",
+      ownerAndDate(branch.owner, branch.date));
     item.tooltip = branchTooltip(branch);
     item.iconPath = branch.hidden && !current ? new ThemeIcon("git-branch", HIDDEN_COLOR) : icon("git-branch", current);
     item.contextValue = current ? REPOSITORY_CONTEXT.currentBranch : REPOSITORY_CONTEXT.branch;

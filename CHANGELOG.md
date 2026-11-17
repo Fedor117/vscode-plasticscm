@@ -8,6 +8,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 
+- **Update from the Repository view and the Branch Explorer.** The row of the branch the workspace
+  is on has an **Update Workspace** button in the Repository view, and reads "update available"
+  when the listed head is newer than the workspace's changeset. The Branch Explorer's context menu
+  offers **Update Workspace** on rows of the workspace's branch. The Graph view's title bar has
+  the button too, and the status bar's **Update** entry now also appears after the Repository view
+  loads its branches, not only once the Graph has loaded.
 - **Hidden branches can be listed.** The eye button on the Branches row of the Repository view
   (or **Show Hidden Branches** in the Command Palette) adds the branches Plastic hides to the
   view and to every branch picker, dimmed and marked `hidden`. Typing the full name of a hidden

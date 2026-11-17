@@ -1,6 +1,6 @@
 import { describeTarget, planUpdate } from "../../commands/workspaceActions";
+import { hasIncomingChanges, mergeKnownBranchHead } from "../../incomingChanges";
 import { expect } from "chai";
-import { hasIncomingChanges } from "../../incomingChanges";
 import { WkConfigType } from "../../models";
 
 const branchConfig = {
@@ -62,5 +62,20 @@ describe("hasIncomingChanges", () => {
   it("is false for a workspace on a changeset or a label, which stays where it is", () => {
     expect(hasIncomingChanges({ ...branchConfig, configType: WkConfigType.Changeset }, 1, head)).to.equal(false);
     expect(hasIncomingChanges({ ...branchConfig, configType: WkConfigType.Label }, 1, head)).to.equal(false);
+  });
+});
+
+describe("mergeKnownBranchHead", () => {
+  const known = { branch: "/main/task001", changesetId: 50 };
+
+  it("takes a newer head and keeps the known one over an older or missing report", () => {
+    expect(mergeKnownBranchHead(known, { ...known, changesetId: 51 })?.changesetId).to.equal(51);
+    expect(mergeKnownBranchHead(known, { ...known, changesetId: 49 })).to.equal(known);
+    expect(mergeKnownBranchHead(known, undefined)).to.equal(known);
+  });
+
+  it("takes the head of another branch, whatever its id", () => {
+    expect(mergeKnownBranchHead(known, { branch: "/main", changesetId: 3 })?.branch).to.equal("/main");
+    expect(mergeKnownBranchHead(undefined, known)).to.equal(known);
   });
 });

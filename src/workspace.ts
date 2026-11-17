@@ -29,7 +29,7 @@ import {
   Uri,
   workspace as VsCodeWorkspace,
 } from "vscode";
-import { hasIncomingChanges, IKnownBranchHead } from "./incomingChanges";
+import { hasIncomingChanges, IKnownBranchHead, mergeKnownBranchHead } from "./incomingChanges";
 import { IWorkspaceOperations, WorkspaceOperation } from "./workspaceOperations";
 import { debounce } from "./decorators";
 import { ICmShell } from "./cm/shell";
@@ -348,13 +348,13 @@ export class Workspace implements Disposable, QuickDiffProvider {
   }
 
   /**
-   * Tells the workspace the newest changeset the server has on its branch, as
-   * the graph last saw it. When that is newer than the workspace's changeset,
-   * the status bar offers an Update.
+   * Tells the workspace the newest changeset the server has on a branch, as the
+   * graph or the Repository view last saw it. When that is newer than the
+   * workspace's changeset, the status bar offers an Update.
    */
   public setKnownBranchHead(head: IKnownBranchHead | undefined): void {
     const wasIncoming = this.hasIncomingChanges;
-    this.mKnownBranchHead = head;
+    this.mKnownBranchHead = mergeKnownBranchHead(this.mKnownBranchHead, head);
     if (wasIncoming !== this.hasIncomingChanges) {
       this.updateStatusBar();
     }

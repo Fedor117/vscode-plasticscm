@@ -14,7 +14,7 @@ import { TRACKED_FILE_COMMANDS } from "../../commands/trackedFiles";
 interface IPackage {
   contributes: {
     commands: Array<{ command: string; title: string }>;
-    menus: Record<string, Array<{ command: string; when?: string }>>;
+    menus: Record<string, Array<{ command: string; group?: string; when?: string }>>;
   };
 }
 
@@ -61,6 +61,25 @@ describe("Branch, switch and label contributions", () => {
   it("puts Update in the Source Control title menu", () => {
     const entry = pkg.contributes.menus["scm/title"].find(item => item.command === SWITCH_COMMANDS.update);
     expect(entry?.when).to.contain("scmProvider");
+  });
+
+  it("puts Update on the current branch's row of the Repository view", () => {
+    const rows = pkg.contributes.menus["view/item/context"].filter(item => item.command === SWITCH_COMMANDS.update);
+    expect(rows.map(row => row.group)).to.eql([ "inline@1", "1_switch@1" ]);
+    for (const row of rows) {
+      expect(row.when).to.contain("viewItem == branch.current");
+    }
+  });
+
+  it("puts Update in the Graph view's title", () => {
+    const rows = pkg.contributes.menus["view/title"].filter(item => item.command === SWITCH_COMMANDS.update);
+    expect(rows.map(row => row.when)).to.eql(["view == plastic-scm.history"]);
+  });
+
+  it("puts Update on Branch Explorer rows of the workspace's branch", () => {
+    const rows = pkg.contributes.menus["webview/context"].filter(item => item.command === SWITCH_COMMANDS.update);
+    expect(rows).to.have.length(1);
+    expect(rows[0].when).to.match(/ && explorerIsWorkspaceBranch$/);
   });
 
   it("offers in the status bar menu only commands that exist", () => {
