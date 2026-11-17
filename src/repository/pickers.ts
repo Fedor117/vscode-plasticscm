@@ -23,6 +23,7 @@ import {
 } from "../models";
 import { QuickPickItem, QuickPickItemKind, window } from "vscode";
 import { ICmShell } from "../cm/shell";
+import { showHiddenBranches } from "./hiddenBranches";
 
 /** Rows a picker loads when the caller does not say. */
 export const DEFAULT_PICKER_LIMIT = 200;
@@ -48,15 +49,16 @@ export interface IChangesetPickerOptions extends IPickerOptions {
 
 /**
  * Picks a branch: the newest branches, filtered as the user types; a full name
- * starting with `/` (or `br:/`) that is not listed is looked up with cm.
+ * starting with `/` (or `br:/`) that is not listed is looked up with cm, hidden
+ * branches included.
  * Resolves undefined when the user cancels; rejects when cm fails.
  */
 export function pickBranch(shell: ICmShell, options: IPickerOptions = {}): Promise<IBranchInfo | undefined> {
   const limit = options.limit ?? DEFAULT_PICKER_LIMIT;
   return showPicker<IBranchInfo>({
     key: branch => branch.name,
-    load: () => ListBranches.run(shell, { limit }),
-    lookup: text => FindBranch.run(shell, text),
+    load: () => ListBranches.run(shell, { limit }, { includeHidden: showHiddenBranches() }),
+    lookup: text => FindBranch.run(shell, text, { includeHidden: true }),
     lookupLabel: text => {
       const name = parseBranchName(text);
       return name ? { label: `$(search) Look up branch ${name}`, text: name } : undefined;
@@ -155,7 +157,7 @@ export function parseObjectNumber(text: string, prefix: string): number | undefi
 export function branchItem(branch: IBranchInfo, config?: IWorkspaceConfig): QuickPickItem {
   const current = isCurrentBranch(branch, config);
   return {
-    description: [ current ? "current" : "", ownerAndDate(branch.owner, branch.date) ]
+    description: [ current ? "current" : "", branch.hidden ? "hidden" : "", ownerAndDate(branch.owner, branch.date) ]
       .filter(part => part.length > 0).join(" · "),
     detail: firstLine(branch.comment) || undefined,
     label: `$(${current ? "check" : "git-branch"}) ${branch.name}`,

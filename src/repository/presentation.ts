@@ -57,6 +57,7 @@ export function branchTooltip(branch: IBranchInfo): string {
     [ "Created", formatDate(branch.date) ],
     [ "Head", branch.headChangesetId >= 0 ? `cs:${branch.headChangesetId}` : "" ],
     [ "Comment", branch.comment ],
+    [ "Hidden", branch.hidden ? "yes" : "" ],
   );
 }
 

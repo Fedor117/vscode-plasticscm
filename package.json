@@ -114,6 +114,12 @@
           "default": true,
           "markdownDescription": "Controls whether discarding private (untracked) items moves them to the Recycle Bin (Windows) or Trash (macOS, Linux) instead of deleting them permanently. `cm` cannot undo a private item, so discarding one always means deleting it from disk."
         },
+        "plastic-scm.showHiddenBranches": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "List hidden branches in the Repository view and the branch pickers, marked `hidden`. `cm` has no query for hidden and visible branches together, so each page then takes two `cm find` queries, and each **Load More** reads every row before the page again.",
+          "scope": "window"
+        },
         "plastic-scm.history.pageSize": {
           "type": "number",
           "default": 50,
@@ -519,6 +525,18 @@
         "command": "plastic-scm.repository.loadMore",
         "category": "Plastic SCM",
         "title": "Load More"
+      },
+      {
+        "command": "plastic-scm.repository.showHiddenBranches",
+        "category": "Plastic SCM",
+        "title": "Show Hidden Branches",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "plastic-scm.repository.hideHiddenBranches",
+        "category": "Plastic SCM",
+        "title": "Hide Hidden Branches",
+        "icon": "$(eye-closed)"
       },
       {
         "command": "plastic-scm.repository.retry",
@@ -1460,6 +1478,16 @@
           "group": "inline@1"
         },
         {
+          "command": "plastic-scm.repository.showHiddenBranches",
+          "when": "view == plastic-scm.repository && viewItem == section.branches && !config.plastic-scm.showHiddenBranches",
+          "group": "inline@2"
+        },
+        {
+          "command": "plastic-scm.repository.hideHiddenBranches",
+          "when": "view == plastic-scm.repository && viewItem == section.branches && config.plastic-scm.showHiddenBranches",
+          "group": "inline@2"
+        },
+        {
           "command": "plastic-scm.label.create",
           "when": "view == plastic-scm.repository && viewItem == section.labels",
           "group": "inline@1"
@@ -1911,6 +1939,14 @@
         {
           "command": "plastic-scm.repository.loadMore",
           "when": "false"
+        },
+        {
+          "command": "plastic-scm.repository.showHiddenBranches",
+          "when": "plastic-scm.active && !config.plastic-scm.showHiddenBranches"
+        },
+        {
+          "command": "plastic-scm.repository.hideHiddenBranches",
+          "when": "plastic-scm.active && config.plastic-scm.showHiddenBranches"
         },
         {
           "command": "plastic-scm.repository.retry",

@@ -1,4 +1,4 @@
-import { commands, Disposable, TreeView, window } from "vscode";
+import { commands, Disposable, TreeView, window, workspace } from "vscode";
 import {
   IRepositoryErrorNode,
   IRepositoryLoadMoreNode,
@@ -9,6 +9,7 @@ import {
   RepositoryTreeProvider,
   repositoryViewId,
 } from "../repository/repositoryTreeProvider";
+import { setShowHiddenBranches, SHOW_HIDDEN_BRANCHES_SETTING } from "../repository/hiddenBranches";
 
 /**
  * Owns the Repository view (branches, labels and shelves of each workspace's
@@ -40,6 +41,13 @@ export class RepositoryCommands implements Disposable {
         REPOSITORY_COMMANDS.loadMore, (node: IRepositoryLoadMoreNode) => this.mProvider.loadMore(node)),
       commands.registerCommand(
         REPOSITORY_COMMANDS.retry, (node: IRepositoryErrorNode) => this.mProvider.retry(node)),
+      commands.registerCommand(REPOSITORY_COMMANDS.showHiddenBranches, () => setShowHiddenBranches(true)),
+      commands.registerCommand(REPOSITORY_COMMANDS.hideHiddenBranches, () => setShowHiddenBranches(false)),
+      workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration(SHOW_HIDDEN_BRANCHES_SETTING)) {
+          this.mProvider.refresh();
+        }
+      }),
     ];
   }
 
