@@ -17,6 +17,8 @@ const DIFF_FORMAT = "--format=" + [
   "B:{baserevid}",
   "SP:{srccmpath}",
   "DP:{dstcmpath}",
+  "FP:{fsprotection}",
+  "SFP:{srcfsprotection}",
   "RP:{repository}",
 ].join("{newline}");
 

@@ -9,7 +9,7 @@ import {
   IReviewUpdates,
 } from "./models";
 import { MarkdownString, QuickPickItem, ThemeColor, ThemeIcon, Uri } from "vscode";
-import { noDiffReason, SOURCE_UNAVAILABLE } from "./reviewFileTree";
+import { noDiffReason, permissionChangeText, SOURCE_UNAVAILABLE } from "./reviewFileTree";
 import { posix } from "path";
 import { shortOwner } from "../history/graphModel";
 
@@ -827,6 +827,11 @@ export function fileTooltip(
   if (file.status & FileChangeStatus.Moved && file.oldPath) {
     tooltip.appendMarkdown("  \n");
     tooltip.appendText(`Moved from ${file.oldPath}`);
+  }
+  const permissions = permissionChangeText(file);
+  if (permissions) {
+    tooltip.appendMarkdown("  \n");
+    tooltip.appendText(`Permissions: ${permissions}`);
   }
   if (threads.length) {
     tooltip.appendMarkdown("  \n");

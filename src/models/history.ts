@@ -73,4 +73,16 @@ export interface IChangesetFileChange {
   readonly parentRevisionId: number;
   /** Repository spec of the item, e.g. `Nimbus/Nimbus@acme-studio@unity`. */
   readonly repository: string;
+  /** Set when the item's recorded Unix mode differs between the two sides. */
+  readonly permissionChange?: IPermissionChange;
+}
+
+/**
+ * Unix modes as cm prints them (`dr-xr-xr-x`); a side without a recorded mode
+ * is undefined. cm lists a directory as changed for this alone: the same
+ * revision sits on both sides and only its mode differs.
+ */
+export interface IPermissionChange {
+  readonly from?: string;
+  readonly to?: string;
 }

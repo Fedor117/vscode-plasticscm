@@ -9,7 +9,9 @@ interface IRecordFields {
   destinationPath?: string;
   parent?: string;
   path: string;
+  permissions?: string;
   revision: string;
+  sourcePermissions?: string;
   sourcePath?: string;
   status: string;
   type: string;
@@ -26,6 +28,8 @@ function record(fields: IRecordFields): string[] {
     `B:${fields.base ?? "-1"}`,
     `SP:"${fields.sourcePath ?? ""}"`,
     `DP:"${fields.destinationPath ?? ""}"`,
+    `FP:"${fields.permissions ?? ""}"`,
+    `SFP:"${fields.sourcePermissions ?? ""}"`,
     `RP:"${REPOSITORY}"`,
   ];
 }
@@ -324,6 +328,62 @@ describe("DiffChangeset Parser", () => {
       expect(outcome.result![0].revisionId).to.equal(-1);
       expect(outcome.result![0].parentRevisionId).to.equal(-1);
       expect(outcome.result![0].baseRevisionId).to.equal(-1);
+    });
+  });
+
+  context("When the rows carry Unix modes", () => {
+    const paths = {
+      added: "/Assets/New.cs",
+      executable: "/Tools/build.sh",
+      moved: "/Assets/Moved.cs",
+      permissionsOnly: "/Assets/Art/Circuits/Dunes/Textures",
+      sameMode: "/Assets/Same.cs",
+      unknownField: "/Assets/OldCm.cs",
+    };
+    let outcome: IParseOutcome;
+
+    before(async () => {
+      outcome = await parseLines([
+        ...record({
+          parent: "2", path: paths.permissionsOnly, permissions: "dr-xr-xr-x", revision: "3",
+          status: "C", type: "D",
+        }),
+        ...record({
+          base: "4", path: paths.executable, permissions: "-rwxr-xr-x", revision: "5",
+          sourcePermissions: "-rw-r--r--", status: "C", type: "F",
+        }),
+        ...record({
+          base: "6", path: paths.sameMode, permissions: "-r--r--r--", revision: "7",
+          sourcePermissions: "-r--r--r--", status: "C", type: "F",
+        }),
+        ...record({ path: paths.added, permissions: "-r--r--r--", revision: "8", status: "A", type: "F" }),
+        ...record({
+          destinationPath: paths.moved, path: paths.moved, permissions: "-r--r--r--", revision: "9",
+          sourcePath: "/Assets/Old.cs", status: "M", type: "F",
+        }),
+        ...record({
+          base: "10", path: paths.unknownField, permissions: "{fsprotection}", revision: "11",
+          sourcePermissions: "{srcfsprotection}", status: "C", type: "F",
+        }),
+      ]);
+    });
+
+    it("reports a changed directory whose mode was not recorded before", () => {
+      expect(byPath(outcome, paths.permissionsOnly).permissionChange).to.eql({ from: undefined, to: "dr-xr-xr-x" });
+    });
+
+    it("reports both modes of a changed file", () => {
+      expect(byPath(outcome, paths.executable).permissionChange).to.eql({ from: "-rw-r--r--", to: "-rwxr-xr-x" });
+    });
+
+    it("reports nothing for equal modes, or for added and moved rows, which never print a source mode", () => {
+      expect(byPath(outcome, paths.sameMode).permissionChange).to.equal(undefined);
+      expect(byPath(outcome, paths.added).permissionChange).to.equal(undefined);
+      expect(byPath(outcome, paths.moved).permissionChange).to.equal(undefined);
+    });
+
+    it("reports nothing when cm echoes a field it does not know", () => {
+      expect(byPath(outcome, paths.unknownField).permissionChange).to.equal(undefined);
     });
   });
 

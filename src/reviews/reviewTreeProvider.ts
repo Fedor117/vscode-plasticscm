@@ -6,6 +6,7 @@ import {
   IFileTreeFile,
   IFileTreeFolder,
   navigationOrder,
+  permissionChangeText,
 } from "./reviewFileTree";
 import {
   changesetTooltip,
@@ -710,9 +711,11 @@ export class ReviewTreeProvider implements TreeDataProvider<ReviewTreeNode>, Dis
     }
     const files = `${formatCount(node.files.length)} file${node.files.length === 1 ? "" : "s"}`;
     const discussions = threads.length ? `\n${discussionMarksText(threads)}` : "";
+    const permissions = node.directories.map(permissionChangeText).filter(Boolean)
+      .map(change => `\nPermissions: ${change}`).join("");
     item.tooltip = node.files.length
-      ? `${node.path}\n${files} · ${formatCount(viewedCount)} viewed${discussions}`
-      : node.path;
+      ? `${node.path}\n${files} · ${formatCount(viewedCount)} viewed${discussions}${permissions}`
+      : `${node.path}${permissions}`;
     item.contextValue = `folder;${viewed ? "viewed" : "unviewed"}`;
     return item;
   }

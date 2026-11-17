@@ -657,6 +657,8 @@ describe("Review presentation", () => {
       expect(noDiffMessage(file({ baseRevisionId: -1, parentRevisionId: -1 })))
         .to.equal("Test.cs has no content change recorded: both sides are the same revision.");
       expect(noDiffMessage(file())).to.equal(undefined);
+      expect(plain(fileTooltip(file({ permissionChange: { from: "-rw-r--r--", to: "-rwxr-xr-x" }}))))
+        .to.contain("Permissions: rw-r--r-- → rwxr-xr-x");
       const sameAsHead = plain(fileTooltip(file(), [], true));
       expect(sameAsHead).to.contain("Same revision as the review head: viewed together with Changes.");
     });

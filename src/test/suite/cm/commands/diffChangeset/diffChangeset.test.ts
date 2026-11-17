@@ -4,7 +4,8 @@ import { DiffChangeset } from "../../../../../cm/commands/diffChangeset/diffChan
 import { expect } from "chai";
 
 const FORMAT = "--format=S:{status}{newline}T:{type}{newline}P:{path}{newline}R:{revid}{newline}"
-  + "PR:{parentrevid}{newline}B:{baserevid}{newline}SP:{srccmpath}{newline}DP:{dstcmpath}{newline}RP:{repository}";
+  + "PR:{parentrevid}{newline}B:{baserevid}{newline}SP:{srccmpath}{newline}DP:{dstcmpath}{newline}"
+  + "FP:{fsprotection}{newline}SFP:{srcfsprotection}{newline}RP:{repository}";
 
 const change: IChangesetFileChange = {
   baseRevisionId: 11593,
