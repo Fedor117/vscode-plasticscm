@@ -2,138 +2,45 @@ name: Release
 
 on:
   push:
-    branches: [ master ]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
   release:
-    name: Release extension to Marketplace
+    if: github.event.created && !github.event.deleted
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, 'release:trigger')
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
 
     steps:
-      - name: checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: setup node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: clean install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: fetch all history and tags for gitversion
-        run: git fetch --prune --unshallow
-
-      - name: install gitversion
-        uses: gittools/actions/gitversion/setup@v3.0.4
-        with:
-          versionSpec: '6.0.x'
-
-      - name: execute gitversion
-        id: gitversion-before
-        uses: gittools/actions/gitversion/execute@v3.0.4
-
-      - name: print gitversion before release
+      - name: Package the tagged version
         run: |
-          echo "Major: ${{ steps.gitversion-before.outputs.major }}"
-          echo "Minor: ${{ steps.gitversion-before.outputs.minor }}"
-          echo "Patch: ${{ steps.gitversion-before.outputs.patch }}"
-          echo "MajorMinorPatch: ${{ steps.gitversion-before.outputs.majorMinorPatch }}"
-          echo "SemVer: ${{ steps.gitversion-before.outputs.semVer }}"
+          version="${TAG#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          npm run package -- --out "$RUNNER_TEMP/plastic-scm-$version.vsix"
 
-      - name: update version in package.json
+      - name: Create GitHub release with extension attached
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sed -e '/"version"/s/: ".*"/: "${{ steps.gitversion-before.outputs.semVer }}"/' package.json | tee package.json.modified
-          mv package.json.modified package.json
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/plastic-scm-${TAG#v}.vsix" --clobber
+            exit 0
+          fi
+          gh release create "$TAG" "$RUNNER_TEMP/plastic-scm-${TAG#v}.vsix" \
+            --verify-tag --title "$TAG" --generate-notes
 
-      - name: compile and create vsix
-        run: npm run package
-
-      - name: publish to marketplace
+      - name: Publish the same package to the VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npm run deploy
-
-      - name: Get current date
-        id: date
-        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
-
-      - name: create a release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ steps.gitversion-before.outputs.semVer }}
-          release_name: v${{ steps.gitversion-before.outputs.semVer }}
-          body: |
-            # ${{ steps.gitversion-before.outputs.semVer }} - ${{ steps.date.outputs.date }}
-
-      - name: upload release asset
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-          asset_path: ./plastic-scm-${{ steps.gitversion-before.outputs.semVer }}.vsix
-          asset_name: plastic-scm-${{ steps.gitversion-before.outputs.semVer }}.vsix
-          asset_content_type: application/zip
-
-      - name: fetch new tag for gitversion
-        run: git fetch
-
-      - name: bump version by using an empty commit
-        run: |
-          git config --global user.name 'Plastic SCM Releases'
-          git config --global user.email 'support@codicesoftware.com'
-          git commit --allow-empty -s -m 'Empty commit to bump version'
-
-      - name: execute gitversion again
-        id: gitversion-after
-        uses: gittools/actions/gitversion/execute@v3.0.4
-
-      - name: print gitversion after release
-        run: |
-          echo "Major: ${{ steps.gitversion-after.outputs.major }}"
-          echo "Minor: ${{ steps.gitversion-after.outputs.minor }}"
-          echo "Patch: ${{ steps.gitversion-after.outputs.patch }}"
-          echo "MajorMinorPatch: ${{ steps.gitversion-after.outputs.majorMinorPatch }}"
-          echo "SemVer: ${{ steps.gitversion-after.outputs.semVer }}"
-
-      - name: update new version in package.json
-        run: |
-          sed -e '/"version"/s/: ".*"/: "${{ steps.gitversion-after.outputs.semVer }}"/' package.json | tee package.json.modified
-          mv package.json.modified package.json
-
-      - name: create pull request
-        id: cpr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          commit-message: '[create-pull-request] Bump version to ${{ steps.gitversion-after.outputs.semVer }}'
-          title: >
-            Bump version
-            from ${{ steps.gitversion-before.outputs.semVer }}
-            to ${{ steps.gitversion-after.outputs.semVer }}
-          body: |
-            Release `${{ steps.gitversion-before.outputs.semVer }}` was successful!
-            Let's make it official and update that version number.
-
-            Since this PR is triggered from inside a workflow, GitHub prevents it from
-            triggering other workflows (e.g. CI) to avoid recursive workflow runs.
-            [See more info here](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#triggering-new-workflows-using-a-personal-access-token).
-
-
-            As a workaround, checkout that PR branch and push an empty commit to it.
-
-            Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
-          labels: release, automated
-          branch: bump-version-${{ steps.gitversion-after.outputs.semVer }}
-
-      - name: print PR number
-        run: |
-          echo 'Created pull request #${{ steps.cpr.outputs.pull-request-number }}'
+        run: npm run deploy -- --packagePath "$RUNNER_TEMP/plastic-scm-${TAG#v}.vsix" --skip-duplicate
