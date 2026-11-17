@@ -1,4 +1,4 @@
-import { IExplorerReviewMark, IExplorerReviews } from "./explorerReviews";
+import { IExplorerReviewMark, IExplorerReviews, markOnBranch } from "./explorerReviews";
 import { IHistoryChangeset, ILabelInfo, IMergeLink } from "../models";
 import { shortOwner, subjectOf, toIsoDate } from "../history/graphModel";
 
@@ -61,10 +61,10 @@ export interface IExplorerRow {
   readonly color: number;
   /**
    * The line pieces crossing this row, four numbers each: `top`, `bottom`,
-   * `color`, `merge`. `top` is the lane the piece enters the row on, or -1 when
+   * `color`, `kind`. `top` is the lane the piece enters the row on, or -1 when
    * it starts at the dot; `bottom` is the lane it leaves on, or -1 when it ends
-   * at the dot. `merge` is 1 for a merge link, drawn dashed. Flat rather than
-   * objects because a long history carries tens of thousands of them.
+   * at the dot. `kind` is an `ExplorerLineKind`. Flat rather than objects
+   * because a long history carries tens of thousands of them.
    */
   readonly lines: number[];
 }
@@ -85,11 +85,21 @@ export interface IExplorerModel {
 /** How many colours the client's palette has. */
 export const EXPLORER_PALETTE_SIZE = 8;
 
+/** What a line piece links; the client draws each kind its own way. */
+export enum ExplorerLineKind {
+  /** A changeset to its parent. */
+  Parent = 0,
+  /** A merge destination to its source, drawn dashed. */
+  Merge = 1,
+  /** A changeset of the workspace's branch to its parent, drawn heavier. */
+  WorkspaceBranch = 2,
+}
+
 interface ILane {
   /** The changeset this lane's line runs down to. */
   readonly waitingFor: number;
   readonly color: number;
-  readonly merge: boolean;
+  readonly kind: ExplorerLineKind;
 }
 
 /**
@@ -115,6 +125,11 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
   const visible = visibleIds(loaded, byId, sourcesByDestination, heads, input);
   const labelsById = collectLabels(input.labels);
 
+  const branchReview = (branch: string): IExplorerReviewMark | undefined => {
+    const mark = input.reviews?.byBranch.get(branch);
+    return mark && markOnBranch(mark, loaded.filter(changeset => changeset.branch === branch), id => byId.has(id));
+  };
+
   const lanes: Array<ILane | undefined> = [];
   const rows: IExplorerRow[] = [];
   let laneCount = 0;
@@ -133,14 +148,14 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
       if (lane.waitingFor === changeset.id) {
         incoming.push(index);
       } else {
-        lines.push(index, index, lane.color, lane.merge ? 1 : 0);
+        lines.push(index, index, lane.color, lane.kind);
       }
     });
 
     const laneIndex = incoming.length > 0 ? incoming[0] : firstFreeLane(lanes);
     for (const index of incoming) {
       const lane = lanes[index] as ILane;
-      lines.push(index, -1, lane.color, lane.merge ? 1 : 0);
+      lines.push(index, -1, lane.color, lane.kind);
       lanes[index] = undefined;
     }
 
@@ -149,8 +164,10 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
     if (parentId >= 0) {
       // The lane carries on down to the parent. Sibling branches each keep their
       // own lane until the parent's row, where they all meet at its dot.
-      lanes[laneIndex] = { color, merge: false, waitingFor: parentId };
-      lines.push(-1, laneIndex, color, 0);
+      const kind = changeset.branch === input.currentBranch
+        ? ExplorerLineKind.WorkspaceBranch : ExplorerLineKind.Parent;
+      lanes[laneIndex] = { color, kind, waitingFor: parentId };
+      lines.push(-1, laneIndex, color, kind);
     }
 
     const mergedFrom = sourcesByDestination.get(changeset.id) ?? [];
@@ -163,9 +180,9 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
       let target = lanes.findIndex(lane => lane?.waitingFor === source.id);
       if (target < 0) {
         target = firstFreeLane(lanes);
-        lanes[target] = { color: branchColor(source.branch), merge: true, waitingFor: source.id };
+        lanes[target] = { color: branchColor(source.branch), kind: ExplorerLineKind.Merge, waitingFor: source.id };
       }
-      lines.push(-1, target, (lanes[target] as ILane).color, 1);
+      lines.push(-1, target, (lanes[target] as ILane).color, ExplorerLineKind.Merge);
     }
 
     laneCount = Math.max(laneCount, lanes.length, laneIndex + 1);
@@ -184,7 +201,7 @@ export function buildExplorerModel(input: IExplorerInput): IExplorerModel {
       owner: changeset.owner,
       ownerShort: shortOwner(changeset.owner),
       parentId: changeset.parentId,
-      refs: refsOf(changeset, heads, labelsById, input.currentBranch, input.reviews),
+      refs: refsOf(changeset, heads, labelsById, input.currentBranch, branchReview),
       subject: subjectOf(changeset.comment),
       ...reviewOf(input.reviews?.byChangeset.get(changeset.id)),
     });
@@ -271,14 +288,14 @@ function refsOf(
     heads: Map<string, number>,
     labelsById: Map<number, string[]>,
     currentBranch: string | undefined,
-    reviews: IExplorerReviews | undefined): IExplorerRef[] {
+    branchReview: (branch: string) => IExplorerReviewMark | undefined): IExplorerRef[] {
   const refs: IExplorerRef[] = [];
   if (heads.get(changeset.branch) === changeset.id) {
     refs.push({
       isCurrent: changeset.branch === currentBranch,
       kind: "branch",
       text: changeset.branch,
-      ...reviewOf(reviews?.byBranch.get(changeset.branch)),
+      ...reviewOf(branchReview(changeset.branch)),
     });
   }
   for (const label of labelsById.get(changeset.id) ?? []) {

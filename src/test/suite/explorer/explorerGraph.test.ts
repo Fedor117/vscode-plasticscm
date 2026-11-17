@@ -4,6 +4,7 @@ import {
   EXPLORER_PALETTE_SIZE,
   ExplorerScope,
   IExplorerModel,
+  IExplorerRef,
   IExplorerRow,
   toFlatExplorerRow,
 } from "../../../explorer/explorerGraph";
@@ -79,7 +80,10 @@ function rowOf(model: IExplorerModel, id: number): IExplorerRow {
   return row;
 }
 
-/** The line pieces of a row as `[top, bottom, color, merge]` tuples, sorted so order does not matter. */
+/**
+ * The line pieces of a row as `[top, bottom, color, kind]` tuples, sorted so order does not matter.
+ * `kind` is 0 for a link to the parent, 1 for a merge and 2 for a link on the workspace's branch.
+ */
 function pieces(row: IExplorerRow): number[][] {
   const result: number[][] = [];
   for (let index = 0; index < row.lines.length; index += 4) {
@@ -116,9 +120,9 @@ describe("Branch Explorer graph model", () => {
     });
 
     it("draws the head downwards only, the middle both ways and the root upwards only", () => {
-      expect(pieces(rowOf(model, 12))).to.eql([[ -1, 0, main, 0 ]]);
-      expect(pieces(rowOf(model, 11))).to.eql(sorted([[ 0, -1, main, 0 ], [ -1, 0, main, 0 ]]));
-      expect(pieces(rowOf(model, 10))).to.eql([[ 0, -1, main, 0 ]]);
+      expect(pieces(rowOf(model, 12))).to.eql([[ -1, 0, main, 2 ]]);
+      expect(pieces(rowOf(model, 11))).to.eql(sorted([[ 0, -1, main, 2 ], [ -1, 0, main, 2 ]]));
+      expect(pieces(rowOf(model, 10))).to.eql([[ 0, -1, main, 2 ]]);
     });
 
     it("marks the workspace's changeset", () => {
@@ -162,14 +166,49 @@ describe("Branch Explorer graph model", () => {
     });
 
     it("draws the merge as a dashed line from the destination towards the source", () => {
-      expect(pieces(rowOf(model, 5))).to.eql(sorted([[ -1, 0, main, 0 ], [ -1, 1, task, 1 ]]));
+      expect(pieces(rowOf(model, 5))).to.eql(sorted([[ -1, 0, main, 2 ], [ -1, 1, task, 1 ]]));
       // The dashed line passes cs:4 on its way down to cs:3.
-      expect(pieces(rowOf(model, 4))).to.eql(sorted([[ 0, -1, main, 0 ], [ -1, 0, main, 0 ], [ 1, 1, task, 1 ]]));
-      expect(pieces(rowOf(model, 3))).to.eql(sorted([[ 0, 0, main, 0 ], [ 1, -1, task, 1 ], [ -1, 1, task, 0 ]]));
+      expect(pieces(rowOf(model, 4))).to.eql(sorted([[ 0, -1, main, 2 ], [ -1, 0, main, 2 ], [ 1, 1, task, 1 ]]));
+      expect(pieces(rowOf(model, 3))).to.eql(sorted([[ 0, 0, main, 2 ], [ 1, -1, task, 1 ], [ -1, 1, task, 0 ]]));
     });
 
     it("brings both branches together at the changeset they share", () => {
-      expect(pieces(rowOf(model, 2))).to.eql(sorted([[ 0, -1, main, 0 ], [ 1, -1, task, 0 ], [ -1, 0, main, 0 ]]));
+      expect(pieces(rowOf(model, 2))).to.eql(sorted([[ 0, -1, main, 2 ], [ 1, -1, task, 0 ], [ -1, 0, main, 2 ]]));
+    });
+
+    it("marks the links of the workspace's branch, and a merge from it stays a merge", () => {
+      const onTask = build({ kind: "all" }, { currentBranch: TASK, currentChangesetId: 3 });
+      expect(pieces(rowOf(onTask, 5))).to.eql(sorted([[ -1, 0, main, 0 ], [ -1, 1, task, 1 ]]));
+      expect(pieces(rowOf(onTask, 3))).to.eql(sorted([[ 0, 0, main, 0 ], [ 1, -1, task, 1 ], [ -1, 1, task, 2 ]]));
+      expect(pieces(rowOf(onTask, 2))).to.eql(sorted([[ 0, -1, main, 0 ], [ 1, -1, task, 2 ], [ -1, 0, main, 0 ]]));
+    });
+
+    it("says on a Reviewed branch how many of its changesets were checked in after the review", () => {
+      const mark = {
+        id: 31, label: "Reviewed", status: "reviewed" as const,
+        tooltip: "Reviewed: review 31, Main\nClick to open the review",
+      };
+      // Changeset N of the history is checked in at 10:0N.
+      const headReview = (minute: number): IExplorerRef["review"] => rowOf(buildExplorerModel({
+        changesets: HISTORY,
+        currentChangesetId: 5,
+        labels: [],
+        merges: [],
+        reviews: {
+          byBranch: new Map([[ MAIN, { ...mark, reviewedAt: Date.UTC(2026, 8, 1, 10, minute, 30) }]]),
+          byChangeset: new Map(),
+        },
+        scope: { kind: "all" },
+      }), 5).refs[0].review;
+
+      expect(headReview(5)).to.include({ label: "Reviewed", status: "reviewed" });
+      // cs:3 is newer than the review too, but it is on the task branch.
+      expect(headReview(2)).to.include({ label: "Reviewed · 2 new", status: "reviewedEarlier" });
+      expect(headReview(2)?.tooltip.split("\n")).to.eql([
+        "Reviewed: review 31, Main",
+        "2 changesets were checked in after it was marked Reviewed",
+        "Click to open the review",
+      ]);
     });
 
     it("names the merge source on the destination", () => {
@@ -184,8 +223,12 @@ describe("Branch Explorer graph model", () => {
     });
 
     it("puts a branch's review on its pill and a changeset's review on its row", () => {
-      const branchReview = { id: 31, status: "underReview" as const, tooltip: "Under review: review 31, Task" };
-      const changesetReview = { id: 32, status: "reviewed" as const, tooltip: "Reviewed: review 32, Fix" };
+      const branchReview = {
+        id: 31, label: "Under review", status: "underReview" as const, tooltip: "Under review: review 31, Task",
+      };
+      const changesetReview = {
+        id: 32, label: "Reviewed", status: "reviewed" as const, tooltip: "Reviewed: review 32, Fix",
+      };
       const reviewed = buildExplorerModel({
         changesets: HISTORY,
         currentBranch: MAIN,
@@ -258,7 +301,7 @@ describe("Branch Explorer graph model", () => {
       const model = build({ branches: [MAIN], kind: "branches" });
       expect(model.rows.map(row => row.id)).to.eql([ 5, 4, 2, 1 ]);
       expect(model.laneCount).to.equal(1);
-      expect(pieces(rowOf(model, 5))).to.eql([[ -1, 0, main, 0 ]]);
+      expect(pieces(rowOf(model, 5))).to.eql([[ -1, 0, main, 2 ]]);
       // The details still say where the merge came from.
       expect(rowOf(model, 5).mergedFrom).to.eql([{ branch: TASK, id: 3, type: "merge" }]);
     });

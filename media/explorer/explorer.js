@@ -98,7 +98,9 @@
     return el("span", `codicon codicon-${name}`);
   }
 
-  const REVIEW_ICONS = { reviewed: "pass", reworkRequired: "request-changes", underReview: "eye" };
+  const REVIEW_ICONS = {
+    reviewed: "pass", reviewedEarlier: "history", reworkRequired: "request-changes", underReview: "eye",
+  };
 
   /** The review of a branch or a changeset; a click opens it instead of selecting the row. */
   function reviewBadge(review) {
@@ -108,6 +110,7 @@
     badge.setAttribute("aria-label", review.tooltip);
     badge.dataset.reviewId = String(review.id);
     badge.appendChild(icon(REVIEW_ICONS[review.status] || "circle-large-outline"));
+    badge.appendChild(el("span", "review-label", review.label));
     badge.addEventListener("click", event => {
       event.stopPropagation();
       post({ reviewId: review.id, type: "openReview" });
@@ -703,6 +706,9 @@
     return node;
   }
 
+  /** By `ExplorerLineKind` in src/explorer/explorerGraph.ts. */
+  const LINE_KIND_CLASSES = [ "", " merge", " workspace" ];
+
   function graphSvg(row, width) {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("width", String(width));
@@ -736,10 +742,10 @@
         paths.set(key, (paths.get(key) || "") + piece);
       }
       for (const [ key, d ] of paths) {
-        const [ color, merge ] = key.split(":");
+        const [ color, kind ] = key.split(":");
         const path = document.createElementNS(SVG_NS, "path");
         path.setAttribute("d", d);
-        path.setAttribute("class", `line c${color}${merge === "1" ? " merge" : ""}`);
+        path.setAttribute("class", `line c${color}${LINE_KIND_CLASSES[kind] || ""}`);
         svg.appendChild(path);
       }
     }

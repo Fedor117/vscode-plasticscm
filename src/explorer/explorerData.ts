@@ -3,7 +3,9 @@ import { DiffChangeset, FindChangesets, FindMerges, ListLabels } from "../cm/com
 import { Disposable, Event, EventEmitter, OutputChannel } from "vscode";
 import { IChangesetFileChange, IHistoryChangeset, ILabelInfo, IMergeLink, WkConfigType } from "../models";
 import { IConfig, IShellConfig } from "../config";
-import { IExplorerReviews, indexExplorerReviews, NO_EXPLORER_REVIEWS, reviewTargetId } from "./explorerReviews";
+import {
+  IExplorerReviews, indexExplorerReviews, NO_EXPLORER_REVIEWS, reviewedDates, reviewTargetId,
+} from "./explorerReviews";
 import { describeError } from "../commands/scmUtils";
 import { ReviewCommands } from "../reviews/commands";
 import { Workspace } from "../workspace";
@@ -99,6 +101,11 @@ export class BranchExplorerData implements Disposable {
   private mReviews: IExplorerReviews = NO_EXPLORER_REVIEWS;
   /** Branch names by object id; undefined for a branch that no longer exists. Emptied by a full load. */
   private readonly mReviewBranches = new Map<number, string | undefined>();
+  /**
+   * When each Reviewed branch review was last marked so, by review id;
+   * undefined where its timeline does not say. Emptied by a full load.
+   */
+  private readonly mReviewedAt = new Map<number, number | undefined>();
   /** Bumped by every review load, so a slower, older one cannot overwrite it. */
   private mReviewsRun = 0;
   private mReviewsLoading = 0;
@@ -170,6 +177,7 @@ export class BranchExplorerData implements Disposable {
       this.mHasMore = page.length > EXPLORER_PAGE_SIZE;
       this.mFiles.clear();
       this.mReviewBranches.clear();
+      this.mReviewedAt.clear();
       this.mStatus = "ready";
       // Not awaited: the graph is drawn first and the badges appear when cm has answered.
       void this.loadReviews();
@@ -208,6 +216,8 @@ export class BranchExplorerData implements Disposable {
       this.mChangesets = this.mChangesets.concat(changesets);
       this.mMerges = this.mMerges.concat(merges);
       this.mHasMore = page.length > EXPLORER_PAGE_SIZE;
+      // The page may bring branches whose reviews have not been dated yet.
+      void this.loadReviews();
     } finally {
       if (generation === this.mGeneration) {
         this.mLoadingMore = false;
@@ -281,10 +291,17 @@ export class BranchExplorerData implements Disposable {
           this.mReviewBranches.set(id, names.get(id));
         }
       }
+      const undated = this.undatedReviews(indexExplorerReviews(reviews, this.mReviewBranches, this.mReviewedAt));
+      if (undated.length > 0) {
+        const dates = reviewedDates(await commands.timelines(undated));
+        for (const id of undated) {
+          this.mReviewedAt.set(id, dates.get(id));
+        }
+      }
       if (run !== this.mReviewsRun || this.mbIsDisposed) {
         return;
       }
-      this.mReviews = indexExplorerReviews(reviews, this.mReviewBranches);
+      this.mReviews = indexExplorerReviews(reviews, this.mReviewBranches, this.mReviewedAt);
       this.fire();
     } catch (e) {
       this.mChannel.appendLine(`Unable to load the reviews of the Branch Explorer: ${describeError(e)}`);
@@ -361,6 +378,34 @@ export class BranchExplorerData implements Disposable {
       return changeset ? [changeset] : [];
     }
     return FindChangesets.runRepository(shell, { commentContains: text, limit: EXPLORER_SEARCH_LIMIT });
+  }
+
+  /**
+   * The Reviewed reviews of loaded branches whose timeline has to be read: the
+   * ones never read, and the ones that look older than their branch's head. A
+   * date is trusted only while it covers the head, because a reviewer can mark
+   * the branch Reviewed again and the review's status does not change.
+   */
+  private undatedReviews(reviews: IExplorerReviews): number[] {
+    // Newest first, so the first changeset of a branch is its head.
+    const heads = new Map<string, number>();
+    for (const changeset of this.mChangesets) {
+      if (!heads.has(changeset.branch)) {
+        heads.set(changeset.branch, changeset.date.getTime());
+      }
+    }
+    const undated: number[] = [];
+    for (const [ branch, mark ] of reviews.byBranch) {
+      const head = heads.get(branch);
+      if (mark.status !== "reviewed" || head === undefined) {
+        continue;
+      }
+      const reviewedAt = this.mReviewedAt.get(mark.id);
+      if (!this.mReviewedAt.has(mark.id) || (reviewedAt !== undefined && reviewedAt < head)) {
+        undated.push(mark.id);
+      }
+    }
+    return undated;
   }
 
   private async findMerges(

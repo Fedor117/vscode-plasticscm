@@ -12,6 +12,22 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   when nothing but its recorded Unix mode differs, which showed as a folder row with no files and
   no explanation. The row's description and tooltip now read `permissions not set → r-xr-xr-x`;
   a file whose mode changed gets the same note.
+- **The Branch Explorer says when a Reviewed branch got changesets afterwards.** The badge of such
+  a branch used to stay a plain Reviewed, because `cm` does not record which changeset was
+  reviewed. It now turns grey and reads `Reviewed · 2 new`, counting the changesets checked in
+  after the review was last marked Reviewed; the tooltip says the same in a sentence. The date
+  comes from the review's timeline, read once for each Reviewed branch on screen and again only
+  while the branch looks newer than its review.
+
+### Changed
+
+- **The review badge in the Branch Explorer is a status pill.** It was a bare coloured icon beside
+  the branch pill; it is now a tinted pill with the icon and the status in words (Under review,
+  Rework required, Reviewed), in the colours of the status pill on the review Overview. Where the
+  description column is narrow the pill is its icon alone.
+- **The workspace's branch stands out in the Branch Explorer.** Its pill was told apart by a
+  thicker border only; it is now filled with the branch's colour, as the Plastic SCM Graph view
+  fills its current branch, and the branch's line through the graph is drawn heavier.
 
 ## [0.8.0] - 2026-11-16
 
