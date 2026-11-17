@@ -20,10 +20,12 @@ interface IRowDump {
   readonly selected: boolean;
   readonly current: boolean;
   readonly refs: string[];
-  /** The review badges of the row: status class, review id and tooltip. */
-  readonly reviews: Array<{ status: string; id: string; title: string }>;
+  /** The review badges of the row: status class, review id, the words shown and tooltip. */
+  readonly reviews: Array<{ status: string; id: string; text: string; title: string }>;
   readonly lines: number;
   readonly dashed: number;
+  /** The heavier lines of the row: those of the workspace's branch. */
+  readonly heavy: number;
   readonly context: Record<string, unknown>;
   /** The initials of the author's avatar, when the row has one. */
   readonly avatar?: string;
@@ -77,12 +79,14 @@ const PROBE = `
       context: contextOf(row),
       current: row.classList.contains("current"),
       dashed: row.querySelectorAll("svg .line.merge").length,
+      heavy: row.querySelectorAll("svg .line.workspace").length,
       id: Number(row.dataset.id),
       lines: row.querySelectorAll("svg .line").length,
       refs: Array.from(row.querySelectorAll(".ref:not(.home)")).map(textOf),
       reviews: Array.from(row.querySelectorAll(".review-badge")).map(badge => ({
         id: badge.dataset.reviewId,
         status: badge.className.replace("review-badge", "").trim(),
+        text: textOf(badge),
         title: badge.title,
       })),
       selected: row.classList.contains("selected"),
@@ -406,10 +410,24 @@ describe("Branch Explorer client", function() {
     expect(dump.graphWidth).to.equal("38px");
   });
 
+  it("draws the lines of the workspace's branch heavier, down to where it left its parent", async () => {
+    const model = buildExplorerModel({
+      changesets: HISTORY, currentBranch: TASK, currentChangesetId: 3, labels: [], merges: [], scope: { kind: "all" },
+    });
+    await client.post(state({ currentBranch: TASK, currentChangesetId: 3, model }));
+
+    const heavy = (await client.dump()).rows.map(row => [ row.id, row.heavy ]);
+    expect(heavy).to.eql([[ 5, 0 ], [ 4, 0 ], [ 3, 1 ], [ 2, 1 ], [ 1, 0 ]]);
+  });
+
   it("draws a review badge beside its branch pill and opens the review on click", async () => {
     const reviews = {
-      byBranch: new Map([[ TASK, { id: 129, status: "underReview" as const, tooltip: "Under review: review 129" }]]),
-      byChangeset: new Map([[ 4, { id: 130, status: "reviewed" as const, tooltip: "Reviewed: review 130" }]]),
+      byBranch: new Map([[ TASK, {
+        id: 129, label: "Under review", status: "underReview" as const, tooltip: "Under review: review 129",
+      }]]),
+      byChangeset: new Map([[ 4, {
+        id: 130, label: "Reviewed", status: "reviewed" as const, tooltip: "Reviewed: review 130",
+      }]]),
     };
     const model = buildExplorerModel({
       changesets: HISTORY, currentBranch: MAIN, currentChangesetId: 5, labels: [], merges: [], reviews,
@@ -418,8 +436,12 @@ describe("Branch Explorer client", function() {
     await client.post(state({ model }));
     const dump = await client.dump();
 
-    expect(dump.rows[2].reviews).to.eql([{ id: "129", status: "underReview", title: "Under review: review 129" }]);
-    expect(dump.rows[1].reviews).to.eql([{ id: "130", status: "reviewed", title: "Reviewed: review 130" }]);
+    expect(dump.rows[2].reviews).to.eql([
+      { id: "129", status: "underReview", text: "Under review", title: "Under review: review 129" },
+    ]);
+    expect(dump.rows[1].reviews).to.eql([
+      { id: "130", status: "reviewed", text: "Reviewed", title: "Reviewed: review 130" },
+    ]);
     expect(dump.rows[0].reviews).to.eql([]);
     expect(dump.rows[2].refs).to.eql(["task"]);
 

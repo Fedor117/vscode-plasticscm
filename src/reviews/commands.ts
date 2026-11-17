@@ -215,6 +215,21 @@ export class ReviewCommands {
   }
 
   /**
+   * The timeline rows of several reviews, without their discussions: every
+   * status change with its date.
+   */
+  public async timelines(reviewIds: readonly number[]): Promise<IReviewComment[]> {
+    reviewIds.forEach(id => assertInteger(id, "review id"));
+    const found: IReviewComment[] = [];
+    for (const page of chunks(Array.from(new Set(reviewIds)), IDS_PER_QUERY)) {
+      const where = `where type = 'timeline' and (${page.map(id => `reviewid = ${id}`).join(" or ")})`;
+      found.push(...await this.find(
+        "changereviewcomment", where, queryParser("changereviewcomment", parseComment)));
+    }
+    return found;
+  }
+
+  /**
    * Timeline rows of any review that request, re-request or remove `user` as a
    * reviewer. `like` wildcards in the name only widen the match; callers compare
    * the parsed user exactly.

@@ -359,6 +359,7 @@ select.control {
   display: flex;
   align-items: center;
   gap: 5px;
+  container-type: inline-size;
 }
 
 .list-header .cell.desc {
@@ -427,6 +428,10 @@ select.control {
   stroke-dasharray: 3 2.5;
 }
 
+.line.workspace {
+  stroke-width: 2.8;
+}
+
 .dot {
   stroke: var(--vscode-editor-background);
   stroke-width: 1.2;
@@ -467,6 +472,7 @@ select.control {
   padding: 0 6px;
   border: 1px solid currentColor;
   border-radius: 9px;
+  color: var(--ref, inherit);
   font-size: 0.88em;
   line-height: 1;
 }
@@ -485,23 +491,39 @@ select.control {
   font-size: 12px;
 }
 
-.ref.c0 { color: var(--c0); }
-.ref.c1 { color: var(--c1); }
-.ref.c2 { color: var(--c2); }
-.ref.c3 { color: var(--c3); }
-.ref.c4 { color: var(--c4); }
-.ref.c5 { color: var(--c5); }
-.ref.c6 { color: var(--c6); }
-.ref.c7 { color: var(--c7); }
+.ref.c0 { --ref: var(--c0); }
+.ref.c1 { --ref: var(--c1); }
+.ref.c2 { --ref: var(--c2); }
+.ref.c3 { --ref: var(--c3); }
+.ref.c4 { --ref: var(--c4); }
+.ref.c5 { --ref: var(--c5); }
+.ref.c6 { --ref: var(--c6); }
+.ref.c7 { --ref: var(--c7); }
 
 .ref.label {
   color: var(--vscode-descriptionForeground);
   border-style: dashed;
 }
 
+/*
+ * The workspace's branch is the one filled pill, as the Plastic SCM Graph view fills its current
+ * branch. Light themes darken the fill, or the paler chart colours would not carry the text.
+ */
 .ref.current {
+  --fill: 100%;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ref) var(--fill), var(--vscode-editor-foreground, var(--vscode-foreground)));
   font-weight: 600;
-  border-width: 2px;
+}
+
+.vscode-light .ref.current,
+.vscode-high-contrast-light .ref.current {
+  --fill: 65%;
+}
+
+.ref.current > span,
+.row.selected .ref.current > span {
+  color: var(--vscode-editor-background);
 }
 
 .ref.home {
@@ -514,36 +536,72 @@ select.control {
   color: inherit;
 }
 
+/*
+ * A review's status beside what it reviews, filled where a ref is outlined: a
+ * ref says where a changeset is, this says what state its review is in. The
+ * tint and the text colours are those of the Reviews Overview's status pill.
+ */
 .review-badge {
+  --tone: var(--vscode-descriptionForeground);
+  --tone-text: 85%;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   flex: none;
-  height: 18px;
-  padding: 0 2px;
-  border: 0;
-  border-radius: 3px;
-  background: none;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: color-mix(in srgb, var(--tone) var(--tone-text), var(--vscode-editor-foreground, var(--vscode-foreground)));
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  font-size: 0.88em;
+  line-height: 1;
   cursor: pointer;
 }
 
+/* The chart colours are too pale for small text on a light theme, so they go halfway to the text colour. */
+.vscode-light .review-badge,
+.vscode-high-contrast-light .review-badge {
+  --tone-text: 50%;
+}
+
+.review-badge.underReview { --tone: var(--vscode-charts-blue); }
+.review-badge.reworkRequired { --tone: var(--vscode-charts-orange); }
+.review-badge.reviewed { --tone: var(--vscode-charts-green); }
+/* `reviewedEarlier` keeps the neutral tone: the review no longer covers the branch's head. */
+
 .review-badge:hover {
-  background: var(--vscode-toolbar-hoverBackground);
+  background: color-mix(in srgb, var(--tone) 26%, transparent);
 }
 
 .review-badge:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 .review-badge .codicon {
-  font-size: 14px;
+  font-size: 12px;
 }
 
-.review-badge.underReview { color: var(--vscode-charts-blue); }
-.review-badge.reworkRequired { color: var(--vscode-charts-orange); }
-.review-badge.reviewed { color: var(--vscode-testing-iconPassed); }
+.vscode-high-contrast .review-badge {
+  border-color: currentColor;
+}
 
 .row.selected .review-badge {
+  --tone: currentColor;
   color: inherit;
+}
+
+/* A narrow description keeps the subject readable: the badge is its icon alone, and the tooltip has the words. */
+@container (max-width: 300px) {
+  .review-badge {
+    padding: 0 5px;
+  }
+
+  .review-label {
+    display: none;
+  }
 }
 
 /* ------------------------------------------------------------------ details */
