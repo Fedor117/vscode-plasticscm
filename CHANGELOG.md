@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **A review row says when only its permissions changed.** `cm diff` lists a directory as changed
+  when nothing but its recorded Unix mode differs, which showed as a folder row with no files and
+  no explanation. The row's description and tooltip now read `permissions not set → r-xr-xr-x`;
+  a file whose mode changed gets the same note.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added

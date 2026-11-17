@@ -150,7 +150,8 @@ type Shape<T> = [RegExp, (match: RegExpExecArray) => T];
 /** The `--format=` of the review feature's `cm diff`; any other is a query this server does not know. */
 const DIFF_FORMAT =
   "--format=S:{status}{newline}T:{type}{newline}P:{path}{newline}R:{revid}{newline}PR:{parentrevid}{newline}" +
-  "B:{baserevid}{newline}SP:{srccmpath}{newline}DP:{dstcmpath}{newline}RP:{repository}";
+  "B:{baserevid}{newline}SP:{srccmpath}{newline}DP:{dstcmpath}{newline}FP:{fsprotection}{newline}" +
+  "SFP:{srcfsprotection}{newline}RP:{repository}";
 const FIND_ARGS = "--xml --nototal --encoding=utf-8";
 const BOM = Buffer.from([ 0xef, 0xbb, 0xbf ]);
 const TYPE_LETTERS: { [type in SyntheticItemType]: "F" | "B" | "D" } = { bin: "B", dir: "D", txt: "F" };
